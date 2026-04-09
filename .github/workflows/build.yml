@@ -32,7 +32,7 @@ jobs:
           cache: maven
 
       - name: Auto-tag
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -86,13 +86,27 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
           cache: maven
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
       - name: Install pandoc
         run: sudo apt-get install -y pandoc
       - name: Set version
         run: mvn versions:set -DnewVersion=${{ needs.calc_ver.outputs.project_ver }} --batch-mode
       - name: Build
         # xvfb-run provides a virtual display so Swing UI tests don't throw HeadlessException
-        run: xvfb-run mvn package --batch-mode
+        run: |
+          if [[ "${{ needs.calc_ver.outputs.release_flag }}" == "ON" ]]; then
+            xvfb-run mvn deploy -P release -DskipTests -DskipDeploy=true --batch-mode
+          else
+            xvfb-run mvn package --batch-mode
+          fi
+        env:
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
       - name: Build documentation
         run: |
           VERSION=${{ needs.calc_ver.outputs.project_ver }}
@@ -111,45 +125,41 @@ jobs:
             target/*-docs.html
           upload-release-files: ${{ needs.calc_ver.outputs.release_flag == 'ON' }}
           release-upload-url: ${{ needs.calc_ver.outputs.release_upload_url }}
+      - name: Upload Central bundle
+        if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-bundle
+          path: target/central-publishing/central-bundle.zip
+          if-no-files-found: error
 
   release:
     needs: [calc_ver, build]
-    if: needs.calc_ver.outputs.release_flag == 'ON'
+    if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
     runs-on: ubuntu-latest
     steps:
-      - name: Publish release
+      - name: Download Central bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: central-bundle
+          path: central-bundle
+
+      - name: Publish to Maven Central
+        run: |
+          AUTH=$(echo -n "$MAVEN_USERNAME:$MAVEN_PASSWORD" | base64 -w0)
+          curl --fail --location \
+            --request POST \
+            --header "Authorization: Bearer $AUTH" \
+            --form "bundle=@central-bundle/central-bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
+        env:
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+
+      - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit "${{ needs.calc_ver.outputs.release_tag }}" \
             --draft=false \
             --repo ${{ github.repository }}
-
-  deploy:
-    needs: [calc_ver, build]
-    if: needs.calc_ver.outputs.release_flag == 'ON'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: maven
-          server-id: central
-          server-username: MAVEN_USERNAME
-          server-password: MAVEN_PASSWORD
-          gpg-private-key: ${{ secrets.MAVEN_GPG_KEY }}
-          gpg-passphrase: MAVEN_GPG_PASSPHRASE
-      - name: Set version
-        run: mvn versions:set -DnewVersion=${{ needs.calc_ver.outputs.project_ver }} --batch-mode
-      - name: Deploy to Maven Central
-        run: mvn deploy -P release -DskipTests --batch-mode
-        env:
-          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
