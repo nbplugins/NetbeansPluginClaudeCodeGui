@@ -176,3 +176,12 @@ After any action the originating `ClaudeSessionTab` is re-activated automaticall
 7. **Offer to install the new plugin version** and verify the bug is fixed
 
 8. **On successful fix — commit** all changed files, including Python tests and `to-do.md` if the bug was tracked there
+
+## Git Workflow
+
+- `origin` — personal fork
+- `upstream` — org repo (`nbclaudecodegui/NetbeansClaudeCodeGui`)
+
+**Never push directly to upstream.** Always:
+1. Push to a new branch in `origin`
+2. Open a PR from that branch into `upstream/main`
