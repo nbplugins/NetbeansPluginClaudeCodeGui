@@ -5,8 +5,11 @@ import com.jediterm.terminal.ui.JediTermWidget;
 import com.pty4j.PtyProcess;
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
+import io.github.nbclaudecodegui.model.SavedSession;
 import io.github.nbclaudecodegui.model.SessionLifecycle;
+import io.github.nbclaudecodegui.model.SessionMode;
 import io.github.nbclaudecodegui.process.ClaudeProcess;
+import io.github.nbclaudecodegui.process.ClaudeSessionStore;
 import io.github.nbclaudecodegui.process.ModelMenuParser;
 import io.github.nbclaudecodegui.process.PtyTtyConnector;
 import io.github.nbclaudecodegui.process.ScreenContentDetector;
@@ -161,11 +164,31 @@ public final class ClaudeSessionController {
      */
     public void startProcess(java.io.File dir, String profileName, String extraCliArgs, JediTermWidget widget)
             throws IOException {
+        startProcess(dir, profileName, extraCliArgs, SessionMode.NEW, null, widget);
+    }
+
+    /**
+     * Starts the Claude PTY process with session mode support.
+     *
+     * @param dir             working directory
+     * @param profileName     profile name, or {@code null}/{@code ""} for Default
+     * @param extraCliArgs    extra CLI arguments (may be blank)
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @param widget          terminal widget
+     * @throws IOException if the PTY process cannot be started
+     */
+    public void startProcess(java.io.File dir, String profileName, String extraCliArgs,
+                             SessionMode mode, String resumeSessionId,
+                             JediTermWidget widget) throws IOException {
         String tag = "[" + dir.getName() + "] ";
         claudeProcess = new ClaudeProcess();
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
         customModelIds = profile != null ? new ArrayList<>(profile.getCustomModels()) : List.of();
-        PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile, extraCliArgs != null ? extraCliArgs : "");
+        PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
+                extraCliArgs != null ? extraCliArgs : "",
+                mode != null ? mode : SessionMode.NEW,
+                resumeSessionId);
 
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
@@ -253,6 +276,30 @@ public final class ClaudeSessionController {
         model.clearChoiceMenu();
         model.clearEditModeRegistry();
         model.setLifecycle(SessionLifecycle.STARTING);
+    }
+
+    /**
+     * Stops the PTY process and, if {@code sessionName} is non-blank, writes a
+     * {@code custom-title} entry to the most recent session JSONL file.
+     *
+     * @param sessionName name to persist, or {@code null}/blank to skip renaming
+     */
+    public void stopAndRename(String sessionName) {
+        java.io.File workingDir = model.getWorkingDirectory();
+        stopProcess();
+        if (sessionName != null && !sessionName.isBlank() && workingDir != null) {
+            try {
+                SavedSession recent = ClaudeSessionStore.findMostRecent(
+                        workingDir.toPath(), null);
+                if (recent != null) {
+                    ClaudeSessionStore.renameSession(
+                            workingDir.toPath(), null, recent.sessionId(), sessionName);
+                    LOG.fine("Renamed session " + recent.sessionId() + " to '" + sessionName + "'");
+                }
+            } catch (Exception e) {
+                LOG.warning("Could not rename session: " + e.getMessage());
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

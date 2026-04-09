@@ -1,3 +1,6 @@
+- Added session management when opening a session from the toolbar and when closing a tab via the Close button
+- Added configurable session mode: choose to resume the last session or start a new one
+
 # 0.20 (2026-04-09)
 
 - Added Maven Central publication support: `release` Maven profile with GPG signing and Sonatype Central Portal deployment, plus CI `deploy` job that publishes artifacts on release builds

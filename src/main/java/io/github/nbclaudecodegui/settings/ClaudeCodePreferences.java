@@ -1,5 +1,6 @@
 package io.github.nbclaudecodegui.settings;
 
+import io.github.nbclaudecodegui.model.SessionMode;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -420,6 +421,79 @@ public final class ClaudeCodePreferences {
     public static void setDefaultExtraCliArgs(String v) {
         NbPreferences.forModule(ClaudeCodePreferences.class)
                 .put(KEY_DEFAULT_EXTRA_CLI_ARGS, v != null ? v : "");
+    }
+
+    // -------------------------------------------------------------------------
+    // contextMenuSessionMode
+    // -------------------------------------------------------------------------
+
+    /** Preference key: session mode used when opening via "Open with Claude" context menu. */
+    public static final String KEY_CONTEXT_MENU_SESSION_MODE = "contextMenuSessionMode";
+    /** Default: continue the last session. */
+    public static final SessionMode DEFAULT_CONTEXT_MENU_SESSION_MODE = SessionMode.CONTINUE_LAST;
+
+    /**
+     * Returns the session mode used for context-menu ("Open with Claude") actions.
+     *
+     * @return configured mode, or {@link #DEFAULT_CONTEXT_MENU_SESSION_MODE}
+     */
+    public static SessionMode getContextMenuSessionMode() {
+        String stored = NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_CONTEXT_MENU_SESSION_MODE,
+                        DEFAULT_CONTEXT_MENU_SESSION_MODE.name());
+        try {
+            SessionMode mode = SessionMode.valueOf(stored);
+            // CLOSE_ONLY and RESUME_SPECIFIC are not valid context-menu modes
+            if (mode == SessionMode.CLOSE_ONLY || mode == SessionMode.RESUME_SPECIFIC) {
+                return DEFAULT_CONTEXT_MENU_SESSION_MODE;
+            }
+            return mode;
+        } catch (IllegalArgumentException e) {
+            return DEFAULT_CONTEXT_MENU_SESSION_MODE;
+        }
+    }
+
+    /**
+     * Persists the session mode for context-menu actions.
+     *
+     * @param mode {@link SessionMode#NEW} or {@link SessionMode#CONTINUE_LAST}
+     */
+    public static void setContextMenuSessionMode(SessionMode mode) {
+        if (mode == null || mode == SessionMode.CLOSE_ONLY
+                || mode == SessionMode.RESUME_SPECIFIC) {
+            mode = DEFAULT_CONTEXT_MENU_SESSION_MODE;
+        }
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_CONTEXT_MENU_SESSION_MODE, mode.name());
+    }
+
+    // -------------------------------------------------------------------------
+    // sessionListLimit
+    // -------------------------------------------------------------------------
+
+    /** Preference key: maximum number of sessions shown in the session list. */
+    public static final String KEY_SESSION_LIST_LIMIT = "sessionListLimit";
+    /** Default: show the 30 most recent sessions. */
+    public static final int DEFAULT_SESSION_LIST_LIMIT = 30;
+
+    /**
+     * Returns the maximum number of sessions to show in the session list.
+     *
+     * @return session list limit (≥ 1)
+     */
+    public static int getSessionListLimit() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_SESSION_LIST_LIMIT, DEFAULT_SESSION_LIST_LIMIT);
+    }
+
+    /**
+     * Persists the session list limit.
+     *
+     * @param v new limit; clamped to [1, 500]
+     */
+    public static void setSessionListLimit(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_SESSION_LIST_LIMIT, Math.max(1, Math.min(500, v)));
     }
 
     private static String validated(String value, String fallback) {

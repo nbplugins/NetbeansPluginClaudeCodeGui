@@ -1,5 +1,6 @@
 package io.github.nbclaudecodegui.ui;
 
+import io.github.nbclaudecodegui.model.SessionMode;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.settings.ClaudeProfile;
 import io.github.nbclaudecodegui.settings.ClaudeProfileStore;
@@ -10,6 +11,7 @@ import java.awt.Component;
 import java.awt.FlowLayout;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
@@ -78,13 +80,16 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
          * Called on the EDT after the selected path has been validated as an
          * existing directory.
          *
-         * @param dir          the selected working directory
-         * @param profileName  the selected profile name (never {@code null};
-         *                     use {@link ClaudeProfile#DEFAULT_NAME} to check
-         *                     for the default)
-         * @param extraCliArgs extra CLI arguments from the args field (may be empty)
+         * @param dir             the selected working directory
+         * @param profileName     the selected profile name (never {@code null};
+         *                        use {@link ClaudeProfile#DEFAULT_NAME} to check
+         *                        for the default)
+         * @param extraCliArgs    extra CLI arguments from the args field (may be empty)
+         * @param mode            the selected session start mode
+         * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
          */
-        void onOpen(File dir, String profileName, String extraCliArgs);
+        void onOpen(File dir, String profileName, String extraCliArgs,
+                    SessionMode mode, String resumeSessionId);
     }
 
     // -------------------------------------------------------------------------
@@ -114,6 +119,9 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
 
     /** Displays validation errors (path empty, directory not found). */
     private final JLabel errorLabel;
+
+    /** Panel for choosing session start mode (New / Continue last / Resume specific). */
+    private final SessionModePanel sessionModePanel;
 
     /** Suppresses the project-selection listener while the combo is populated programmatically. */
     private boolean suppressProjectListener;
@@ -187,24 +195,44 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         errorLabel.setVisible(false);
 
         // --- layout ---
-        JPanel controlBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 4));
-        controlBar.add(projectCombo);
-        controlBar.add(pathCombo);
-        controlBar.add(browseButton);
-        controlBar.add(profileCombo);
-        controlBar.add(openButton);
-        controlBar.add(settingsButton);
+        JPanel leftBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 4));
+        leftBar.add(projectCombo);
+        leftBar.add(pathCombo);
+        leftBar.add(browseButton);
+        leftBar.add(profileCombo);
+
+        JPanel rightBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 4));
+        rightBar.add(openButton);
+        rightBar.add(settingsButton);
+
+        JPanel controlBar = new JPanel(new BorderLayout());
+        controlBar.add(leftBar, BorderLayout.CENTER);
+        controlBar.add(rightBar, BorderLayout.EAST);
 
         JPanel argsRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         argsRow.add(new JLabel("Extra args:"));
         argsRow.add(extraArgsField);
 
-        JPanel wrapper = new JPanel();
-        wrapper.setLayout(new javax.swing.BoxLayout(wrapper, javax.swing.BoxLayout.Y_AXIS));
-        wrapper.add(controlBar);
-        wrapper.add(argsRow);
-        wrapper.add(errorLabel);
+        // --- session mode panel ---
+        sessionModePanel = new SessionModePanel(
+                resolveDir() != null ? resolveDir().toPath() : null,
+                resolveClaudeConfigDir(),
+                null, false);
+        SessionMode defaultMode = ClaudeCodePreferences.getContextMenuSessionMode();
+        sessionModePanel.setMode(defaultMode);
+
+        sessionModePanel.setOnDoubleClick(this::onOpen);
+
+        JPanel topBar = new JPanel();
+        topBar.setLayout(new javax.swing.BoxLayout(topBar, javax.swing.BoxLayout.Y_AXIS));
+        topBar.add(controlBar);
+        topBar.add(argsRow);
+
+        JPanel wrapper = new JPanel(new BorderLayout());
         wrapper.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
+        wrapper.add(topBar, BorderLayout.NORTH);
+        wrapper.add(sessionModePanel, BorderLayout.CENTER);
+        wrapper.add(errorLabel, BorderLayout.SOUTH);
         add(wrapper, BorderLayout.CENTER);
     }
 
@@ -345,6 +373,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         String name = getSelectedProfileName();
         ClaudeProfile p = ClaudeProfileStore.findByName(name);
         extraArgsField.setText(p != null ? p.getExtraCliArgs() : "");
+        reloadSessionModePanel();
     }
 
     private void onProjectSelected() {
@@ -360,8 +389,35 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
                 } else {
                     profileCombo.setSelectedIndex(0);
                 }
+                reloadSessionModePanel();
             }
         }
+    }
+
+    private void reloadSessionModePanel() {
+        if (sessionModePanel != null
+                && sessionModePanel.getSelectedMode() == SessionMode.RESUME_SPECIFIC) {
+            sessionModePanel.reload(
+                    resolveDir() != null ? resolveDir().toPath() : null,
+                    resolveClaudeConfigDir(),
+                    null);
+        }
+    }
+
+    private File resolveDir() {
+        Object item = pathCombo != null ? pathCombo.getSelectedItem() : null;
+        if (item == null || item.toString().isBlank()) return null;
+        File f = new File(item.toString().trim());
+        return f.isDirectory() ? f : null;
+    }
+
+    private Path resolveClaudeConfigDir() {
+        String profileName = getSelectedProfileName();
+        if (ClaudeProfile.DEFAULT_NAME.equals(profileName)) return null;
+        ClaudeProfile p = ClaudeProfileStore.findByName(profileName);
+        if (p == null) return null;
+        return io.github.nbclaudecodegui.settings.ClaudeProfileStore
+                .resolveConfigDir(p, ClaudeCodePreferences.getProfilesDir());
     }
 
     private void onBrowse() {
@@ -395,7 +451,9 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         }
 
         errorLabel.setVisible(false);
-        openListener.onOpen(dir, getSelectedProfileName(), extraArgsField.getText().trim());
+        openListener.onOpen(dir, getSelectedProfileName(), extraArgsField.getText().trim(),
+                sessionModePanel.getSelectedMode(),
+                sessionModePanel.getSelectedSessionId());
     }
 
     // -------------------------------------------------------------------------
@@ -420,6 +478,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         browseButton.setEnabled(enabled);
         openButton.setEnabled(enabled);
         extraArgsField.setEnabled(enabled);
+        sessionModePanel.setEnabled(enabled);
     }
 
     private boolean isProjectDirectory(File dir) {

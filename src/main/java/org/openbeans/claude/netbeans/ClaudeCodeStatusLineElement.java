@@ -1,12 +1,27 @@
 package org.openbeans.claude.netbeans;
 
+import io.github.nbclaudecodegui.model.SavedSession;
+import io.github.nbclaudecodegui.model.SessionMode;
+import io.github.nbclaudecodegui.process.ClaudeSessionStore;
+import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
+import io.github.nbclaudecodegui.settings.ClaudeProfile;
+import io.github.nbclaudecodegui.settings.ClaudeProfileStore;
+import io.github.nbclaudecodegui.ui.ClaudeSessionTab;
+import io.github.nbclaudecodegui.ui.SaveAndSwitchDialog;
 import java.awt.Component;
+import java.awt.Frame;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.File;
+import java.nio.file.Path;
 import javax.swing.JLabel;
+import javax.swing.SwingUtilities;
+import javax.swing.WindowConstants;
 import org.openide.awt.StatusLineElementProvider;
 import org.openide.util.Lookup;
 import org.openide.util.lookup.ServiceProvider;
+import org.openide.windows.TopComponent;
+import org.openide.windows.WindowManager;
 
 /**
  * Status bar element for Claude Code integration status.
@@ -29,13 +44,13 @@ public class ClaudeCodeStatusLineElement implements StatusLineElementProvider {
         statusLabel.setText("Claude");
         statusLabel.setToolTipText("Claude Code: Initializing...");
         
-        // Add mouse listener for click interactions (future enhancement)
+        statusLabel.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
         statusLabel.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
-                // Could show status dialog or perform action
+                onStatusLabelClicked();
             }
-            
+
             @Override
             public void mouseEntered(MouseEvent e) {
                 updateTooltip();
@@ -82,5 +97,54 @@ public class ClaudeCodeStatusLineElement implements StatusLineElementProvider {
      */
     public void refresh() {
         updateStatusDisplay();
+    }
+
+    private void onStatusLabelClicked() {
+        // Find the active ClaudeSessionTab
+        ClaudeSessionTab activeTab = null;
+        for (TopComponent tc : WindowManager.getDefault().getRegistry().getOpened()) {
+            if (tc instanceof ClaudeSessionTab tab && tab.isSessionActive()) {
+                activeTab = tab;
+                break;
+            }
+        }
+        if (activeTab == null) return;
+
+        File workingDir = activeTab.getWorkingDirectory();
+        if (workingDir == null) return;
+
+        // Resolve claude config dir from the active profile
+        String profileName = activeTab.getSelectedProfileName();
+        Path claudeConfigDir = null;
+        if (profileName != null && !ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
+            ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
+            if (profile != null) {
+                claudeConfigDir = ClaudeProfileStore.resolveConfigDir(
+                        profile, ClaudeCodePreferences.getProfilesDir());
+            }
+        }
+
+        // Get current session display name
+        SavedSession recent = ClaudeSessionStore.findMostRecent(
+                workingDir.toPath(), claudeConfigDir);
+        String currentName = recent != null ? recent.displayName() : "";
+        String currentId   = recent != null ? recent.sessionId() : null;
+
+        final ClaudeSessionTab tab = activeTab;
+        final Path configDir = claudeConfigDir;
+
+        Frame mainFrame = WindowManager.getDefault().getMainWindow();
+        SaveAndSwitchDialog dialog = new SaveAndSwitchDialog(
+                mainFrame,
+                currentName,
+                currentId,
+                workingDir.toPath(),
+                configDir,
+                io.github.nbclaudecodegui.model.SessionMode.CLOSE_ONLY,
+                (name, mode, resumeId) ->
+                        SwingUtilities.invokeLater(() -> tab.onSaveAndSwitch(name, mode, resumeId))
+        );
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        dialog.setVisible(true);
     }
 }

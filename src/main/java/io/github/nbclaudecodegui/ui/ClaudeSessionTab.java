@@ -6,8 +6,13 @@ import io.github.nbclaudecodegui.controller.ClaudeSessionController;
 import io.github.nbclaudecodegui.ui.common.BasicTextContextMenu;
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
+import io.github.nbclaudecodegui.model.SavedSession;
 import io.github.nbclaudecodegui.model.SessionLifecycle;
+import io.github.nbclaudecodegui.model.SessionMode;
+import io.github.nbclaudecodegui.process.ClaudeSessionStore;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
+import io.github.nbclaudecodegui.settings.ClaudeProfile;
+import io.github.nbclaudecodegui.settings.ClaudeProfileStore;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -16,6 +21,7 @@ import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
 import java.util.List;
@@ -40,7 +46,6 @@ import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import org.openide.util.ImageUtilities;
-import org.openide.util.NbBundle;
 import org.openide.util.NbPreferences;
 import org.openide.windows.TopComponent;
 import org.openide.windows.WindowManager;
@@ -125,6 +130,12 @@ public class ClaudeSessionTab extends TopComponent
     /** Extra CLI args restored from serialized state after an IDE restart. */
     private String savedExtraCliArgs;
 
+    /** Session mode restored from serialized state; {@code null} = default from preferences. */
+    private SessionMode savedSessionMode;
+
+    /** Resume session ID restored from serialized state; {@code null} if not applicable. */
+    private String savedResumeSessionId;
+
     // -------------------------------------------------------------------------
     // MVC
     // -------------------------------------------------------------------------
@@ -141,7 +152,6 @@ public class ClaudeSessionTab extends TopComponent
     // -------------------------------------------------------------------------
 
     private final ClaudeSessionSelectorPanel selectorPanel;
-    private final JLabel                     placeholderLabel;
 
     // -------------------------------------------------------------------------
     // UI — session (created once a session starts, nulled on stop)
@@ -172,6 +182,7 @@ public class ClaudeSessionTab extends TopComponent
     private final JLabel            stateLabel;
     private final JLabel            planLabel;
     private final JLabel            versionLabel;
+    private final JButton           stopButton;
 
     /** Cached lifecycle so {@link #onModelListChanged} can correctly enable the combo. */
     private volatile SessionLifecycle currentLifecycle;
@@ -214,6 +225,11 @@ public class ClaudeSessionTab extends TopComponent
         planLabel.setToolTipText("Active plan file (if any)");
         versionLabel.setToolTipText("Claude CLI version");
 
+        stopButton = new JButton("\u23fb"); // ⏻ power symbol
+        stopButton.setToolTipText("Stop session");
+        stopButton.setMargin(new Insets(0, 4, 0, 4));
+        stopButton.addActionListener(e -> openSwitchDialog(SessionMode.CLOSE_ONLY));
+
         statusBar = new JPanel();
         statusBar.setLayout(new BoxLayout(statusBar, BoxLayout.X_AXIS));
         statusBar.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, Color.LIGHT_GRAY));
@@ -230,14 +246,14 @@ public class ClaudeSessionTab extends TopComponent
         statusBar.add(makeSep());
         statusBar.add(versionLabel);
         statusBar.add(Box.createRigidArea(new Dimension(4, 0)));
+        statusBar.add(makeSep());
+        statusBar.add(Box.createRigidArea(new Dimension(4, 0)));
+        statusBar.add(stopButton);
+        statusBar.add(Box.createRigidArea(new Dimension(4, 0)));
         statusBar.setVisible(false);
 
         // --- selector + placeholder ---
-        selectorPanel    = new ClaudeSessionSelectorPanel(dir, (d, pn, ea) -> onDirectoryOpened(d, pn, ea));
-        placeholderLabel = new JLabel(
-                NbBundle.getMessage(ClaudeSessionSelectorPanel.class, "LBL_SelectDir"),
-                SwingConstants.CENTER);
-        placeholderLabel.setForeground(Color.GRAY);
+        selectorPanel    = new ClaudeSessionSelectorPanel(dir, (d, pn, ea, mode, resumeId) -> onDirectoryOpened(d, pn, ea, mode, resumeId));
 
         // --- chat UI ---
         choiceMenuPanel = new ChoiceMenuPanel(() -> {
@@ -252,13 +268,14 @@ public class ClaudeSessionTab extends TopComponent
                 () -> {
                     File wd = model.getWorkingDirectory();
                     return wd != null ? wd.getAbsolutePath() : null;
-                });
+                },
+                () -> onSaveAndSwitch("", SessionMode.NEW, null),
+                () -> openSwitchDialog(SessionMode.RESUME_SPECIFIC));
 
         // --- layout ---
         setLayout(new BorderLayout());
-        add(selectorPanel,    BorderLayout.NORTH);
-        add(placeholderLabel, BorderLayout.CENTER);
-        add(statusBar,        BorderLayout.SOUTH);
+        add(selectorPanel, BorderLayout.CENTER);
+        add(statusBar,     BorderLayout.SOUTH);
 
         setIcon(ImageUtilities.loadImage(ICON, true));
         updateDisplayName(dir);
@@ -277,11 +294,18 @@ public class ClaudeSessionTab extends TopComponent
     public static void openNewOrFocus() {
         SwingUtilities.invokeLater(() -> {
             for (TopComponent tc : WindowManager.getDefault().getRegistry().getOpened()) {
-                if (tc instanceof ClaudeSessionTab tab && !tab.isSessionActive()) {
-                    tab.requestActive();
-                    return;
+                if (tc instanceof ClaudeSessionTab tab) {
+                    boolean active = tab.isSessionActive();
+                    LOG.fine("openNewOrFocus: found tab path=" + tab.getWorkingDirectory()
+                            + " isSessionActive=" + active);
+                    if (!active) {
+                        LOG.fine("openNewOrFocus: focusing idle tab");
+                        tab.requestActive();
+                        return;
+                    }
                 }
             }
+            LOG.fine("openNewOrFocus: no idle tab found, opening new tab");
             ClaudeSessionTab tab = new ClaudeSessionTab();
             tab.open();
             tab.requestActive();
@@ -331,16 +355,21 @@ public class ClaudeSessionTab extends TopComponent
         String path        = savedPath != null ? savedPath : pathToRestore;
         String profileName = savedProfileName;
         String extraCliArgs = savedExtraCliArgs;
+        SessionMode sessionMode = savedSessionMode;
+        String resumeSessionId = savedResumeSessionId;
         savedPath        = null;
         pathToRestore    = null;
         savedProfileName = null;
         savedExtraCliArgs = null;
+        savedSessionMode = null;
+        savedResumeSessionId = null;
 
         if (path != null && !path.isBlank()) {
             File dir = new File(path);
             if (dir.isDirectory()) {
+                selectorPanel.lock();
                 WindowManager.getDefault().invokeWhenUIReady(
-                        () -> autoStart(dir, profileName, extraCliArgs));
+                        () -> autoStart(dir, profileName, extraCliArgs, sessionMode, resumeSessionId));
                 return;
             }
         }
@@ -386,6 +415,9 @@ public class ClaudeSessionTab extends TopComponent
         out.writeUTF(dir != null ? dir.getAbsolutePath() : "");
         out.writeUTF(selectorPanel.getSelectedProfileName());
         out.writeUTF(selectorPanel.getExtraCliArgs());
+        // Session mode (added in 0.21)
+        out.writeUTF(ClaudeCodePreferences.getContextMenuSessionMode().name());
+        out.writeUTF("");                      // no specific session to resume
     }
 
     @Override
@@ -401,6 +433,18 @@ public class ClaudeSessionTab extends TopComponent
             savedExtraCliArgs = in.readUTF();
         } catch (java.io.EOFException ignored) {
             savedExtraCliArgs = null;
+        }
+        try {
+            String modeName = in.readUTF();
+            savedSessionMode = modeName.isBlank() ? null : SessionMode.valueOf(modeName);
+        } catch (java.io.EOFException | IllegalArgumentException ignored) {
+            savedSessionMode = null;
+        }
+        try {
+            String resumeId = in.readUTF();
+            savedResumeSessionId = resumeId.isBlank() ? null : resumeId;
+        } catch (java.io.EOFException ignored) {
+            savedResumeSessionId = null;
         }
     }
 
@@ -545,13 +589,20 @@ public class ClaudeSessionTab extends TopComponent
     }
 
     public void autoStart(File dir, String profileName, String extraCliArgs) {
+        autoStart(dir, profileName, extraCliArgs,
+                ClaudeCodePreferences.getContextMenuSessionMode(), null);
+    }
+
+    public void autoStart(File dir, String profileName, String extraCliArgs,
+                          SessionMode mode, String resumeSessionId) {
         if (dir == null || !dir.isDirectory()) return;
         selectorPanel.setPath(dir.getAbsolutePath());
         selectorPanel.setProfile(profileName);
         selectorPanel.preselectForDirectory(dir);
         selectorPanel.setExtraCliArgs(extraCliArgs);
         selectorPanel.lock();
-        startSession(dir, profileName, extraCliArgs != null ? extraCliArgs : "");
+        startSession(dir, profileName, extraCliArgs != null ? extraCliArgs : "",
+                mode != null ? mode : SessionMode.NEW, resumeSessionId);
     }
 
     /**
@@ -580,17 +631,32 @@ public class ClaudeSessionTab extends TopComponent
         return model.getEditMode();
     }
 
+    /**
+     * Returns the name of the currently selected profile.
+     *
+     * @return profile name; never {@code null}
+     */
+    public String getSelectedProfileName() {
+        return selectorPanel.getSelectedProfileName();
+    }
+
     // -------------------------------------------------------------------------
     // Session management
     // -------------------------------------------------------------------------
 
     /** Fired by the selector panel when the user confirms a valid directory. */
-    private void onDirectoryOpened(File dir, String profileName, String extraCliArgs) {
+    private void onDirectoryOpened(File dir, String profileName, String extraCliArgs,
+                                   SessionMode mode, String resumeSessionId) {
         selectorPanel.lock();
-        startSession(dir, profileName, extraCliArgs);
+        startSession(dir, profileName, extraCliArgs, mode, resumeSessionId);
     }
 
     private void startSession(File dir, String profileName, String extraCliArgs) {
+        startSession(dir, profileName, extraCliArgs, SessionMode.NEW, null);
+    }
+
+    private void startSession(File dir, String profileName, String extraCliArgs,
+                               SessionMode mode, String resumeSessionId) {
         updateDisplayName(dir);
         sessionTag = "[" + dir.getName() + "] ";
         JediTermWidget widget = new JediTermWidget(new NetBeansSettingsProvider());
@@ -602,7 +668,7 @@ public class ClaudeSessionTab extends TopComponent
         }
         showChatLayout(widget);
         try {
-            controller.startProcess(dir, profileName, extraCliArgs, widget);
+            controller.startProcess(dir, profileName, extraCliArgs, mode, resumeSessionId, widget);
         } catch (IOException ex) {
             String command = controller.getLastAttemptedCommand();
             String errorMsg = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
@@ -611,7 +677,7 @@ public class ClaudeSessionTab extends TopComponent
     }
 
     private void showChatLayout(JediTermWidget widget) {
-        remove(placeholderLabel);
+        remove(selectorPanel);
         selectorPanel.setVisible(false);
         terminalWidget = widget;
 
@@ -696,8 +762,7 @@ public class ClaudeSessionTab extends TopComponent
             remove(errorPanel);
             errorPanel = null;
         }
-        add(placeholderLabel, BorderLayout.CENTER);
-        selectorPanel.setVisible(true);
+        add(selectorPanel, BorderLayout.CENTER);
         revalidate();
         repaint();
     }
@@ -757,7 +822,7 @@ public class ClaudeSessionTab extends TopComponent
         wrapper.add(Box.createVerticalGlue());
 
         errorPanel = wrapper;
-        remove(placeholderLabel);
+        remove(selectorPanel);
         add(errorPanel, BorderLayout.CENTER);
         revalidate();
         repaint();
@@ -816,8 +881,86 @@ public class ClaudeSessionTab extends TopComponent
         }
     }
 
+    /**
+     * Handles the Save &amp; Switch dialog confirmation.
+     *
+     * <p>Stops the current session (writing a custom-title if name changed),
+     * then either closes the tab or restarts in the same tab with the new mode.
+     *
+     * @param sessionName new name for the current session (written to JSONL)
+     * @param mode        what to do after stopping
+     * @param resumeId    session ID to resume (only used for RESUME_SPECIFIC)
+     */
+    /**
+     * Opens the Save &amp; Switch dialog with the given initial mode pre-selected.
+     *
+     * @param initialMode the session mode to pre-select in the dialog
+     */
+    public void openSwitchDialog(SessionMode initialMode) {
+        File workingDir = model.getWorkingDirectory();
+        if (workingDir == null) return;
+
+        String profileName = selectorPanel.getSelectedProfileName();
+        Path claudeConfigDir = null;
+        if (profileName != null && !io.github.nbclaudecodegui.settings.ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
+            io.github.nbclaudecodegui.settings.ClaudeProfile profile =
+                    io.github.nbclaudecodegui.settings.ClaudeProfileStore.findByName(profileName);
+            if (profile != null) {
+                claudeConfigDir = io.github.nbclaudecodegui.settings.ClaudeProfileStore.resolveConfigDir(
+                        profile, ClaudeCodePreferences.getProfilesDir());
+            }
+        }
+
+        io.github.nbclaudecodegui.model.SavedSession recent =
+                io.github.nbclaudecodegui.process.ClaudeSessionStore.findMostRecent(
+                        workingDir.toPath(), claudeConfigDir);
+        String currentName = recent != null ? recent.displayName() : "";
+        String currentId   = recent != null ? recent.sessionId() : null;
+
+        final ClaudeSessionTab self = this;
+        final Path configDir = claudeConfigDir;
+        java.awt.Frame mainFrame = org.openide.windows.WindowManager.getDefault().getMainWindow();
+        SaveAndSwitchDialog dialog = new SaveAndSwitchDialog(
+                mainFrame,
+                currentName,
+                currentId,
+                workingDir.toPath(),
+                configDir,
+                initialMode,
+                (name, mode, resumeId) ->
+                        SwingUtilities.invokeLater(() -> self.onSaveAndSwitch(name, mode, resumeId))
+        );
+        dialog.setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
+        dialog.setVisible(true);
+    }
+
+    public void onSaveAndSwitch(String sessionName, SessionMode mode, String resumeId) {
+        File dir = model.getWorkingDirectory();
+        String profileName = selectorPanel.getSelectedProfileName();
+        String extraCliArgs = selectorPanel.getExtraCliArgs();
+
+        // Stop and rename
+        controller.stopAndRename(sessionName);
+        cleanupChatLayout();
+
+        if (mode == SessionMode.CLOSE_ONLY) {
+            // Just stop — do nothing more
+            return;
+        }
+
+        // Restart with new mode
+        if (dir != null) {
+            startSession(dir, profileName, extraCliArgs, mode, resumeId);
+        }
+    }
+
     private void stopProcess() {
         controller.stopProcess();
+        cleanupChatLayout();
+    }
+
+    /** Tears down the chat UI layout after the PTY has already been stopped. */
+    private void cleanupChatLayout() {
         if (terminalWidget != null) {
             terminalWidget.close();
             terminalWidget = null;
@@ -837,7 +980,7 @@ public class ClaudeSessionTab extends TopComponent
         }
         selectorPanel.setVisible(true);
         selectorPanel.unlock();
-        add(placeholderLabel, BorderLayout.CENTER);
+        add(selectorPanel, BorderLayout.CENTER);
         statusBar.setVisible(false);
         currentLifecycle = null;
         stateLabel.setText("Ready");

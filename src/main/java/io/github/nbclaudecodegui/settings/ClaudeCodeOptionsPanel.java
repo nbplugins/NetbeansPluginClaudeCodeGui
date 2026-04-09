@@ -64,6 +64,10 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private javax.swing.JCheckBox diffInSessionCheck;
     /** Checkbox to show markdown preview for .md files in diff. */
     private javax.swing.JCheckBox mdPreviewInDiffCheck;
+    /** Checkbox for context-menu session mode (checked = New, unchecked = Continue last). */
+    private javax.swing.JCheckBox startNewSessionCheck;
+    /** Spinner for the maximum number of sessions shown in the session list. */
+    private JSpinner sessionListLimitSpinner;
 
     /** send-key radio buttons: value → button */
     private final Map<String, JRadioButton> sendRadios = new LinkedHashMap<>();
@@ -205,6 +209,24 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         form.add(mdPreviewInDiffCheck, mdGbc);
         row++;
 
+        // --- context-menu session mode ---
+        startNewSessionCheck = new javax.swing.JCheckBox("Start new session when opening with Claude");
+        GridBagConstraints cmGbc = new GridBagConstraints();
+        cmGbc.gridx = 0; cmGbc.gridy = row;
+        cmGbc.gridwidth = 3;
+        cmGbc.anchor = GridBagConstraints.WEST;
+        cmGbc.insets = new Insets(4, 8, 4, 8);
+        form.add(startNewSessionCheck, cmGbc);
+        row++;
+
+        // --- session list limit ---
+        form.add(new JLabel("Session list limit:"), gbc(0, row, false));
+        sessionListLimitSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_SESSION_LIST_LIMIT, 1, 500, 5));
+        sessionListLimitSpinner.setToolTipText("Maximum number of sessions shown in the session list");
+        form.add(sessionListLimitSpinner, gbc(1, row, false));
+        row++;
+
         // spacer
         GridBagConstraints spacer = new GridBagConstraints();
         spacer.gridx = 0; spacer.gridy = row;
@@ -278,6 +300,10 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         diffInSessionCheck.setSelected(
                 ClaudeCodePreferences.isOpenDiffInSeparateTab());
         mdPreviewInDiffCheck.setSelected(ClaudeCodePreferences.isMdPreviewInDiff());
+        startNewSessionCheck.setSelected(
+                ClaudeCodePreferences.getContextMenuSessionMode()
+                        == io.github.nbclaudecodegui.model.SessionMode.NEW);
+        sessionListLimitSpinner.setValue(ClaudeCodePreferences.getSessionListLimit());
 
         String sendVal    = ClaudeCodePreferences.getSendKey();
         String newlineVal = ClaudeCodePreferences.getNewlineKey();
@@ -305,6 +331,11 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         ClaudeCodePreferences.setDebugMode(debugCheckBox.isSelected());
         ClaudeCodePreferences.setOpenDiffInSeparateTab(diffInSessionCheck.isSelected());
         ClaudeCodePreferences.setMdPreviewInDiff(mdPreviewInDiffCheck.isSelected());
+        ClaudeCodePreferences.setContextMenuSessionMode(
+                startNewSessionCheck.isSelected()
+                        ? io.github.nbclaudecodegui.model.SessionMode.NEW
+                        : io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST);
+        ClaudeCodePreferences.setSessionListLimit((Integer) sessionListLimitSpinner.getValue());
         ClaudeCodePreferences.setSendKey(selectedValue(sendRadios));
         ClaudeCodePreferences.setNewlineKey(selectedValue(newlineRadios));
 

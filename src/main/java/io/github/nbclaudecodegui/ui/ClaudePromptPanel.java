@@ -75,6 +75,10 @@ public final class ClaudePromptPanel extends JPanel {
     private final Supplier<List<String>> promptHistorySupplier;
     /** Supplies the current working directory path. */
     private final Supplier<String>       workingDirSupplier;
+    /** Callback for "Start New Session" context menu item; may be {@code null}. */
+    private final Runnable               onStartNewSession;
+    /** Callback for "Switch to Session…" context menu item; may be {@code null}. */
+    private final Runnable               onSwitchSession;
 
     /** Current position in the history list; {@code -1} = newest (empty field). */
     private int historyIndex = -1;
@@ -99,18 +103,26 @@ public final class ClaudePromptPanel extends JPanel {
      *                               (index 0 = most recent); queried on demand
      * @param workingDirSupplier     returns the current working directory path; used for
      *                               the history/favorites popup and file completion
+     * @param onStartNewSession      called when "Start New Session" context menu item is clicked;
+     *                               may be {@code null}
+     * @param onSwitchSession        called when "Switch to Session…" context menu item is clicked;
+     *                               may be {@code null}
      */
     public ClaudePromptPanel(Consumer<String> onSend,
                              Runnable onCancel,
                              Runnable onShiftTab,
                              Supplier<List<String>> promptHistorySupplier,
-                             Supplier<String> workingDirSupplier) {
+                             Supplier<String> workingDirSupplier,
+                             Runnable onStartNewSession,
+                             Runnable onSwitchSession) {
         super(new BorderLayout());
         this.onSend                = onSend;
         this.onCancel              = onCancel;
         this.onShiftTab            = onShiftTab;
         this.promptHistorySupplier = promptHistorySupplier;
         this.workingDirSupplier    = workingDirSupplier;
+        this.onStartNewSession     = onStartNewSession;
+        this.onSwitchSession       = onSwitchSession;
 
         inputArea = new DecoratedTextArea(3, 40, workingDirSupplier);
         inputArea.setLineWrap(true);
@@ -317,11 +329,19 @@ public final class ClaudePromptPanel extends JPanel {
         JMenuItem nextPrompt = new JMenuItem("Next prompt  (Ctrl+\u2193)");
         nextPrompt.addActionListener(e -> navigateHistory(-1));
 
+        JMenuItem startNewItem = new JMenuItem("Start New Session");
+        startNewItem.addActionListener(e -> { if (onStartNewSession != null) onStartNewSession.run(); });
+
+        JMenuItem switchItem = new JMenuItem("Switch to Session\u2026");
+        switchItem.addActionListener(e -> { if (onSwitchSession != null) onSwitchSession.run(); });
+
         menu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
             @Override public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) {
                 List<String> h = promptHistorySupplier.get();
                 prevPrompt.setEnabled(!h.isEmpty() && historyIndex < h.size() - 1);
                 nextPrompt.setEnabled(historyIndex > -1);
+                startNewItem.setEnabled(onStartNewSession != null);
+                switchItem.setEnabled(onSwitchSession != null);
             }
             @Override public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) {}
             @Override public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) {}
@@ -330,6 +350,9 @@ public final class ClaudePromptPanel extends JPanel {
         menu.addSeparator();
         menu.add(prevPrompt);
         menu.add(nextPrompt);
+        menu.addSeparator();
+        menu.add(startNewItem);
+        menu.add(switchItem);
     }
 
     // -------------------------------------------------------------------------

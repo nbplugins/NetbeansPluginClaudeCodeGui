@@ -28,7 +28,7 @@ class ClaudeSessionSelectorPanelTest {
      * happens (avoids project-API calls).
      */
     private static ClaudeSessionSelectorPanel panel() {
-        return new ClaudeSessionSelectorPanel(null, (dir, profile, extra) -> {});
+        return new ClaudeSessionSelectorPanel(null, (dir, profile, extra, mode, resumeId) -> {});
     }
 
     // -------------------------------------------------------------------------
@@ -67,7 +67,7 @@ class ClaudeSessionSelectorPanelTest {
             AtomicReference<File>   capturedDir     = new AtomicReference<>();
             AtomicReference<String> capturedProfile = new AtomicReference<>();
 
-            ClaudeSessionSelectorPanel p = new ClaudeSessionSelectorPanel(null, (dir, profile, extra) -> {
+            ClaudeSessionSelectorPanel p = new ClaudeSessionSelectorPanel(null, (dir, profile, extra, mode, resumeId) -> {
                 capturedDir.set(dir);
                 capturedProfile.set(profile);
             });
@@ -90,7 +90,7 @@ class ClaudeSessionSelectorPanelTest {
     @Test
     void openDoesNotFireForEmptyPath() {
         AtomicReference<File> capturedDir = new AtomicReference<>();
-        ClaudeSessionSelectorPanel p = new ClaudeSessionSelectorPanel(null, (dir, profile, extra) ->
+        ClaudeSessionSelectorPanel p = new ClaudeSessionSelectorPanel(null, (dir, profile, extra, mode, resumeId) ->
                 capturedDir.set(dir));
 
         p.setPath("");
@@ -102,7 +102,7 @@ class ClaudeSessionSelectorPanelTest {
     @Test
     void openDoesNotFireForMissingDir() {
         AtomicReference<File> capturedDir = new AtomicReference<>();
-        ClaudeSessionSelectorPanel p = new ClaudeSessionSelectorPanel(null, (dir, profile, extra) ->
+        ClaudeSessionSelectorPanel p = new ClaudeSessionSelectorPanel(null, (dir, profile, extra, mode, resumeId) ->
                 capturedDir.set(dir));
 
         p.setPath("/this/path/does/not/exist/hopefully-" + System.nanoTime());

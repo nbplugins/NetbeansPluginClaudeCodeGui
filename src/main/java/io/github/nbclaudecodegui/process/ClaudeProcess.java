@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pty4j.PtyProcess;
 import com.pty4j.PtyProcessBuilder;
+import io.github.nbclaudecodegui.model.SessionMode;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.settings.ClaudeProfile;
 import io.github.nbclaudecodegui.settings.ClaudeProfileStore;
@@ -116,6 +117,23 @@ public final class ClaudeProcess {
      * @throws IOException              if the process cannot be launched
      */
     public PtyProcess start(String workingDir, ClaudeProfile profile, String extraCliArgs) throws IOException {
+        return start(workingDir, profile, extraCliArgs, SessionMode.NEW, null);
+    }
+
+    /**
+     * Starts a Claude CLI PTY process with session mode support.
+     *
+     * @param workingDir      absolute path to the session working directory
+     * @param profile         connection profile; {@code null} uses Default behaviour
+     * @param extraCliArgs    extra CLI arguments string (may be blank)
+     * @param mode            how to start: NEW, CONTINUE_LAST, or RESUME_SPECIFIC
+     * @param resumeSessionId session ID to resume (only used when mode is RESUME_SPECIFIC)
+     * @return the started {@link PtyProcess}
+     * @throws IllegalArgumentException if {@code workingDir} is blank
+     * @throws IOException              if the process cannot be launched
+     */
+    public PtyProcess start(String workingDir, ClaudeProfile profile, String extraCliArgs,
+                            SessionMode mode, String resumeSessionId) throws IOException {
         if (workingDir == null || workingDir.isBlank()) {
             throw new IllegalArgumentException("workingDir must not be blank");
         }
@@ -132,7 +150,9 @@ public final class ClaudeProcess {
                 + ", ANTHROPIC_API_KEY=" + (!env.getOrDefault("ANTHROPIC_API_KEY", "").isBlank() ? "SET" : "NOT SET")
                 + ", ANTHROPIC_AUTH_TOKEN=" + (!env.getOrDefault("ANTHROPIC_AUTH_TOKEN", "").isBlank() ? "SET" : "NOT SET")
                 + ", ANTHROPIC_BASE_URL=" + env.getOrDefault("ANTHROPIC_BASE_URL", "(not set)")
-                + ", CLAUDE_CONFIG_DIR=" + env.getOrDefault("CLAUDE_CONFIG_DIR", "(inherited)"));
+                + ", CLAUDE_CONFIG_DIR=" + env.getOrDefault("CLAUDE_CONFIG_DIR", "(inherited)")
+                + ", sessionMode=" + mode
+                + (mode == SessionMode.RESUME_SPECIFIC ? ", resumeId=" + resumeSessionId : ""));
 
         List<String> cmd = new ArrayList<>();
         cmd.add(executable);
@@ -158,6 +178,17 @@ public final class ClaudeProcess {
         if (!extra.isEmpty()) {
             cmd.addAll(extra);
             LOG.info("Extra CLI args appended: " + extra);
+        }
+
+        // Session mode flags
+        if (mode == SessionMode.CONTINUE_LAST) {
+            cmd.add("--continue");
+            LOG.info("Session mode: --continue");
+        } else if (mode == SessionMode.RESUME_SPECIFIC
+                && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            cmd.add("--resume");
+            cmd.add(resumeSessionId);
+            LOG.info("Session mode: --resume " + resumeSessionId);
         }
 
         lastCommand = String.join(" ", cmd);
