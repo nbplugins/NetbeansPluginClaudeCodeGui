@@ -2,6 +2,7 @@ package io.github.nbclaudecodegui.ui;
 
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ChoiceMenuModel.Option;
+import io.github.nbclaudecodegui.ui.common.UiUtils;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -44,8 +45,8 @@ class ChoiceMenuPanelTest {
             assertTrue(panel.getComponentCount() > 0, "panel should have components after show()");
 
             List<String> btnLabels = collectButtonLabels(panel);
-            String yesLabel = FileDiffPermissionPanel.ICON_ACCEPT + " Yes";
-            String noLabel  = FileDiffPermissionPanel.ICON_DECLINE + " No";
+            String yesLabel = UiUtils.ICON_CHECK + " Yes";
+            String noLabel  = UiUtils.ICON_CROSS + " No";
             assertTrue(btnLabels.contains(yesLabel), "should have '" + yesLabel + "' button");
             assertTrue(btnLabels.contains(noLabel),  "should have '" + noLabel + "' button");
         });
@@ -59,7 +60,7 @@ class ChoiceMenuPanelTest {
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
             panel.show(model, answer -> {});
 
-            JButton btn = findButton(panel, FileDiffPermissionPanel.ICON_ACCEPT + " Yes");
+            JButton btn = findButton(panel, UiUtils.ICON_CHECK + " Yes");
             assertNotNull(btn, "Yes button must exist");
             assertEquals(new Color(34, 139, 34), btn.getBackground(), "Yes button should be green");
         });
@@ -73,7 +74,7 @@ class ChoiceMenuPanelTest {
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
             panel.show(model, answer -> {});
 
-            JButton btn = findButton(panel, FileDiffPermissionPanel.ICON_DECLINE + " No");
+            JButton btn = findButton(panel, UiUtils.ICON_CROSS + " No");
             assertNotNull(btn, "No button must exist");
             assertEquals(new Color(178, 34, 34), btn.getBackground(), "No button should be red");
         });
@@ -183,7 +184,7 @@ class ChoiceMenuPanelTest {
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
             panel.show(model, received::add);
 
-            JButton yesBtn = findButton(panel, FileDiffPermissionPanel.ICON_ACCEPT + " Yes");
+            JButton yesBtn = findButton(panel, UiUtils.ICON_CHECK + " Yes");
             assertNotNull(yesBtn, "Yes button must exist");
             yesBtn.doClick();
         });
@@ -199,7 +200,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Go?", List.of(new Option("Yes", "1")), -1);
             panel.show(model, answer -> {});
 
-            JButton btn = findButton(panel, FileDiffPermissionPanel.ICON_ACCEPT + " Yes");
+            JButton btn = findButton(panel, UiUtils.ICON_CHECK + " Yes");
             assertNotNull(btn);
             btn.doClick();
 

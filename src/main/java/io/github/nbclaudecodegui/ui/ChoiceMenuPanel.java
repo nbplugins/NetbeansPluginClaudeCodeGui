@@ -2,6 +2,7 @@ package io.github.nbclaudecodegui.ui;
 
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.ui.common.DecoratedTextField;
+import io.github.nbclaudecodegui.ui.common.UiUtils;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.event.KeyEvent;
@@ -117,23 +118,10 @@ public final class ChoiceMenuPanel extends JPanel {
                 String display = opt.display().trim();
                 String response = opt.response();
                 String label = display.equalsIgnoreCase("Yes")
-                        ? FileDiffPermissionPanel.ICON_ACCEPT + " " + display
-                        : FileDiffPermissionPanel.ICON_DECLINE + " " + display;
+                        ? UiUtils.ICON_CHECK + " " + display
+                        : UiUtils.ICON_CROSS + " " + display;
                 JButton btn = new JButton(label);
-                Color baseColor = display.equalsIgnoreCase("Yes")
-                        ? new Color(34, 139, 34) : new Color(178, 34, 34);
-                Color focusColor = baseColor.brighter();
-                btn.setBackground(baseColor);
-                btn.setForeground(Color.WHITE);
-                btn.setOpaque(true);
-                btn.addFocusListener(new java.awt.event.FocusAdapter() {
-                    @Override public void focusGained(java.awt.event.FocusEvent e) {
-                        btn.setBackground(focusColor);
-                    }
-                    @Override public void focusLost(java.awt.event.FocusEvent e) {
-                        btn.setBackground(baseColor);
-                    }
-                });
+                UiUtils.applyActionStyle(btn, display.equalsIgnoreCase("Yes"));
                 btn.addActionListener(e -> {
                     LOG.info("[ChoiceMenuPanel] yes/no clicked: \"" + display + "\" → \"" + response + "\"");
                     submitAnswer(response);

@@ -1,6 +1,7 @@
 package io.github.nbclaudecodegui.ui;
 
 import io.github.nbclaudecodegui.ui.common.DecoratedTextField;
+import io.github.nbclaudecodegui.ui.common.UiUtils;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.FlowLayout;
@@ -40,14 +41,8 @@ public final class FileDiffPermissionPanel extends JPanel {
     /** Placeholder text shown in the decline reason field when it is empty. */
     static final String REASON_HINT = "Decline reason (Optional)";
 
-    /** \u2713 CHECK MARK — used on confirmation buttons (Accept, Yes) */
-    public static final String ICON_ACCEPT = "\u2713";
-
     /** Double check mark — used on AcceptAll button */
-    private static final String ICON_ACCEPT_ALL = ICON_ACCEPT + ICON_ACCEPT;
-
-    /** \u2717 BALLOT X — used on decline buttons (Decline, No) */
-    public static final String ICON_DECLINE = "\u2717";
+    private static final String ICON_ACCEPT_ALL = UiUtils.ICON_CHECK + UiUtils.ICON_CHECK;
 
     /**
      * Creates the panel.
@@ -72,34 +67,14 @@ public final class FileDiffPermissionPanel extends JPanel {
         acceptAllBtn.setEnabled(onAcceptAll != null);
 
         // Accept button (green)
-        JButton acceptBtn = new JButton(ICON_ACCEPT + " Accept");
+        JButton acceptBtn = new JButton(UiUtils.ICON_CHECK + " Accept");
         acceptBtn.setToolTipText("Accept this change");
-        acceptBtn.setOpaque(true);
-        acceptBtn.setBackground(new Color(34, 139, 34));
-        acceptBtn.setForeground(Color.WHITE);
-        acceptBtn.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override public void focusGained(java.awt.event.FocusEvent e) {
-                acceptBtn.setBackground(new Color(34, 139, 34).brighter());
-            }
-            @Override public void focusLost(java.awt.event.FocusEvent e) {
-                acceptBtn.setBackground(new Color(34, 139, 34));
-            }
-        });
+        UiUtils.applyActionStyle(acceptBtn, true);
 
         // Decline button (red)
-        JButton declineBtn = new JButton(ICON_DECLINE + " Decline");
+        JButton declineBtn = new JButton(UiUtils.ICON_CROSS + " Decline");
         declineBtn.setToolTipText("Decline this change");
-        declineBtn.setOpaque(true);
-        declineBtn.setBackground(new Color(178, 34, 34));
-        declineBtn.setForeground(Color.WHITE);
-        declineBtn.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override public void focusGained(java.awt.event.FocusEvent e) {
-                declineBtn.setBackground(new Color(178, 34, 34).brighter());
-            }
-            @Override public void focusLost(java.awt.event.FocusEvent e) {
-                declineBtn.setBackground(new Color(178, 34, 34));
-            }
-        });
+        UiUtils.applyActionStyle(declineBtn, false);
 
         // Reason field
         DecoratedTextField reasonField = new DecoratedTextField(() -> wdFinal);
