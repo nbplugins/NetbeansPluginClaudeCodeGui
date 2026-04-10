@@ -783,6 +783,61 @@ class FileDropHandlerTest {
     }
 
     // -------------------------------------------------------------------------
+    // Tests: insert at explicit position (DnD caret-save fix)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Verifies that doImport(Transferable, JTextComponent, int) inserts at the
+     * given position, NOT at the text component's current caret position.
+     * This is the core of the DnD caret-save fix: the drag-hover caret movement
+     * must be ignored; insertion must happen where the caret was before the drag.
+     */
+    @Test
+    void dropFileInsertsAtExplicitPositionIgnoringCurrentCaret() throws Exception {
+        File inside = new File(workDir, "file.txt");
+        inside.createNewFile();
+
+        SwingUtilities.invokeAndWait(() -> {
+            area.setText("hello world");
+            // Simulate Swing moving the caret to the drop location (end of text)
+            area.setCaretPosition(11);
+            // Call doImport with insertPos=5 (the saved pre-drag caret position)
+            java.awt.datatransfer.Transferable t = fileListTransferable(List.of(inside));
+            callDoImportAt(handler, t, area, 5);
+        });
+
+        SwingUtilities.invokeAndWait(() -> {
+            String text = area.getText();
+            assertTrue(text.contains("file.txt"), "path must appear in text, got: '" + text + "'");
+            // The path must be inserted inside "hello world", not appended at the end
+            assertTrue(text.startsWith("hello"),
+                    "text must start with 'hello' (insertion at pos 5), got: '" + text + "'");
+            int pathIdx = text.indexOf("file.txt");
+            assertTrue(pathIdx > 0 && pathIdx < text.indexOf("world"),
+                    "path must be inserted between 'hello' and 'world', got: '" + text + "'");
+        });
+    }
+
+    /**
+     * Calls the package-private {@code doImport(Transferable, JTextComponent, int)} via reflection.
+     */
+    private static boolean callDoImportAt(FileDropHandler handler,
+                                          java.awt.datatransfer.Transferable t,
+                                          JTextArea area, int insertPos) {
+        try {
+            java.lang.reflect.Method m = FileDropHandler.class.getDeclaredMethod(
+                    "doImport",
+                    java.awt.datatransfer.Transferable.class,
+                    javax.swing.text.JTextComponent.class,
+                    int.class);
+            m.setAccessible(true);
+            return (boolean) m.invoke(handler, t, area, insertPos);
+        } catch (Exception ex) {
+            throw new RuntimeException("Could not invoke FileDropHandler.doImport(t, tc, pos)", ex);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Tests: Cut/Copy — export delegation to original TransferHandler
     // -------------------------------------------------------------------------
 
@@ -845,7 +900,8 @@ class FileDropHandlerTest {
     }
 
     /**
-     * Calls the package-private {@code doImport(Transferable, JTextComponent)} via reflection.
+     * Calls the package-private {@code doImport(Transferable, JTextComponent, int)} via reflection,
+     * using the current caret position as the insert position.
      */
     private static boolean callDoImport(FileDropHandler handler,
                                         java.awt.datatransfer.Transferable t,
@@ -854,9 +910,10 @@ class FileDropHandlerTest {
             java.lang.reflect.Method m = FileDropHandler.class.getDeclaredMethod(
                     "doImport",
                     java.awt.datatransfer.Transferable.class,
-                    javax.swing.text.JTextComponent.class);
+                    javax.swing.text.JTextComponent.class,
+                    int.class);
             m.setAccessible(true);
-            return (boolean) m.invoke(handler, t, area);
+            return (boolean) m.invoke(handler, t, area, area.getCaretPosition());
         } catch (Exception ex) {
             throw new RuntimeException("Could not invoke FileDropHandler.doImport", ex);
         }

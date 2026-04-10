@@ -54,6 +54,31 @@ public final class TextComponentDecorator {
         dropHandler = new FileDropHandler(wdSupplier, tc.getTransferHandler());
         tc.setTransferHandler(dropHandler);
 
+        // Replace Swing's SwingDropTarget with our own that never calls setDropLocation,
+        // so the caret stays frozen at its original position during the entire drag.
+        tc.setDropTarget(new java.awt.dnd.DropTarget(tc,
+                java.awt.dnd.DnDConstants.ACTION_COPY_OR_MOVE,
+                new java.awt.dnd.DropTargetAdapter() {
+                    @Override
+                    public void dragEnter(java.awt.dnd.DropTargetDragEvent e) {
+                        if (dropHandler.canImportTransferable(e.getTransferable()))
+                            e.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY_OR_MOVE);
+                        else
+                            e.rejectDrag();
+                    }
+                    @Override
+                    public void dragOver(java.awt.dnd.DropTargetDragEvent e) {
+                        if (dropHandler.canImportTransferable(e.getTransferable()))
+                            e.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY_OR_MOVE);
+                        else
+                            e.rejectDrag();
+                    }
+                    @Override
+                    public void drop(java.awt.dnd.DropTargetDropEvent e) {
+                        dropHandler.handleDrop(e, tc);
+                    }
+                }, true));
+
         // 2. @-completion
         AtCompletionPopup.install(tc, wdSupplier);
 

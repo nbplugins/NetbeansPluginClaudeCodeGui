@@ -198,7 +198,20 @@ public final class FileDropHandler extends TransferHandler {
         LOG.fine("importData: component=" + support.getComponent().getClass().getSimpleName());
         Transferable t = support.getTransferable();
         JTextComponent textComponent = findTextComponent(support.getComponent());
-        return doImport(t, textComponent);
+        int insertPos = textComponent != null ? textComponent.getCaretPosition() : 0;
+        return doImport(t, textComponent, insertPos);
+    }
+
+    /**
+     * Called by our custom {@link java.awt.dnd.DropTargetAdapter} in place of the standard
+     * Swing drop pipeline.  Because our adapter never calls {@code setDropLocation}, the caret
+     * stays at the position the user left it — so we can read it here and insert there.
+     */
+    void handleDrop(java.awt.dnd.DropTargetDropEvent dtde, JTextComponent tc) {
+        dtde.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY_OR_MOVE);
+        int insertPos = tc.getCaretPosition();
+        boolean ok = doImport(dtde.getTransferable(), tc, insertPos);
+        dtde.dropComplete(ok);
     }
 
     // -------------------------------------------------------------------------
@@ -223,19 +236,19 @@ public final class FileDropHandler extends TransferHandler {
         boolean hasText  = t.isDataFlavorSupported(DataFlavor.stringFlavor);
         LOG.fine("importFromClipboard: hasFiles=" + hasFiles + " hasImage=" + hasImage + " hasText=" + hasText);
         if (!hasFiles && !hasImage && !hasText) return false;
-        return doImport(t, textComponent);
+        return doImport(t, textComponent, textComponent.getCaretPosition());
     }
 
     // -------------------------------------------------------------------------
     // Shared import logic
     // -------------------------------------------------------------------------
 
-    private boolean doImport(Transferable t, JTextComponent textComponent) {
+    private boolean doImport(Transferable t, JTextComponent textComponent, int insertPos) {
         try {
             Node[] nodes = extractNodes(t);
             if (nodes != null && nodes.length > 0) {
                 LOG.fine("doImport: nodes branch, count=" + nodes.length);
-                return importNodes(nodes, textComponent);
+                return importNodes(nodes, textComponent, insertPos);
             }
             if (t.isDataFlavorSupported(DataFlavor.imageFlavor)) {
                 Image img = (Image) t.getTransferData(DataFlavor.imageFlavor);
@@ -243,7 +256,7 @@ public final class FileDropHandler extends TransferHandler {
                     LOG.fine("doImport: image branch");
                     File tmp = writeTempPng(img);
                     if (textComponent != null) {
-                        insertAtCaret(textComponent, "@" + tmp.getAbsolutePath());
+                        insertAtCaret(textComponent, "@" + tmp.getAbsolutePath(), insertPos);
                     }
                     return true;
                 }
@@ -265,14 +278,14 @@ public final class FileDropHandler extends TransferHandler {
                 }
 
                 if (paths.length() > 0 && textComponent != null) {
-                    insertAtCaret(textComponent, paths.toString());
+                    insertAtCaret(textComponent, paths.toString(), insertPos);
                 }
                 return true;
             }
             if (t.isDataFlavorSupported(DataFlavor.stringFlavor)) {
                 LOG.fine("doImport: string branch");
                 String s = (String) t.getTransferData(DataFlavor.stringFlavor);
-                if (s != null && textComponent != null) { insertAtCaret(textComponent, s); return true; }
+                if (s != null && textComponent != null) { insertAtCaret(textComponent, s, insertPos); return true; }
             }
         } catch (Exception ex) {
             // Import failed; fall through to return false
@@ -297,6 +310,11 @@ public final class FileDropHandler extends TransferHandler {
      * </ul>
      */
     boolean importNodes(Node[] nodes, JTextComponent textComponent) {
+        int pos = textComponent != null ? textComponent.getCaretPosition() : 0;
+        return importNodes(nodes, textComponent, pos);
+    }
+
+    private boolean importNodes(Node[] nodes, JTextComponent textComponent, int insertPos) {
         LOG.fine("importNodes: entry, count=" + (nodes == null ? 0 : nodes.length));
         if (nodes == null || nodes.length == 0) return false;
         String wdStr = workingDirSupplier.get();
@@ -393,7 +411,7 @@ public final class FileDropHandler extends TransferHandler {
         }
 
         if (inlineText.length() > 0 && textComponent != null) {
-            insertAtCaret(textComponent, inlineText.toString());
+            insertAtCaret(textComponent, inlineText.toString(), insertPos);
         }
         LOG.fine("importNodes: returning " + (inlineText.length() > 0) + ", text='" + inlineText + "'");
         return inlineText.length() > 0;
@@ -438,9 +456,8 @@ public final class FileDropHandler extends TransferHandler {
         return tmp;
     }
 
-    private static void insertAtCaret(JTextComponent textComponent, String text) {
+    private static void insertAtCaret(JTextComponent textComponent, String text, int pos) {
         javax.swing.SwingUtilities.invokeLater(() -> {
-            int pos = textComponent.getCaretPosition();
             try {
                 String before = textComponent.getText(0, pos);
                 String toInsert = (!before.isEmpty() && !before.endsWith(" ") && !before.endsWith("\n"))
