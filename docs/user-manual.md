@@ -574,7 +574,11 @@ A custom name replaces the auto-generated name in all session lists.
 
 ### Session persistence across IDE restarts
 
-When you restart the IDE, the plugin automatically restores any session tabs that were open and reopens them with the same working directory, profile, and extra args. The session mode used on restore is determined by the **Start new session when opening with Claude** setting (as it was when the IDE was last closed).
+When you restart the IDE, the plugin automatically restores any session tabs that were open and reopens them with the same working directory, profile, and extra args.
+
+The session mode used on restore depends on how the session was last opened:
+- If the session was opened with **Resume specific** — the same specific session is resumed again (the saved session ID is restored).
+- Otherwise (**New session** or **Continue last**) — the mode is determined by the **Start new session when opening with Claude** setting at the time of restart.
 
 ---
 

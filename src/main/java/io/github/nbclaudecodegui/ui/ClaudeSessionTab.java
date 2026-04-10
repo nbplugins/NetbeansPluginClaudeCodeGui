@@ -130,11 +130,11 @@ public class ClaudeSessionTab extends TopComponent
     /** Extra CLI args restored from serialized state after an IDE restart. */
     private String savedExtraCliArgs;
 
-    /** Session mode restored from serialized state; {@code null} = default from preferences. */
-    private SessionMode savedSessionMode;
-
     /** Resume session ID restored from serialized state; {@code null} if not applicable. */
     private String savedResumeSessionId;
+
+    /** Resume session ID actually used when the current session was started. */
+    private String activeResumeSessionId;
 
     // -------------------------------------------------------------------------
     // MVC
@@ -226,7 +226,7 @@ public class ClaudeSessionTab extends TopComponent
         versionLabel.setToolTipText("Claude CLI version");
 
         stopButton = new JButton("\u23fb"); // ⏻ power symbol
-        stopButton.setToolTipText("Stop session");
+        stopButton.setToolTipText("Close session");
         stopButton.setMargin(new Insets(0, 4, 0, 4));
         stopButton.addActionListener(e -> openSwitchDialog(SessionMode.CLOSE_ONLY));
 
@@ -355,13 +355,11 @@ public class ClaudeSessionTab extends TopComponent
         String path        = savedPath != null ? savedPath : pathToRestore;
         String profileName = savedProfileName;
         String extraCliArgs = savedExtraCliArgs;
-        SessionMode sessionMode = savedSessionMode;
         String resumeSessionId = savedResumeSessionId;
         savedPath        = null;
         pathToRestore    = null;
         savedProfileName = null;
         savedExtraCliArgs = null;
-        savedSessionMode = null;
         savedResumeSessionId = null;
 
         if (path != null && !path.isBlank()) {
@@ -369,7 +367,9 @@ public class ClaudeSessionTab extends TopComponent
             if (dir.isDirectory()) {
                 selectorPanel.lock();
                 WindowManager.getDefault().invokeWhenUIReady(
-                        () -> autoStart(dir, profileName, extraCliArgs, sessionMode, resumeSessionId));
+                        resumeSessionId != null
+                            ? () -> autoStart(dir, profileName, extraCliArgs, SessionMode.RESUME_SPECIFIC, resumeSessionId)
+                            : () -> autoStart(dir, profileName, extraCliArgs));
                 return;
             }
         }
@@ -415,9 +415,8 @@ public class ClaudeSessionTab extends TopComponent
         out.writeUTF(dir != null ? dir.getAbsolutePath() : "");
         out.writeUTF(selectorPanel.getSelectedProfileName());
         out.writeUTF(selectorPanel.getExtraCliArgs());
-        // Session mode (added in 0.21)
-        out.writeUTF(ClaudeCodePreferences.getContextMenuSessionMode().name());
-        out.writeUTF("");                      // no specific session to resume
+        // Only resume ID is saved; on restore, global preference determines mode unless RESUME_SPECIFIC
+        out.writeUTF(activeResumeSessionId != null ? activeResumeSessionId : "");
     }
 
     @Override
@@ -433,12 +432,6 @@ public class ClaudeSessionTab extends TopComponent
             savedExtraCliArgs = in.readUTF();
         } catch (java.io.EOFException ignored) {
             savedExtraCliArgs = null;
-        }
-        try {
-            String modeName = in.readUTF();
-            savedSessionMode = modeName.isBlank() ? null : SessionMode.valueOf(modeName);
-        } catch (java.io.EOFException | IllegalArgumentException ignored) {
-            savedSessionMode = null;
         }
         try {
             String resumeId = in.readUTF();
@@ -657,6 +650,7 @@ public class ClaudeSessionTab extends TopComponent
 
     private void startSession(File dir, String profileName, String extraCliArgs,
                                SessionMode mode, String resumeSessionId) {
+        this.activeResumeSessionId = resumeSessionId;
         updateDisplayName(dir);
         sessionTag = "[" + dir.getName() + "] ";
         JediTermWidget widget = new JediTermWidget(new NetBeansSettingsProvider());
