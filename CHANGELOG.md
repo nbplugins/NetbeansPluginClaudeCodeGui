@@ -1,3 +1,4 @@
+- Fixed Accept/Decline and Yes/No button colors to respect the IDE Look and Feel theme (dark themes no longer show clashing hardcoded colors)
 - Added session management when opening a session from the toolbar and when closing a tab via the Close button
 - Added configurable session mode: choose to resume the last session or start a new one
 
