@@ -534,6 +534,8 @@ Fields:
 
 Click **Open** to apply the settings and open the session. When "Resume specific" is selected, you can also double-click a row in the session table to open that session immediately.
 
+![Session selector panel (Resume specific mode)](screenshots/session-selector.png)
+
 ### Closing and switching sessions
 
 While a session is running, you can close it and, optionally, open a different one.
@@ -546,10 +548,14 @@ While a session is running, you can close it and, optionally, open a different o
 - **Mode panel** — choose what happens next: **Close only** (just close, don't open another session) / New session / Continue last / Resume specific. For Resume specific, a session table is shown — see [Session selector panel](#session-selector-panel) for details.
 - Click **OK** to close (and optionally rename) the session and open the next one as chosen. When "Resume specific" is selected, you can also double-click a row in the session table to confirm immediately.
 
+![Save & Switch dialog](screenshots/save-and-switch.png)
+
 **Context menu in the input area** (right-click, available only during an active session) provides two quick actions:
 
 - **Start New Session** — immediately closes the current session and opens a fresh one (no rename, no dialog).
 - **Switch to Session…** — opens Save & Switch pre-selecting "Resume specific".
+
+![Input area context menu](screenshots/session-context-menu.png)
 
 > **Note on `/clear`:** The `/clear` command clears Claude's context within the current session — after that, the previous conversation context is permanently gone and cannot be resumed. To pause your current work and switch to another task temporarily, use **Save & Switch → New session** instead. The original session will remain intact and can be resumed later.
 
