@@ -3,6 +3,7 @@ package io.github.nbclaudecodegui.ui;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.ui.common.AtPathHighlighter;
 import io.github.nbclaudecodegui.ui.common.DecoratedTextArea;
+import io.github.nbclaudecodegui.ui.common.UiUtils;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -134,8 +135,8 @@ public final class ClaudePromptPanel extends JPanel {
         // Install @-path highlighter (DecoratedTextArea implements RangeHighlightable)
         pathHighlighter = AtPathHighlighter.install(inputArea);
 
-        sendButton   = new JButton("<html><font color='#228B22'>" + ICON_SEND   + "</font> Send</html>");
-        cancelButton = new JButton("<html><font color='#B22222'>" + ICON_CANCEL + "</font> Cancel</html>");
+        sendButton   = new JButton("<html><font color='" + UiUtils.toHex(UiUtils.getPositiveColor()) + "'>" + ICON_SEND   + "</font> Send</html>");
+        cancelButton = new JButton("<html><font color='" + UiUtils.toHex(UiUtils.getNegativeColor()) + "'>" + ICON_CANCEL + "</font> Cancel</html>");
         sendButton.setEnabled(false);
         cancelButton.setEnabled(false);
         sendButton.addActionListener(e -> doSend());
@@ -151,7 +152,7 @@ public final class ClaudePromptPanel extends JPanel {
         buttonCol.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
 
         JButton historyButton   = new JButton("<html>" + ICON_HISTORY + " History</html>");
-        JButton favoritesButton = new JButton("<html><font color='#CC6600'>" + ICON_FAVORITES + "</font> Favorites</html>");
+        JButton favoritesButton = new JButton("<html><font color='" + UiUtils.toHex(UiUtils.getWarningColor()) + "'>" + ICON_FAVORITES + "</font> Favorites</html>");
         historyButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         favoritesButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         historyButton.setToolTipText("Browse prompt history");
