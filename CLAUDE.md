@@ -65,7 +65,7 @@ A NetBeans IDE plugin that embeds Claude Code CLI as a PTY-based terminal sessio
 
 ### Process startup
 
-`ClaudeProcess.start(workingDir)`:
+`ClaudeProcess.start(workingDir, profile, extraCliArgs, mode, resumeSessionId)`:
 1. Looks up `ClaudeCodeStatusService` → gets the MCP SSE server port (default **28991**, configurable in Tools → Options).
 2. **Merges** (not overwrites) `{workingDir}/.claude/settings.local.json` — only the plugin's own keys are added/updated; all other keys are left untouched:
    ```json
@@ -75,8 +75,9 @@ A NetBeans IDE plugin that embeds Claude Code CLI as a PTY-based terminal sessio
    }
    ```
    On session stop, the plugin removes its own keys; if the file becomes empty it is deleted.
-3. Launches `claude` (no `--print`, `TERM=xterm-256color`) via `pty4j` `PtyProcessBuilder`.
-4. `PtyTtyConnector` bridges the PTY master to JediTerm's `TtyConnector`. The full Claude TUI renders natively.
+3. Appends session flags based on `SessionMode`: `--continue` for CONTINUE_LAST, `--resume <id>` for RESUME_SPECIFIC, nothing for NEW.
+4. Launches `claude` (no `--print`, `TERM=xterm-256color`) via `pty4j` `PtyProcessBuilder`.
+5. `PtyTtyConnector` bridges the PTY master to JediTerm's `TtyConnector`. The full Claude TUI renders natively.
 
 `MCPSseServer` (Jetty) starts at IDE startup (`ClaudeCodeInstaller`) and is shared across all sessions.
 
@@ -107,18 +108,18 @@ The plugin follows an MVC structure for session management:
 
 | Package | Responsibility |
 |---------|---------------|
-| `model/` | `ClaudeSessionModel` — session state container, `SessionLifecycle` enum, `EDIT_MODE_REGISTRY` (cross-thread), listener dispatch on EDT; `ChoiceMenuModel` — interactive-prompt data; `PromptHistoryStore`, `PromptFavoritesStore`, `HistoryEntry`, `FavoriteEntry` — persistent history/favorites |
-| `controller/` | `ClaudeSessionController` — PTY process lifecycle, connector wiring, screen polling, model/edit-mode switching, `parseModelDiscovery` |
-| `process/` | `ClaudeProcess` — PTY process start/stop/version + `settings.local.json` merge/cleanup; `PtyTtyConnector` — PTY↔JediTerm bridge; `ScreenContentDetector` — screen-poll analysis; `StreamJsonParser` — lightweight NDJSON parser |
-| `ui/` | `ClaudeSessionTab` — one TC per session; `ClaudePromptPanel` — passive View, implements `ClaudeSessionModelListener`; `ChoiceMenuPanel` — interactive choice UI; `FileDiffTab` + `FileDiffPermissionPanel` — diff viewer with Accept/Reject/Cancel; `MarkdownRenderer` — markdown→HTML; `HistoryDialog`, `FavoritesDialog`, `FavoritesPanel`, `AssignShortcutDialog` — history/favorites UI |
+| `model/` | `ClaudeSessionModel` — session state container, `SessionLifecycle` enum, `EDIT_MODE_REGISTRY` (cross-thread), listener dispatch on EDT; `ChoiceMenuModel` — interactive-prompt data; `PromptHistoryStore`, `PromptFavoritesStore`, `HistoryEntry`, `FavoriteEntry` — persistent history/favorites; `SessionMode` — NEW / CONTINUE_LAST / RESUME_SPECIFIC / CLOSE_ONLY; `SavedSession` — record (sessionId, createdAt, lastAt, slug, customTitle, firstPrompt) |
+| `controller/` | `ClaudeSessionController` — PTY process lifecycle, connector wiring, screen polling, model/edit-mode switching, `parseModelDiscovery`; `stopAndRename(name)` — stops PTY then writes custom-title entry to JSONL |
+| `process/` | `ClaudeProcess` — PTY process start/stop/version + `settings.local.json` merge/cleanup; `PtyTtyConnector` — PTY↔JediTerm bridge; `ScreenContentDetector` — screen-poll analysis; `StreamJsonParser` — lightweight NDJSON parser; `ClaudeSessionStore` — reads/writes Claude session JSONL files (`~/.claude/projects/<hash>/`): list, rename, delete |
+| `ui/` | `ClaudeSessionTab` — one TC per session; `ClaudePromptPanel` — passive View, implements `ClaudeSessionModelListener`; `ChoiceMenuPanel` — interactive choice UI; `FileDiffTab` + `FileDiffPermissionPanel` — diff viewer with Accept/Reject/Cancel; `MarkdownRenderer` — markdown→HTML; `HistoryDialog`, `FavoritesDialog`, `FavoritesPanel`, `AssignShortcutDialog` — history/favorites UI; `SaveAndSwitchDialog` — modal for stop/rename/switch session; `SessionModePanel` — reusable radio-button panel for session mode + session table; `ClaudeSessionSelectorPanel` — directory/profile selector with integrated `SessionModePanel` |
 | `ui/common/` | Shared input components: `AtCompletionPopup` — @-triggered path popup; `AtPathHighlighter` — blue token highlight; `FileDropHandler` — DnD + Ctrl+V → @path insertion; `ShortcutMatcher` — key→shortcut match with KEY_TYPED suppression; `TextComponentDecorator` — wires all the above; `DecoratedTextArea/TextField`, `TextContextMenu`, `RangeHighlightable` |
-| `settings/` | `ClaudeCodePreferences` — NbPreferences wrapper; `ClaudeCodeOptionsPanelController` / `ClaudeCodeOptionsPanel` — Tools→Options (General + Profiles tabs); `ClaudeProfile`, `ClaudeProfileStore` — named profiles with isolated `CLAUDE_CONFIG_DIR`, auth, proxy, extra env vars; `ClaudeProjectProperties` — per-project profile assignment |
+| `settings/` | `ClaudeCodePreferences` — NbPreferences wrapper (keys: `contextMenuSessionMode` default CONTINUE_LAST, `sessionListLimit` default 30); `ClaudeCodeOptionsPanelController` / `ClaudeCodeOptionsPanel` — Tools→Options (General + Profiles tabs); `ClaudeProfile`, `ClaudeProfileStore` — named profiles with isolated `CLAUDE_CONFIG_DIR`, auth, proxy, extra env vars; `ClaudeProjectProperties` — per-project profile assignment |
 | `actions/` | `ClaudeCodeAction` — toolbar button; `OpenWithClaudeAction` — project node context menu; `PromptFavoriteAction` — dynamically registered action per favorite for Keymap API |
 | `io.github.nbclaudecodegui.mcp` | `MCPSseServer` — Jetty `/sse` `/messages` `/hook`; `NetBeansMCPHandler` — MCP dispatcher + PreToolUse hook; `tools/` — `OpenDiff`, `PermissionPromptTool`, `DiffTabTracker`, `GetDiagnostics`, `GetOpenEditors`, `GetCurrentSelection`, `OpenFile` |
 | `org.openbeans.claude.netbeans` | Legacy classes: `ClaudeCodeStatusService`, `ClaudeCodeStatusLineElement`, `EditorUtils`, `NbUtils`; `tools/` — `AsyncHandler`, `AsyncResponse`, `GetWorkspaceFolders`, `CheckDocumentDirty`, `SaveDocument`, `CloseTab`, `CloseAllDiffTabs` |
 
 ### Session lifecycle
-1. User clicks toolbar → `ClaudeSessionTab` opens; user picks a directory → `ClaudePromptPanel.startProcess()` creates a `JediTermWidget`, then `ClaudeSessionController.startProcess()` merges `settings.local.json` and launches the PTY.
+1. User clicks toolbar → `ClaudeSessionTab` opens; user picks a directory and session mode in `ClaudeSessionSelectorPanel` → `ClaudeSessionController.startProcess()` merges `settings.local.json` and launches the PTY.
 2. PTY output renders in JediTerm; `ScreenContentDetector` (screen-poll timer) detects interactive choice menus → `ClaudeSessionModel.setActiveChoiceMenu()` → `ClaudePromptPanel.onChoiceMenuChanged()` shows `ChoiceMenuPanel`.
 3. Claude connects to `GET /sse`; subsequent tool calls arrive as `POST /messages`; file edits trigger `POST /hook`.
 4. Each session = isolated PTY process; closing window confirms if the process is running.
@@ -131,6 +132,46 @@ detectInputPromptReady() = true → READY   (one-shot, from STARTING only)
 sendPrompt() / discoverModels() → WORKING
 onClaudeIdle()                  → READY
 ```
+
+### Session modes
+
+`SessionMode` controls which CLI flags are appended when launching `claude`:
+
+| Mode | CLI flag | When used |
+|------|----------|-----------|
+| `NEW` | _(none)_ | Start fresh conversation |
+| `CONTINUE_LAST` | `--continue` | Resume most recent session |
+| `RESUME_SPECIFIC` | `--resume <sessionId>` | Resume a specific saved session |
+| `CLOSE_ONLY` | _(stop, no restart)_ | `SaveAndSwitchDialog` stop-only option |
+
+### Tab open/close behavior
+
+**Opening a session:**
+- **Toolbar button** (`ClaudeCodeAction`) → finds an idle `ClaudeSessionTab` and focuses it, or creates a new empty tab.
+- **Project context menu** (`OpenWithClaudeAction`) → finds an existing session tab for that directory (focuses it), or creates a new tab and calls `autoStart(dir, profileName)` with the mode from `contextMenuSessionMode` preference.
+- **IDE restart** → `readExternal` restores path / profile / extraCliArgs / sessionMode / resumeSessionId → `componentOpened` calls `autoStart` with those values.
+- **User confirms selector panel** → `ClaudeSessionSelectorPanel` fires `OpenListener.onOpen(dir, profileName, extraCliArgs, mode, resumeId)` → `ClaudeSessionTab.startSession()`.
+
+**Stopping / switching a session:**
+- **Stop button (⏻)** in status bar → `openSwitchDialog(SessionMode.CLOSE_ONLY)` — opens `SaveAndSwitchDialog` pre-selecting CLOSE_ONLY; user optionally renames session, then either stops or switches to a new mode.
+- **"New session" button** in prompt panel → `onSaveAndSwitch("", SessionMode.NEW, null)` directly.
+- **"Resume session" button** in prompt panel → `openSwitchDialog(SessionMode.RESUME_SPECIFIC)`.
+- **Tab × close** → `componentClosed()` saves `pathToRestore` and calls `stopProcess()`.
+- **`onSaveAndSwitch(name, mode, resumeId)`**: calls `controller.stopAndRename(name)` (stops PTY, appends custom-title to JSONL if name non-empty), then starts a new session with the chosen mode.
+
+### Session persistence (JSONL)
+
+Claude Code stores sessions as JSONL files:
+```
+~/.claude/projects/<hash>/<session-id>.jsonl
+```
+Hash = absolute working-dir path with every `/` replaced by `-`.
+
+`ClaudeSessionStore` operations:
+- **`listSessions(workingDir, claudeConfigDir, limit)`** — two-phase read for performance: sort all JSONL files by `mtime` descending, take top candidates, parse only those. Results sorted by `lastAt` descending. Sessions with no timestamps excluded.
+- **`renameSession()`** — appends a `{"type":"custom-title","customTitle":"...","sessionId":"...","timestamp":"..."}` entry to the JSONL file.
+- **`deleteSession()`** — removes the JSONL file.
+- **`SavedSession.displayName()`** — returns `customTitle` if set, otherwise `slug`, otherwise `sessionId`.
 
 ### File-change permission flow
 Claude Code can ask permission before editing files via two paths, both using `FileDiffTab` + `PermissionPanel`:
@@ -145,6 +186,13 @@ Both paths show the same UI: `[✓ Accept] [✗ Reject] [Reject reason (Optional
 - **× (close tab)** — treated as Reject (hook returns "ask", MCP returns deny)
 
 After any action the originating `ClaudeSessionTab` is re-activated automatically.
+
+### Settings (Tools → Options → Claude Code → General)
+
+| Setting | Preference key | Default | Description |
+|---------|---------------|---------|-------------|
+| "Start new session when opening with Claude" checkbox | `contextMenuSessionMode` | `CONTINUE_LAST` | Checked → `SessionMode.NEW`; unchecked → `SessionMode.CONTINUE_LAST`. Controls the mode used by the toolbar button and project context menu. |
+| "Session list limit" spinner (1–500) | `sessionListLimit` | 30 | Max number of past sessions shown in the resume list. |
 
 ### Registration
 `layer.xml` registers the Options category (position 1500) and toolbar action. Icon PNGs are generated at build time from `cc-gui-icon.svg` via the Groovy script in `pom.xml` using Apache Batik.

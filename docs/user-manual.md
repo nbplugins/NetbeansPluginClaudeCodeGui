@@ -16,8 +16,9 @@
 10. [File-Change Permissions (Diff Panel)](#10-file-change-permissions-diff-panel)
 11. [Settings (Tools → Options → Claude Code)](#11-settings)
 12. [Profiles](#12-profiles)
-13. [IDE Tools (MCP)](#13-ide-tools-mcp)
-14. [Troubleshooting](#14-troubleshooting)
+13. [Managing Sessions](#13-managing-sessions)
+14. [IDE Tools (MCP)](#14-ide-tools-mcp)
+15. [Troubleshooting](#15-troubleshooting)
 
 
 ---
@@ -116,6 +117,8 @@ If the states appear out of sync:
 | Cut / Copy / Paste / Select All / Clear | Standard text editing actions |
 | **Add to Favorites** | Saves the current input text as a project favorite (active only when the input is non-empty and a working directory is set) |
 | **Favorites...** | Opens the Favorites dialog |
+| **Start New Session** | Immediately closes the current session and opens a fresh one (available only during an active session) |
+| **Switch to Session…** | Opens the Save & Switch dialog pre-selecting "Resume specific" (available only during an active session) |
 
 ---
 
@@ -341,6 +344,8 @@ Open **Tools → Options → Claude Code** in NetBeans.
 | Debug mode | Off | Enables verbose logging of all Claude I/O to the NetBeans log file and the Output window. |
 | Open diff in a separate tab | Off | Opens the diff panel in a new IDE tab instead of embedding it in the session tab. |
 | Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
+| Start new session when opening with Claude | Off (Continue last) | Checked → always start a **New session** when opening with the project context menu or when NetBeans restores a closed session tab on restart. Unchecked → **Continue last**. |
+| Session list limit | 30 | Maximum number of past sessions shown in the session selector table. |
 
 ### Favorites tab
 
@@ -492,13 +497,88 @@ If the assigned profile no longer exists, the plugin falls back to the Default p
 
 #### Temporary profile for one session
 
-Click the **Claude Code** button in the toolbar to open the session selector. In the selector bar, choose a project or a working directory and select a profile from the **Profile** combo, then click **Open**. The selected profile is used for that session only and does not affect project settings.
-
-The **Extra args** field is pre-filled with the selected profile's extra CLI arguments. You can edit it to add or override arguments for this session only — the change does not affect the profile.
+Click the **Claude Code** button in the toolbar to open the session selector. Choose a project or a working directory, select a profile from the **Profile** combo, and click **Open**. The selected profile is used for that session only and does not affect project settings. See [Managing Sessions](#13-managing-sessions) for full details of the session selector panel.
 
 ---
 
-## 13. IDE Tools (MCP)
+## 13. Managing Sessions
+
+Sessions let you save your current conversation with Claude, switch to a different task, and come back to the saved session later. For example: you are working on a refactor with Claude, need to quickly fix an unrelated bug, then want to return to the refactor — sessions make this seamless.
+
+### Session modes
+
+Claude Code remembers your past conversations as **sessions**. The **session mode** determines which conversation is loaded — a new empty one, the most recent saved one, or a specific one you choose from a list.
+
+| Mode | When to use |
+|------|-------------|
+| **New session** | Start a fresh conversation |
+| **Continue last** | Resume the most recent session for this working directory |
+| **Resume specific** | Return to a specific past session chosen from a list |
+
+**Project context menu** (right-click → Open with Claude Code) — the mode is fixed by the **Start new session when opening with Claude** setting: checked = New session, unchecked = Continue last. Resume specific is not available from the context menu.
+
+**Toolbar button** — you pick the mode explicitly in the session selector panel before opening.
+
+### Session selector panel
+
+The session selector panel is shown in a session tab opened via the **Claude Code toolbar button**. It is not shown when opening via the project context menu (the session starts immediately in that case).
+
+Fields:
+
+- **Project** — combo listing open NetBeans projects; selecting one fills the path automatically.
+- **Path** — editable combo with recently used paths + **Browse** button to pick a directory.
+- **Profile** — selects which API key/proxy profile to use (see [Profiles](#12-profiles)).
+- **Extra args** — additional CLI flags for this session only. Pre-filled from the selected profile's extra CLI arguments; editable here without affecting the profile.
+- **Mode** — radio buttons: New session / Continue last / Resume specific.
+- **Session table** (visible only when "Resume specific" is selected) — lists past sessions for the chosen working directory, columns: **Date/Time**, **Name**, **First Prompt**. Click a row to select it, then click **Open**. Use the **Rename** button to give a session a custom title. The list is loaded when you switch to "Resume specific" mode and reloads automatically when you change the working directory or profile. The number of sessions shown is limited by the **Session list limit** setting (default: 30); increasing the limit may slow down loading.
+
+Click **Open** to apply the settings and open the session. When "Resume specific" is selected, you can also double-click a row in the session table to open that session immediately.
+
+### Closing and switching sessions
+
+While a session is running, you can close it and, optionally, open a different one.
+
+**Closing the tab (× on the tab header)** — closes the session immediately without any confirmation. The conversation is automatically saved by Claude Code and can be resumed later using "Resume specific" mode.
+
+**Close button (⏻) in the status bar** → opens the **Save & Switch** dialog:
+
+- **Session name field** — pre-filled with the current session name. Giving a session a descriptive name makes it easier to find it later in the session list when using "Resume specific".
+- **Mode panel** — choose what happens next: **Close only** (just close, don't open another session) / New session / Continue last / Resume specific. For Resume specific, a session table is shown — see [Session selector panel](#session-selector-panel) for details.
+- Click **OK** to close (and optionally rename) the session and open the next one as chosen. When "Resume specific" is selected, you can also double-click a row in the session table to confirm immediately.
+
+**Context menu in the input area** (right-click, available only during an active session) provides two quick actions:
+
+- **Start New Session** — immediately closes the current session and opens a fresh one (no rename, no dialog).
+- **Switch to Session…** — opens Save & Switch pre-selecting "Resume specific".
+
+> **Note on `/clear`:** The `/clear` command clears Claude's context within the current session — after that, the previous conversation context is permanently gone and cannot be resumed. To pause your current work and switch to another task temporarily, use **Save & Switch → New session** instead. The original session will remain intact and can be resumed later.
+
+**When to use what:**
+
+| Situation | How |
+|-----------|-----|
+| Save current session and start a fresh one (can return later) | **Via ⏻:** optionally fill in a session name → New session → OK<br>**Via context menu:** right-click input area → Start New Session (no rename option) |
+| Start fresh without being able to return to current context | Type `/clear` in the input area and send it |
+| Switch to a specific past session | ⏻ → Resume specific → pick session → OK (or double-click the row)<br>or: right-click input area → Switch to Session… → pick session |
+| Close without opening another session | × on the tab<br>or: ⏻ → Close only → OK<br>or: ⏻ → fill in a session name → Close only → OK |
+
+### Renaming a session
+
+Sessions can be renamed in three places:
+
+1. **Session selector table** — select a row and click **Rename**.
+2. **Save & Switch dialog → session table** (when "Resume specific" is selected) — select a row and click **Rename**.
+3. **Save & Switch dialog → Session name field** — renames the currently running session when you close it.
+
+A custom name replaces the auto-generated name in all session lists.
+
+### Session persistence across IDE restarts
+
+When you restart the IDE, the plugin automatically restores any session tabs that were open and reopens them with the same working directory, profile, and extra args. The session mode used on restore is determined by the **Start new session when opening with Claude** setting (as it was when the IDE was last closed).
+
+---
+
+## 14. IDE Tools (MCP)
 
 The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protocol) server that runs in the background. These tools give Claude real-time access to your IDE state — open projects, open files, current selection, diagnostics — so it can give more relevant answers and take actions directly in the editor.
 
@@ -548,7 +628,7 @@ If Claude says a tool is unavailable (e.g. "I don't have access to `getWorkspace
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 ### Enable debug mode
 Go to **Tools → Options → Claude Code → General** and check **Debug mode**. This writes detailed logs of all Claude I/O (PTY bytes, MCP messages, hook calls) to the NetBeans log file.

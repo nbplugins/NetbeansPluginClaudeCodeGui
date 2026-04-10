@@ -557,30 +557,28 @@ Extra environment variables
 
 ---
 
-### Stage 21 — Saved sessions: resume, new, switch (planned)
+### Stage 21 — Saved sessions: resume, new, switch ✅ (v0.21.x-SNAPSHOT)
 
 **Goal:** give users full control over Claude Code sessions — including resuming a previous conversation, starting fresh, and switching between saved sessions within the same project.
 
-**Background:** Claude Code CLI supports `--resume <session-id>` to continue a previous conversation and `--continue` to continue the most recent one. Session IDs are written to `~/.claude/projects/<hashed-path>/` as JSONL files.
-
-**Features:**
-
-- **Auto-resume** — when re-opening a session for a project that was closed with an active Claude process, offer to resume the last session (pass `--resume <last-session-id>`) instead of always starting fresh.
-- **New session** — explicit "New session" button / action that starts `claude` without `--resume`, even if a previous session exists.
-- **Session list** — show saved sessions for the current working directory (parsed from the JSONL files in `~/.claude/projects/<hashed-path>/`): timestamp, first/last prompt preview. Allow the user to select one and resume it.
-- **Session switcher UI** — a dialog or sidebar panel listing saved sessions; accessible from the session tab toolbar.
-- **Session naming** — optionally allow the user to assign a label to a session for easier identification in the list.
-
-**Implementation sketch:**
+**Implementation:**
 
 | Component | Responsibility |
 |-----------|---------------|
-| `process/ClaudeSessionStore.java` | Reads JSONL session files from `~/.claude/projects/<hashed-path>/`; returns list of `SavedSession` records (id, timestamp, first/last message preview) |
-| `model/SavedSession.java` | Record: session ID, creation timestamp, last-message timestamp, preview text |
-| `ui/SessionListDialog.java` | Dialog showing saved sessions for the current directory; buttons: Resume / Delete |
-| `ClaudeProcess.start(…, resumeSessionId)` | Appends `--resume <id>` or `--continue` when a session ID is provided |
-| `ClaudeSessionTab` | On open: if previous session ID stored, offer Resume/New choice; persists last session ID |
-| `ClaudeSessionSelectorPanel` | "Resume last session" checkbox (default on); link to open `SessionListDialog` |
+| `process/ClaudeSessionStore.java` | **created** — reads JSONL session files from `~/.claude/projects/<hashed-path>/`; two-phase read (sort by mtime, parse top candidates); `listSessions()`, `renameSession()`, `deleteSession()` |
+| `model/SavedSession.java` | **created** — record: sessionId, createdAt, lastAt, slug, customTitle, firstPrompt; `displayName()` returns customTitle → slug → sessionId |
+| `model/SessionMode.java` | **created** — enum: `NEW`, `CONTINUE_LAST`, `RESUME_SPECIFIC`, `CLOSE_ONLY` |
+| `ui/SessionModePanel.java` | **created** — reusable radio-button panel for session mode + session table (shown only when Resume Specific selected); Rename button |
+| `ui/SaveAndSwitchDialog.java` | **created** — modal dialog: session name field + `SessionModePanel`; opened by the ⏻ button in the status bar |
+| `ui/ClaudeSessionSelectorPanel.java` | **modified** — integrated `SessionModePanel`; Rename button hidden unless Resume Specific |
+| `process/ClaudeProcess.java` | **modified** — `start(workingDir, profile, extraCliArgs, mode, resumeSessionId)` appends `--continue` / `--resume <id>` based on `SessionMode` |
+| `controller/ClaudeSessionController.java` | **modified** — `stopAndRename(name)` stops PTY then appends custom-title JSONL entry |
+| `ui/ClaudeSessionTab.java` | **modified** — `componentClosed()` saves path + calls `stopProcess()`; stop button opens `SaveAndSwitchDialog`; "New session" + "Switch to session" in input area context menu; session mode + resumeSessionId persisted in `writeExternal`/`readExternal` |
+| `settings/ClaudeCodeOptionsPanel.java` | **modified** — added "Session list limit" spinner |
+| `settings/ClaudeCodePreferences.java` | **modified** — added `contextMenuSessionMode` (default `CONTINUE_LAST`) and `sessionListLimit` (default 30) |
+| `org.openbeans.claude.netbeans/ClaudeCodeStatusLineElement.java` | **modified** — stop button (⏻) opens `SaveAndSwitchDialog` |
+
+**Tests:** `SavedSessionTest`, `ClaudeSessionStoreTest`, `SessionModePanelTest`; Python integration test `claude-launch-tests/test_session_rename.py`
 
 ---
 
@@ -630,6 +628,8 @@ Settings are stored via `NbPreferences.forModule(ClaudeCodePreferences.class)`:
 | `historyMaxDepth` | int | `200` | 14 |
 | `historyTtlDays` | int | `0` | 14 |
 | `defaultExtraCliArgs` | String | `""` | 19 |
+| `contextMenuSessionMode` | String | `CONTINUE_LAST` | 21 |
+| `sessionListLimit` | int | `30` | 21 |
 
 ---
 
