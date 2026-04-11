@@ -218,6 +218,27 @@ class ClaudeProcessTest {
     }
 
     // -------------------------------------------------------------------------
+    // writeMcpConfigTempFile
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testWriteMcpConfigTempFile() throws Exception {
+        Path tmp = ClaudeProcess.writeMcpConfigTempFile(28991);
+        try {
+            assertTrue(Files.exists(tmp), "temp file should be created");
+            String content = Files.readString(tmp, StandardCharsets.UTF_8);
+            assertTrue(content.contains("netbeans"), "temp file should contain netbeans key");
+            assertTrue(content.contains("28991"), "temp file should contain port");
+            assertTrue(content.startsWith("{"), "temp file should be valid JSON object");
+            // File path should contain no double-quotes (safe to pass as process arg)
+            assertFalse(tmp.toAbsolutePath().toString().contains("\""),
+                    "temp file path should contain no double-quotes");
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // buildMcpConfigJson
     // -------------------------------------------------------------------------
 

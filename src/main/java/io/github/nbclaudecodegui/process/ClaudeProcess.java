@@ -69,6 +69,9 @@ public final class ClaudeProcess {
     /** Working directory of the current session; {@code null} when stopped. */
     private volatile String workingDir;
 
+    /** Temp file holding the --mcp-config JSON; {@code null} when not in use. */
+    private volatile Path mcpConfigTempFile;
+
     /**
      * Starts a Claude CLI PTY process in the given working directory using
      * the Default profile (no extra env vars injected).
@@ -166,9 +169,19 @@ public final class ClaudeProcess {
             if (io.github.nbclaudecodegui.settings.ClaudeCodePreferences.isMcpEnabled()) {
                 // Pass MCP server config via --mcp-config (Claude 2.x no longer reads
                 // mcpServers from settings.local.json; --mcp-config works in TUI mode).
+                // On Windows, inline JSON gets quote-stripped by CreateProcess, so we
+                // write to a temp file and pass the file path instead.
                 cmd.add("--mcp-config");
-                cmd.add(buildMcpConfigJson(port));
-                LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
+                try {
+                    Path tmpCfg = writeMcpConfigTempFile(port);
+                    mcpConfigTempFile = tmpCfg;
+                    cmd.add(tmpCfg.toAbsolutePath().toString());
+                    LOG.info("Passing --mcp-config via temp file: " + tmpCfg);
+                } catch (IOException e) {
+                    LOG.warning("Could not write --mcp-config temp file, falling back to inline JSON: " + e.getMessage());
+                    cmd.add(buildMcpConfigJson(port));
+                    LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
+                }
             } else {
                 LOG.info("MCP integration disabled by user preference; skipping --mcp-config");
             }
@@ -264,7 +277,14 @@ public final class ClaudeProcess {
      * {@value #OUR_HOOK_MATCHER}).  User-provided keys are left untouched.
      * If the file becomes empty after cleanup it is deleted.
      */
-    public void stop() {
+    /**
+     * Kills the PTY process only — does NOT delete settings.local.json or the
+     * temp MCP config file.  File cleanup is deferred to {@link #stop()}.
+     *
+     * <p>Use this when the error panel is about to be shown and files must stay
+     * alive until the user dismisses the panel.
+     */
+    public void killOnly() {
         PtyProcess p = ptyProcess;
         if (p != null && p.isAlive()) {
             p.destroy();
@@ -278,6 +298,20 @@ public final class ClaudeProcess {
             }
         }
         ptyProcess = null;
+        // workingDir and mcpConfigTempFile intentionally NOT cleared — deferred to stop()
+    }
+
+    public void stop() {
+        killOnly();
+
+        Path tmp = mcpConfigTempFile;
+        mcpConfigTempFile = null;
+        if (tmp != null) {
+            try {
+                Files.deleteIfExists(tmp);
+                LOG.fine("Deleted --mcp-config temp file: " + tmp);
+            } catch (IOException e) { /* ignore */ }
+        }
 
         String dir = workingDir;
         workingDir = null;
@@ -649,6 +683,17 @@ public final class ClaudeProcess {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Writes the MCP config JSON to a temp file and returns its path.
+     * The file is registered for deletion on JVM exit as a safety net.
+     */
+    static Path writeMcpConfigTempFile(int port) throws IOException {
+        Path tmp = Files.createTempFile("claude-mcp-config-", ".json");
+        tmp.toFile().deleteOnExit();
+        Files.writeString(tmp, buildMcpConfigJson(port), StandardCharsets.UTF_8);
+        return tmp;
     }
 
     /**

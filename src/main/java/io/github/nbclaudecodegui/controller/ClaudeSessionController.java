@@ -975,6 +975,45 @@ public final class ClaudeSessionController {
     }
 
     /**
+     * Kills the PTY process and resets timers/state, but does NOT call
+     * {@link ClaudeProcess#stop()} — so settings.local.json and the temp MCP
+     * config file are preserved until the error panel is dismissed and
+     * {@link #stopProcess()} is called.
+     *
+     * <p>{@code claudeProcess} is intentionally kept non-null so that the
+     * subsequent {@code stopProcess()} on panel dismiss can still call
+     * {@code claudeProcess.stop()} and clean up files.
+     */
+    private void killProcessForErrorPanel() {
+        if (statusTimer != null) {
+            statusTimer.stop();
+            statusTimer = null;
+        }
+        promptFlushTimer.stop();
+        if (connector != null) {
+            connector.setLineListener(null);
+        }
+        if (claudeProcess != null) {
+            claudeProcess.killOnly();
+        }
+        connector = null;
+        // claudeProcess kept — file cleanup deferred to stopProcess() on panel dismiss
+        modelComboPopulated = false;
+        modelDiscoveryInProgress = false;
+        modelDiscoveryAttempts = 0;
+        customModelIds = List.of();
+        standardModelCount = 0;
+        synchronized (recentPtyLines) { recentPtyLines.clear(); }
+        processStartedAt = 0;
+        firstOutputReceived = false;
+
+        model.setModelList(List.of(), -1);
+        model.clearChoiceMenu();
+        model.clearEditModeRegistry();
+        model.setLifecycle(SessionLifecycle.STARTING);
+    }
+
+    /**
      * Called from {@link #pollScreenState()} when the hang watchdog fires.
      * Stops the process and notifies the registered callback on the EDT.
      *
@@ -983,7 +1022,7 @@ public final class ClaudeSessionController {
     private void handleHang(int timeoutSec) {
         LOG.severe("Hang detected in " + workingDir + ": no PTY output received within " + timeoutSec + " s — killing process");
         String command = claudeProcess != null ? claudeProcess.getLastCommand() : "";
-        stopProcess();
+        killProcessForErrorPanel();  // kill PTY; file cleanup deferred to panel dismiss
         java.util.function.BiConsumer<String, String> cb = hangCallback;
         if (cb != null) {
             String msg = "No output received within " + timeoutSec
