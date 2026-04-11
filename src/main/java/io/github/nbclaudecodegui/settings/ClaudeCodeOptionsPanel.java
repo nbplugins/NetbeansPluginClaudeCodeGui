@@ -70,6 +70,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private JSpinner sessionListLimitSpinner;
     /** Spinner for the hang-detection timeout in seconds (0 = disabled). */
     private JSpinner hangTimeoutSpinner;
+    /** Checkbox to enable MCP integration (pass --mcp-config flag). */
+    private javax.swing.JCheckBox mcpEnabledCheckBox;
 
     /** send-key radio buttons: value → button */
     private final Map<String, JRadioButton> sendRadios = new LinkedHashMap<>();
@@ -99,6 +101,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("General", buildGeneralPanel());
+        tabs.addTab("Advanced", buildAdvancedPanel());
         tabs.addTab("Favorites", favoritesPanel);
         tabs.addTab("Profiles", profilesPanel);
         add(tabs, BorderLayout.CENTER);
@@ -181,16 +184,6 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
             newlineRadios.get(val).addActionListener(e -> syncExclusion(val, false));
         }
 
-        // --- debug mode ---
-        debugCheckBox = new javax.swing.JCheckBox("Debug mode (log all claude I/O to NetBeans log and output area)");
-        GridBagConstraints dbgGbc = new GridBagConstraints();
-        dbgGbc.gridx = 0; dbgGbc.gridy = row;
-        dbgGbc.gridwidth = 3;
-        dbgGbc.anchor = GridBagConstraints.WEST;
-        dbgGbc.insets = new Insets(4, 8, 4, 8);
-        form.add(debugCheckBox, dbgGbc);
-        row++;
-
         // --- diff in session ---
         diffInSessionCheck = new javax.swing.JCheckBox("Open diff in a separate tab");
         GridBagConstraints diffGbc = new GridBagConstraints();
@@ -229,18 +222,68 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         form.add(sessionListLimitSpinner, gbc(1, row, false));
         row++;
 
+        // spacer
+        GridBagConstraints spacer = new GridBagConstraints();
+        spacer.gridx = 0; spacer.gridy = row;
+        spacer.gridwidth = 3; spacer.weighty = 1.0;
+        spacer.fill = GridBagConstraints.VERTICAL;
+        form.add(new JPanel(), spacer);
+
+        return form;
+    }
+
+    /**
+     * Builds the Advanced tab containing debug and hang-timeout settings.
+     *
+     * @return the Advanced tab panel
+     */
+    private JPanel buildAdvancedPanel() {
+        JPanel form = new JPanel(new GridBagLayout());
+        int row = 0;
+
+        // --- debug mode ---
+        debugCheckBox = new javax.swing.JCheckBox("Debug mode (log all claude I/O to NetBeans log and output area)");
+        GridBagConstraints dbgGbc = new GridBagConstraints();
+        dbgGbc.gridx = 0; dbgGbc.gridy = row;
+        dbgGbc.gridwidth = 2;
+        dbgGbc.anchor = GridBagConstraints.WEST;
+        dbgGbc.insets = new Insets(8, 8, 4, 8);
+        form.add(debugCheckBox, dbgGbc);
+        row++;
+
         // --- hang timeout ---
         form.add(new JLabel("Hang timeout (seconds, 0=disabled):"), gbc(0, row, false));
         hangTimeoutSpinner = new JSpinner(new SpinnerNumberModel(
                 ClaudeCodePreferences.DEFAULT_HANG_TIMEOUT_SECONDS, 0, 3600, 5));
         hangTimeoutSpinner.setToolTipText("Kill the process if no PTY output is received within this many seconds after launch (0 = disabled)");
-        form.add(hangTimeoutSpinner, gbc(1, row, false));
+        GridBagConstraints hangSpinnerGbc = gbc(1, row, false);
+        hangSpinnerGbc.weightx = 1.0;
+        form.add(hangTimeoutSpinner, hangSpinnerGbc);
+        row++;
+
+        // --- MCP enabled ---
+        mcpEnabledCheckBox = new javax.swing.JCheckBox("Enable MCP integration");
+        GridBagConstraints mcpGbc = new GridBagConstraints();
+        mcpGbc.gridx = 0; mcpGbc.gridy = row;
+        mcpGbc.gridwidth = 2;
+        mcpGbc.anchor = GridBagConstraints.WEST;
+        mcpGbc.insets = new Insets(12, 8, 0, 8);
+        form.add(mcpEnabledCheckBox, mcpGbc);
+        row++;
+
+        JLabel mcpDesc = new JLabel("<html><small>When disabled, the --mcp-config flag is not passed to claude. Hooks are always configured.</small></html>");
+        GridBagConstraints mcpDescGbc = new GridBagConstraints();
+        mcpDescGbc.gridx = 0; mcpDescGbc.gridy = row;
+        mcpDescGbc.gridwidth = 2;
+        mcpDescGbc.anchor = GridBagConstraints.WEST;
+        mcpDescGbc.insets = new Insets(0, 28, 4, 8);
+        form.add(mcpDesc, mcpDescGbc);
         row++;
 
         // spacer
         GridBagConstraints spacer = new GridBagConstraints();
         spacer.gridx = 0; spacer.gridy = row;
-        spacer.gridwidth = 3; spacer.weighty = 1.0;
+        spacer.gridwidth = 2; spacer.weighty = 1.0;
         spacer.fill = GridBagConstraints.VERTICAL;
         form.add(new JPanel(), spacer);
 
@@ -315,6 +358,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         == io.github.nbclaudecodegui.model.SessionMode.NEW);
         sessionListLimitSpinner.setValue(ClaudeCodePreferences.getSessionListLimit());
         hangTimeoutSpinner.setValue(ClaudeCodePreferences.getHangTimeoutSeconds());
+        mcpEnabledCheckBox.setSelected(ClaudeCodePreferences.isMcpEnabled());
 
         String sendVal    = ClaudeCodePreferences.getSendKey();
         String newlineVal = ClaudeCodePreferences.getNewlineKey();
@@ -348,6 +392,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         : io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST);
         ClaudeCodePreferences.setSessionListLimit((Integer) sessionListLimitSpinner.getValue());
         ClaudeCodePreferences.setHangTimeoutSeconds((Integer) hangTimeoutSpinner.getValue());
+        ClaudeCodePreferences.setMcpEnabled(mcpEnabledCheckBox.isSelected());
         ClaudeCodePreferences.setSendKey(selectedValue(sendRadios));
         ClaudeCodePreferences.setNewlineKey(selectedValue(newlineRadios));
 
