@@ -68,6 +68,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private javax.swing.JCheckBox startNewSessionCheck;
     /** Spinner for the maximum number of sessions shown in the session list. */
     private JSpinner sessionListLimitSpinner;
+    /** Spinner for the hang-detection timeout in seconds (0 = disabled). */
+    private JSpinner hangTimeoutSpinner;
 
     /** send-key radio buttons: value → button */
     private final Map<String, JRadioButton> sendRadios = new LinkedHashMap<>();
@@ -227,6 +229,14 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         form.add(sessionListLimitSpinner, gbc(1, row, false));
         row++;
 
+        // --- hang timeout ---
+        form.add(new JLabel("Hang timeout (seconds, 0=disabled):"), gbc(0, row, false));
+        hangTimeoutSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_HANG_TIMEOUT_SECONDS, 0, 3600, 5));
+        hangTimeoutSpinner.setToolTipText("Kill the process if no PTY output is received within this many seconds after launch (0 = disabled)");
+        form.add(hangTimeoutSpinner, gbc(1, row, false));
+        row++;
+
         // spacer
         GridBagConstraints spacer = new GridBagConstraints();
         spacer.gridx = 0; spacer.gridy = row;
@@ -304,6 +314,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                 ClaudeCodePreferences.getContextMenuSessionMode()
                         == io.github.nbclaudecodegui.model.SessionMode.NEW);
         sessionListLimitSpinner.setValue(ClaudeCodePreferences.getSessionListLimit());
+        hangTimeoutSpinner.setValue(ClaudeCodePreferences.getHangTimeoutSeconds());
 
         String sendVal    = ClaudeCodePreferences.getSendKey();
         String newlineVal = ClaudeCodePreferences.getNewlineKey();
@@ -336,6 +347,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         ? io.github.nbclaudecodegui.model.SessionMode.NEW
                         : io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST);
         ClaudeCodePreferences.setSessionListLimit((Integer) sessionListLimitSpinner.getValue());
+        ClaudeCodePreferences.setHangTimeoutSeconds((Integer) hangTimeoutSpinner.getValue());
         ClaudeCodePreferences.setSendKey(selectedValue(sendRadios));
         ClaudeCodePreferences.setNewlineKey(selectedValue(newlineRadios));
 

@@ -1,3 +1,4 @@
+- Added hang detection: configurable timeout (default 60 s) kills the process and shows an error if no PTY output is received after launch; set to 0 to disable
 - Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start
 - Added capability of changing the profile storage directory and sharing a single directory with several profiles
 - Fixed drag-and-drop into text fields: files are now inserted at the text caret position instead of where the mouse was dropped

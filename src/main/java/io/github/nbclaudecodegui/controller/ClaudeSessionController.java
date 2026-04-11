@@ -87,6 +87,18 @@ public final class ClaudeSessionController {
             new javax.swing.Timer(400, e -> flushPendingPrompt());
     { promptFlushTimer.setRepeats(false); }
 
+    /** Timestamp (ms) when the PTY process was launched; used for hang detection. */
+    private volatile long processStartedAt = 0;
+
+    /** {@code true} once the first byte/line from the PTY has been received. */
+    private volatile boolean firstOutputReceived = false;
+
+    /**
+     * Called when a hang is detected: receives (command, errorMessage).
+     * Invoked on the EDT after the process is stopped.
+     */
+    private java.util.function.BiConsumer<String, String> hangCallback;
+
     /** {@code true} while a shift-tab thread is actively switching the CC edit mode. */
     private volatile boolean modeSwitchInProgress = false;
 
@@ -115,6 +127,12 @@ public final class ClaudeSessionController {
      */
     private final java.util.Deque<String> recentPtyLines = new java.util.ArrayDeque<>();
     private static final int PTY_LINE_BUFFER_SIZE = 40;
+
+    /** Package-private for tests: sets hang-detection state as if the process just started. */
+    void simulateProcessStart(long startedAt, boolean outputReceived) {
+        processStartedAt = startedAt;
+        firstOutputReceived = outputReceived;
+    }
 
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
     void simulatePtyLine(String line) {
@@ -190,11 +208,15 @@ public final class ClaudeSessionController {
                 mode != null ? mode : SessionMode.NEW,
                 resumeSessionId);
 
+        processStartedAt = System.currentTimeMillis();
+        firstOutputReceived = false;
+
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
         screenContentDetector.setSessionTag(tag);
 
         connector.setLineListener(line -> {
+            firstOutputReceived = true;
             LOG.fine(tag + "[PTY line] " + line);
             synchronized (recentPtyLines) {
                 recentPtyLines.addLast(line);
@@ -271,6 +293,8 @@ public final class ClaudeSessionController {
         customModelIds = List.of();
         standardModelCount = 0;
         synchronized (recentPtyLines) { recentPtyLines.clear(); }
+        processStartedAt = 0;
+        firstOutputReceived = false;
 
         model.setModelList(List.of(), -1);
         model.clearChoiceMenu();
@@ -908,6 +932,18 @@ public final class ClaudeSessionController {
             // UNKNOWN → no transition
         }
 
+        // Hang detection: if no PTY output received within the configured timeout, kill the process
+        if (!firstOutputReceived && processStartedAt > 0) {
+            int timeoutSec = ClaudeCodePreferences.getHangTimeoutSeconds();
+            if (timeoutSec > 0) {
+                long elapsed = System.currentTimeMillis() - processStartedAt;
+                if (elapsed > timeoutSec * 1000L) {
+                    handleHang(timeoutSec);
+                    return;
+                }
+            }
+        }
+
         // Continuously sync CC screen mode → model (skip during switches and discovery)
         if (modelComboPopulated && !modeSwitchInProgress && !modelDiscoveryInProgress) {
             Optional<String> detected = screenContentDetector.detectEditMode(lines);
@@ -923,6 +959,34 @@ public final class ClaudeSessionController {
                     model.setEditMode("default");
                 }
             }
+        }
+    }
+
+    /**
+     * Registers a callback invoked on the EDT when a hang is detected and the
+     * process has been stopped.
+     *
+     * @param callback receives (command, errorMessage); may be {@code null} to clear
+     */
+    public void setHangCallback(java.util.function.BiConsumer<String, String> callback) {
+        this.hangCallback = callback;
+    }
+
+    /**
+     * Called from {@link #pollScreenState()} when the hang watchdog fires.
+     * Stops the process and notifies the registered callback on the EDT.
+     *
+     * @param timeoutSec the configured timeout that elapsed (for the error message)
+     */
+    private void handleHang(int timeoutSec) {
+        LOG.warning("Hang detected: no PTY output received within " + timeoutSec + " s — killing process");
+        String command = claudeProcess != null ? claudeProcess.getLastCommand() : "";
+        stopProcess();
+        java.util.function.BiConsumer<String, String> cb = hangCallback;
+        if (cb != null) {
+            String msg = "No output received within " + timeoutSec
+                    + " seconds. Process was killed.";
+            cb.accept(command, msg);
         }
     }
 

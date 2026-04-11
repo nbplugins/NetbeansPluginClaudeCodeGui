@@ -496,6 +496,35 @@ public final class ClaudeCodePreferences {
                 .putInt(KEY_SESSION_LIST_LIMIT, Math.max(1, Math.min(500, v)));
     }
 
+    // -------------------------------------------------------------------------
+    // hangTimeoutSeconds
+    // -------------------------------------------------------------------------
+
+    /** Preference key: seconds of PTY silence before a hang is declared (0 = disabled). */
+    public static final String KEY_HANG_TIMEOUT_SECONDS = "hangTimeoutSeconds";
+    /** Default: 60 seconds. */
+    public static final int DEFAULT_HANG_TIMEOUT_SECONDS = 60;
+
+    /**
+     * Returns the configured hang-detection timeout in seconds.
+     *
+     * @return timeout in seconds, or {@code 0} to disable hang detection
+     */
+    public static int getHangTimeoutSeconds() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_HANG_TIMEOUT_SECONDS, DEFAULT_HANG_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Persists the hang-detection timeout.
+     *
+     * @param v timeout in seconds; clamped to [0, 3600]; 0 disables detection
+     */
+    public static void setHangTimeoutSeconds(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_HANG_TIMEOUT_SECONDS, Math.max(0, Math.min(3600, v)));
+    }
+
     private static String validated(String value, String fallback) {
         return ENTER.equals(value) || SHIFT_ENTER.equals(value)
                 || CTRL_ENTER.equals(value) || ALT_ENTER.equals(value)
