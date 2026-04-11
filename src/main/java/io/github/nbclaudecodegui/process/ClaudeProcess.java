@@ -68,6 +68,9 @@ public final class ClaudeProcess {
     /** Working directory of the current session; {@code null} when stopped. */
     private volatile String workingDir;
 
+    /** Temp file holding the --mcp-config JSON; {@code null} when not in use. */
+    private volatile Path mcpConfigTempFile;
+
     /**
      * Starts a Claude CLI PTY process in the given working directory using
      * the Default profile (no extra env vars injected).
@@ -143,11 +146,25 @@ public final class ClaudeProcess {
                 + ", port=" + (mcp != null ? mcp.getServerPort() : -1));
         if (mcp != null && mcp.isServerRunning()) {
             int port = mcp.getServerPort();
-            // Pass MCP server config via --mcp-config (Claude 2.x no longer reads
-            // mcpServers from settings.local.json; --mcp-config works in TUI mode).
-            cmd.add("--mcp-config");
-            cmd.add(buildMcpConfigJson(port));
-            LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
+            if (io.github.nbclaudecodegui.settings.ClaudeCodePreferences.isMcpEnabled()) {
+                // Pass MCP server config via --mcp-config (Claude 2.x no longer reads
+                // mcpServers from settings.local.json; --mcp-config works in TUI mode).
+                // On Windows, inline JSON gets quote-stripped by CreateProcess, so we
+                // write to a temp file and pass the file path instead.
+                cmd.add("--mcp-config");
+                try {
+                    Path tmpCfg = writeMcpConfigTempFile(port);
+                    mcpConfigTempFile = tmpCfg;
+                    cmd.add(tmpCfg.toAbsolutePath().toString());
+                    LOG.info("Passing --mcp-config via temp file: " + tmpCfg);
+                } catch (IOException e) {
+                    LOG.warning("Could not write --mcp-config temp file, falling back to inline JSON: " + e.getMessage());
+                    cmd.add(buildMcpConfigJson(port));
+                    LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
+                }
+            } else {
+                LOG.info("MCP integration disabled by user preference; skipping --mcp-config");
+            }
             try {
                 writeSettingsLocalJson(workingDir, port, profile);
             } catch (IOException e) {
@@ -205,7 +222,14 @@ public final class ClaudeProcess {
      * {@value #OUR_HOOK_MATCHER}).  User-provided keys are left untouched.
      * If the file becomes empty after cleanup it is deleted.
      */
-    public void stop() {
+    /**
+     * Kills the PTY process only — does NOT delete settings.local.json or the
+     * temp MCP config file.  File cleanup is deferred to {@link #stop()}.
+     *
+     * <p>Use this when the error panel is about to be shown and files must stay
+     * alive until the user dismisses the panel.
+     */
+    public void killOnly() {
         PtyProcess p = ptyProcess;
         if (p != null && p.isAlive()) {
             p.destroy();
@@ -219,6 +243,20 @@ public final class ClaudeProcess {
             }
         }
         ptyProcess = null;
+        // workingDir and mcpConfigTempFile intentionally NOT cleared — deferred to stop()
+    }
+
+    public void stop() {
+        killOnly();
+
+        Path tmp = mcpConfigTempFile;
+        mcpConfigTempFile = null;
+        if (tmp != null) {
+            try {
+                Files.deleteIfExists(tmp);
+                LOG.fine("Deleted --mcp-config temp file: " + tmp);
+            } catch (IOException e) { /* ignore */ }
+        }
 
         String dir = workingDir;
         workingDir = null;
@@ -556,6 +594,48 @@ public final class ClaudeProcess {
      * Builds a minimal {@code settings.local.json} from scratch for the given port.
      * Used as a fallback when the existing file cannot be parsed.
      */
+    /**
+     * Converts a command list to a shell-pasteable string.
+     * Arguments that contain spaces, quotes, or other shell-special characters
+     * are quoted so the result can be pasted directly into a terminal.
+     * On Windows, double-quotes inside an argument are doubled ("").
+     * On other platforms, they are backslash-escaped (\").
+     */
+    static String toShellCommand(List<String> cmd) {
+        boolean windows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        return toShellCommand(cmd, windows);
+    }
+
+    static String toShellCommand(List<String> cmd, boolean windows) {
+        StringBuilder sb = new StringBuilder();
+        for (String arg : cmd) {
+            if (sb.length() > 0) sb.append(' ');
+            boolean needsQuoting = arg.isEmpty() || arg.chars().anyMatch(c ->
+                    c == ' ' || c == '\t' || c == '"' || c == '\'' || c == '\\' ||
+                    c == '{' || c == '}' || c == '(' || c == ')' ||
+                    c == '&' || c == '|' || c == '<' || c == '>');
+            if (!needsQuoting) {
+                sb.append(arg);
+            } else if (windows) {
+                sb.append('"').append(arg.replace("\"", "\"\"")).append('"');
+            } else {
+                sb.append('"').append(arg.replace("\"", "\\\"")).append('"');
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Writes the MCP config JSON to a temp file and returns its path.
+     * The file is registered for deletion on JVM exit as a safety net.
+     */
+    static Path writeMcpConfigTempFile(int port) throws IOException {
+        Path tmp = Files.createTempFile("claude-mcp-config-", ".json");
+        tmp.toFile().deleteOnExit();
+        Files.writeString(tmp, buildMcpConfigJson(port), StandardCharsets.UTF_8);
+        return tmp;
+    }
+
     /**
      * Builds the JSON string to pass as {@code --mcp-config} to the Claude CLI.
      */

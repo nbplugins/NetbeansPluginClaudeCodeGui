@@ -1,3 +1,4 @@
+- Fixed MCP config not working on Windows due to quote stripping in CreateProcess (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/13)
 - Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start
 
 # 0.20.4 (2026-04-09)
