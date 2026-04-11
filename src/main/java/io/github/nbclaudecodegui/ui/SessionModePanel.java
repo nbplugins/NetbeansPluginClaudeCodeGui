@@ -59,6 +59,7 @@ public final class SessionModePanel extends JPanel {
     // -------------------------------------------------------------------------
 
     private final JRadioButton closeOnlyRadio;
+    private final JRadioButton restartAdvancedRadio;
     private final JRadioButton newRadio;
     private final JRadioButton continueRadio;
     private final JRadioButton resumeRadio;
@@ -94,12 +95,14 @@ public final class SessionModePanel extends JPanel {
 
         ButtonGroup group = new ButtonGroup();
 
-        closeOnlyRadio = new JRadioButton("Close only");
-        newRadio       = new JRadioButton("New session");
-        continueRadio  = new JRadioButton("Continue last");
-        resumeRadio    = new JRadioButton("Resume specific");
+        closeOnlyRadio       = new JRadioButton("Close only");
+        restartAdvancedRadio = new JRadioButton("Restart Advanced...");
+        newRadio             = new JRadioButton("New session");
+        continueRadio        = new JRadioButton("Continue last");
+        resumeRadio          = new JRadioButton("Resume specific");
 
         group.add(closeOnlyRadio);
+        group.add(restartAdvancedRadio);
         group.add(newRadio);
         group.add(continueRadio);
         group.add(resumeRadio);
@@ -110,6 +113,7 @@ public final class SessionModePanel extends JPanel {
 
         if (showCloseOnly) {
             radioPanel.add(row(closeOnlyRadio));
+            radioPanel.add(row(restartAdvancedRadio));
         }
         radioPanel.add(row(newRadio));
         radioPanel.add(row(continueRadio));
@@ -169,6 +173,7 @@ public final class SessionModePanel extends JPanel {
 
         // Radio listeners
         closeOnlyRadio.addActionListener(e -> onRadioChanged());
+        restartAdvancedRadio.addActionListener(e -> onRadioChanged());
         newRadio.addActionListener(e -> onRadioChanged());
         continueRadio.addActionListener(e -> onRadioChanged());
         resumeRadio.addActionListener(e -> onRadioChanged());
@@ -206,9 +211,10 @@ public final class SessionModePanel extends JPanel {
      * @return selected {@link SessionMode}
      */
     public SessionMode getSelectedMode() {
-        if (closeOnlyRadio.isSelected()) return SessionMode.CLOSE_ONLY;
-        if (newRadio.isSelected())       return SessionMode.NEW;
-        if (continueRadio.isSelected())  return SessionMode.CONTINUE_LAST;
+        if (closeOnlyRadio.isSelected())       return SessionMode.CLOSE_ONLY;
+        if (restartAdvancedRadio.isSelected()) return SessionMode.RESTART_ADVANCED;
+        if (newRadio.isSelected())             return SessionMode.NEW;
+        if (continueRadio.isSelected())        return SessionMode.CONTINUE_LAST;
         return SessionMode.RESUME_SPECIFIC;
     }
 
@@ -233,10 +239,11 @@ public final class SessionModePanel extends JPanel {
      */
     public void setMode(SessionMode mode) {
         switch (mode) {
-            case CLOSE_ONLY       -> closeOnlyRadio.setSelected(true);
-            case NEW              -> newRadio.setSelected(true);
-            case CONTINUE_LAST    -> continueRadio.setSelected(true);
-            case RESUME_SPECIFIC  -> resumeRadio.setSelected(true);
+            case CLOSE_ONLY        -> closeOnlyRadio.setSelected(true);
+            case RESTART_ADVANCED  -> restartAdvancedRadio.setSelected(true);
+            case NEW               -> newRadio.setSelected(true);
+            case CONTINUE_LAST     -> continueRadio.setSelected(true);
+            case RESUME_SPECIFIC   -> resumeRadio.setSelected(true);
         }
         onRadioChanged();
     }

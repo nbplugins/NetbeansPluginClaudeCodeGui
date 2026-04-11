@@ -174,22 +174,7 @@ public final class ClaudeProcess {
             }
         }
 
-        List<String> extra = parseArgs(extraCliArgs);
-        if (!extra.isEmpty()) {
-            cmd.addAll(extra);
-            LOG.info("Extra CLI args appended: " + extra);
-        }
-
-        // Session mode flags
-        if (mode == SessionMode.CONTINUE_LAST) {
-            cmd.add("--continue");
-            LOG.info("Session mode: --continue");
-        } else if (mode == SessionMode.RESUME_SPECIFIC
-                && resumeSessionId != null && !resumeSessionId.isBlank()) {
-            cmd.add("--resume");
-            cmd.add(resumeSessionId);
-            LOG.info("Session mode: --resume " + resumeSessionId);
-        }
+        appendSessionFlags(cmd, workingDir, env, extraCliArgs, mode, resumeSessionId);
 
         lastCommand = String.join(" ", cmd);
         LOG.info("Claude command: " + lastCommand);
@@ -226,6 +211,45 @@ public final class ClaudeProcess {
 
     /** Returns the last command attempted to start, as a space-joined string. */
     public String getLastCommand() { return lastCommand; }
+
+    /**
+     * Appends extra CLI args and session-mode flags to {@code cmd}.
+     *
+     * <p>Package-private for unit testing.
+     *
+     * @param cmd             command list to append to (already contains executable and MCP flags)
+     * @param workingDir      working directory (used to check for existing sessions)
+     * @param env             environment map (used to resolve {@code CLAUDE_CONFIG_DIR})
+     * @param extraCliArgs    extra CLI arguments string (may be blank)
+     * @param mode            session mode
+     * @param resumeSessionId session ID for RESUME_SPECIFIC mode
+     */
+    void appendSessionFlags(List<String> cmd, String workingDir, Map<String, String> env,
+                            String extraCliArgs, SessionMode mode, String resumeSessionId) {
+        List<String> extra = parseArgs(extraCliArgs);
+        if (!extra.isEmpty()) {
+            cmd.addAll(extra);
+            LOG.info("Extra CLI args appended: " + extra);
+        }
+
+        if (mode == SessionMode.CONTINUE_LAST) {
+            String configDirStr = env.get("CLAUDE_CONFIG_DIR");
+            Path claudeConfigDir = configDirStr != null
+                    ? Path.of(configDirStr)
+                    : Path.of(System.getProperty("user.home"), ".claude");
+            if (ClaudeSessionStore.hasAnySessions(Path.of(workingDir), claudeConfigDir)) {
+                cmd.add("--continue");
+                LOG.fine("Session mode: --continue (existing session found)");
+            } else {
+                LOG.fine("Session mode: CONTINUE_LAST — no sessions found, starting new");
+            }
+        } else if (mode == SessionMode.RESUME_SPECIFIC
+                && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            cmd.add("--resume");
+            cmd.add(resumeSessionId);
+            LOG.fine("Session mode: --resume " + resumeSessionId);
+        }
+    }
 
     /**
      * Stops the current PTY process and cleans up {@code settings.local.json}.

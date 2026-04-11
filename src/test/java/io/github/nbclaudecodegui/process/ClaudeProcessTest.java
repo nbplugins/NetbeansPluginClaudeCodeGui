@@ -343,6 +343,66 @@ class ClaudeProcessTest {
     }
 
     // -------------------------------------------------------------------------
+    // appendSessionFlags — --continue only when sessions exist
+    // -------------------------------------------------------------------------
+
+    @Test
+    void appendSessionFlags_continueLast_noSessionsDir_noFlag(@TempDir Path tmpDir) {
+        ClaudeProcess cp = new ClaudeProcess();
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.List.of("claude"));
+        // tmpDir has no sessions subdirectory → no --continue
+        cp.appendSessionFlags(cmd, tmpDir.toString(), java.util.Map.of(),
+                "", io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST, null);
+        assertFalse(cmd.contains("--continue"),
+                "should NOT add --continue when no sessions exist");
+    }
+
+    @Test
+    void appendSessionFlags_continueLast_sessionsExist_addsFlag(@TempDir Path tmpDir) throws Exception {
+        // Create a fake sessions dir with one .jsonl file
+        String hash = tmpDir.toString().replace('/', '-');
+        Path sessionsDir = tmpDir.resolve(".claude").resolve("projects").resolve(hash);
+        Files.createDirectories(sessionsDir);
+        Files.writeString(sessionsDir.resolve("fake-session.jsonl"), "{}\n");
+
+        ClaudeProcess cp = new ClaudeProcess();
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.List.of("claude"));
+        cp.appendSessionFlags(cmd, tmpDir.toString(),
+                java.util.Map.of("CLAUDE_CONFIG_DIR", tmpDir.resolve(".claude").toString()),
+                "", io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST, null);
+        assertTrue(cmd.contains("--continue"),
+                "should add --continue when sessions exist");
+    }
+
+    @Test
+    void appendSessionFlags_newMode_noFlag(@TempDir Path tmpDir) throws Exception {
+        // Even if sessions exist, NEW mode should not add any session flag
+        String hash = tmpDir.toString().replace('/', '-');
+        Path sessionsDir = tmpDir.resolve(".claude").resolve("projects").resolve(hash);
+        Files.createDirectories(sessionsDir);
+        Files.writeString(sessionsDir.resolve("fake-session.jsonl"), "{}\n");
+
+        ClaudeProcess cp = new ClaudeProcess();
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.List.of("claude"));
+        cp.appendSessionFlags(cmd, tmpDir.toString(),
+                java.util.Map.of("CLAUDE_CONFIG_DIR", tmpDir.resolve(".claude").toString()),
+                "", io.github.nbclaudecodegui.model.SessionMode.NEW, null);
+        assertFalse(cmd.contains("--continue"), "NEW mode should not add --continue");
+        assertFalse(cmd.contains("--resume"), "NEW mode should not add --resume");
+    }
+
+    @Test
+    void appendSessionFlags_resumeSpecific_addsResumeFlag(@TempDir Path tmpDir) {
+        ClaudeProcess cp = new ClaudeProcess();
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.List.of("claude"));
+        cp.appendSessionFlags(cmd, tmpDir.toString(), java.util.Map.of(),
+                "", io.github.nbclaudecodegui.model.SessionMode.RESUME_SPECIFIC, "abc-123");
+        assertTrue(cmd.contains("--resume"), "should add --resume");
+        assertTrue(cmd.contains("abc-123"), "should add the session id");
+        assertFalse(cmd.contains("--continue"), "should not add --continue");
+    }
+
+    // -------------------------------------------------------------------------
     // parseArgs
     // -------------------------------------------------------------------------
 

@@ -938,14 +938,23 @@ public class ClaudeSessionTab extends TopComponent
         cleanupChatLayout();
 
         if (mode == SessionMode.CLOSE_ONLY) {
-            // Just stop — do nothing more
+            doCloseTab();
             return;
+        }
+
+        if (mode == SessionMode.RESTART_ADVANCED) {
+            return; // selector already shown by cleanupChatLayout()
         }
 
         // Restart with new mode
         if (dir != null) {
             startSession(dir, profileName, extraCliArgs, mode, resumeId);
         }
+    }
+
+    /** Closes this tab. Protected to allow overriding in tests. */
+    protected void doCloseTab() {
+        close();
     }
 
     private void stopProcess() {

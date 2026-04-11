@@ -70,6 +70,31 @@ public final class ClaudeSessionStore {
     }
 
     // -------------------------------------------------------------------------
+    // Existence check
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns {@code true} if at least one session JSONL file exists for the
+     * given working directory.  Does not parse any file content.
+     *
+     * @param workingDir      working directory to check
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @return {@code true} if any {@code .jsonl} file is found
+     */
+    public static boolean hasAnySessions(Path workingDir, Path claudeConfigDir) {
+        Path dir = sessionsDir(workingDir, claudeConfigDir);
+        if (!Files.isDirectory(dir)) {
+            return false;
+        }
+        try (Stream<Path> files = Files.list(dir)) {
+            return files.anyMatch(p -> p.getFileName().toString().endsWith(".jsonl"));
+        } catch (IOException e) {
+            LOG.fine("Could not check sessions in " + dir + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // List
     // -------------------------------------------------------------------------
 

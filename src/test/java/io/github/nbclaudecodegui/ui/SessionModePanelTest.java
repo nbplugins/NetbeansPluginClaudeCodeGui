@@ -81,4 +81,18 @@ class SessionModePanelTest {
         SessionModePanel panel = new SessionModePanel(null, null, null, false);
         assertFalse(panel.isRenameButtonVisible(), "Rename button should be hidden by default (CONTINUE_LAST is default)");
     }
+
+    @Test
+    void getSelectedMode_restartAdvanced_whenSet() {
+        SessionModePanel panel = new SessionModePanel(null, null, null, true);
+        panel.setMode(SessionMode.RESTART_ADVANCED);
+        assertEquals(SessionMode.RESTART_ADVANCED, panel.getSelectedMode());
+    }
+
+    @Test
+    void isSelectionValid_trueForRestartAdvanced() {
+        SessionModePanel panel = new SessionModePanel(null, null, null, true);
+        panel.setMode(SessionMode.RESTART_ADVANCED);
+        assertTrue(panel.isSelectionValid());
+    }
 }

@@ -160,6 +160,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         if (initialDirectory != null) {
             pathCombo.setSelectedItem(initialDirectory.getAbsolutePath());
         }
+        pathCombo.addActionListener(e -> reloadSessionModePanel());
 
         // --- browse button ---
         browseButton = new JButton(NbBundle.getMessage(ClaudeSessionSelectorPanel.class, "BTN_Browse"));
@@ -395,8 +396,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
     }
 
     private void reloadSessionModePanel() {
-        if (sessionModePanel != null
-                && sessionModePanel.getSelectedMode() == SessionMode.RESUME_SPECIFIC) {
+        if (sessionModePanel != null) {
             sessionModePanel.reload(
                     resolveDir() != null ? resolveDir().toPath() : null,
                     resolveClaudeConfigDir(),
