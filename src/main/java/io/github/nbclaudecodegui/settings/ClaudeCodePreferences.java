@@ -422,6 +422,108 @@ public final class ClaudeCodePreferences {
                 .put(KEY_DEFAULT_EXTRA_CLI_ARGS, v != null ? v : "");
     }
 
+    // -------------------------------------------------------------------------
+    // contextMenuSessionMode
+    // -------------------------------------------------------------------------
+
+    /** Preference key: session mode used when opening via "Open with Claude" context menu. */
+    public static final String KEY_CONTEXT_MENU_SESSION_MODE = "contextMenuSessionMode";
+    /** Default: continue the last session. */
+    public static final SessionMode DEFAULT_CONTEXT_MENU_SESSION_MODE = SessionMode.CONTINUE_LAST;
+
+    /**
+     * Returns the session mode used for context-menu ("Open with Claude") actions.
+     *
+     * @return configured mode, or {@link #DEFAULT_CONTEXT_MENU_SESSION_MODE}
+     */
+    public static SessionMode getContextMenuSessionMode() {
+        String stored = NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_CONTEXT_MENU_SESSION_MODE,
+                        DEFAULT_CONTEXT_MENU_SESSION_MODE.name());
+        try {
+            SessionMode mode = SessionMode.valueOf(stored);
+            // CLOSE_ONLY and RESUME_SPECIFIC are not valid context-menu modes
+            if (mode == SessionMode.CLOSE_ONLY || mode == SessionMode.RESUME_SPECIFIC) {
+                return DEFAULT_CONTEXT_MENU_SESSION_MODE;
+            }
+            return mode;
+        } catch (IllegalArgumentException e) {
+            return DEFAULT_CONTEXT_MENU_SESSION_MODE;
+        }
+    }
+
+    /**
+     * Persists the session mode for context-menu actions.
+     *
+     * @param mode {@link SessionMode#NEW} or {@link SessionMode#CONTINUE_LAST}
+     */
+    public static void setContextMenuSessionMode(SessionMode mode) {
+        if (mode == null || mode == SessionMode.CLOSE_ONLY
+                || mode == SessionMode.RESUME_SPECIFIC) {
+            mode = DEFAULT_CONTEXT_MENU_SESSION_MODE;
+        }
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_CONTEXT_MENU_SESSION_MODE, mode.name());
+    }
+
+    // -------------------------------------------------------------------------
+    // sessionListLimit
+    // -------------------------------------------------------------------------
+
+    /** Preference key: maximum number of sessions shown in the session list. */
+    public static final String KEY_SESSION_LIST_LIMIT = "sessionListLimit";
+    /** Default: show the 30 most recent sessions. */
+    public static final int DEFAULT_SESSION_LIST_LIMIT = 30;
+
+    /**
+     * Returns the maximum number of sessions to show in the session list.
+     *
+     * @return session list limit (≥ 1)
+     */
+    public static int getSessionListLimit() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_SESSION_LIST_LIMIT, DEFAULT_SESSION_LIST_LIMIT);
+    }
+
+    /**
+     * Persists the session list limit.
+     *
+     * @param v new limit; clamped to [1, 500]
+     */
+    public static void setSessionListLimit(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_SESSION_LIST_LIMIT, Math.max(1, Math.min(500, v)));
+    }
+
+    // -------------------------------------------------------------------------
+    // hangTimeoutSeconds
+    // -------------------------------------------------------------------------
+
+    /** Preference key: seconds of PTY silence before a hang is declared (0 = disabled). */
+    public static final String KEY_HANG_TIMEOUT_SECONDS = "hangTimeoutSeconds";
+    /** Default: 60 seconds. */
+    public static final int DEFAULT_HANG_TIMEOUT_SECONDS = 60;
+
+    /**
+     * Returns the configured hang-detection timeout in seconds.
+     *
+     * @return timeout in seconds, or {@code 0} to disable hang detection
+     */
+    public static int getHangTimeoutSeconds() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_HANG_TIMEOUT_SECONDS, DEFAULT_HANG_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Persists the hang-detection timeout.
+     *
+     * @param v timeout in seconds; clamped to [0, 3600]; 0 disables detection
+     */
+    public static void setHangTimeoutSeconds(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_HANG_TIMEOUT_SECONDS, Math.max(0, Math.min(3600, v)));
+    }
+
     private static String validated(String value, String fallback) {
         return ENTER.equals(value) || SHIFT_ENTER.equals(value)
                 || CTRL_ENTER.equals(value) || ALT_ENTER.equals(value)

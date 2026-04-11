@@ -263,6 +263,7 @@ public class ClaudeSessionTab extends TopComponent
         setIcon(ImageUtilities.loadImage(ICON, true));
         updateDisplayName(dir);
         model.addListener(this);
+        controller.setHangCallback(this::showStartError);
     }
 
     // -------------------------------------------------------------------------

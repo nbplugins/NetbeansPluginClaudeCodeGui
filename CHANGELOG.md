@@ -1,3 +1,4 @@
+- Added hang detection: configurable timeout (default 60 s) kills the process and shows an error if no PTY output is received after launch; set to 0 to disable
 - Fixed MCP config not working on Windows due to quote stripping in CreateProcess (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/13)
 - Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start
 

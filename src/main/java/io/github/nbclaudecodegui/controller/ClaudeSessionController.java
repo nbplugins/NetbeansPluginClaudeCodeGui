@@ -84,6 +84,18 @@ public final class ClaudeSessionController {
             new javax.swing.Timer(400, e -> flushPendingPrompt());
     { promptFlushTimer.setRepeats(false); }
 
+    /** Timestamp (ms) when the PTY process was launched; used for hang detection. */
+    private volatile long processStartedAt = 0;
+
+    /** {@code true} once the first byte/line from the PTY has been received. */
+    private volatile boolean firstOutputReceived = false;
+
+    /**
+     * Called when a hang is detected: receives (command, errorMessage).
+     * Invoked on the EDT after the process is stopped.
+     */
+    private java.util.function.BiConsumer<String, String> hangCallback;
+
     /** {@code true} while a shift-tab thread is actively switching the CC edit mode. */
     private volatile boolean modeSwitchInProgress = false;
 
@@ -112,6 +124,12 @@ public final class ClaudeSessionController {
      */
     private final java.util.Deque<String> recentPtyLines = new java.util.ArrayDeque<>();
     private static final int PTY_LINE_BUFFER_SIZE = 40;
+
+    /** Package-private for tests: sets hang-detection state as if the process just started. */
+    void simulateProcessStart(long startedAt, boolean outputReceived) {
+        processStartedAt = startedAt;
+        firstOutputReceived = outputReceived;
+    }
 
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
     void simulatePtyLine(String line) {
@@ -167,11 +185,15 @@ public final class ClaudeSessionController {
         customModelIds = profile != null ? new ArrayList<>(profile.getCustomModels()) : List.of();
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile, extraCliArgs != null ? extraCliArgs : "");
 
+        processStartedAt = System.currentTimeMillis();
+        firstOutputReceived = false;
+
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
         screenContentDetector.setSessionTag(tag);
 
         connector.setLineListener(line -> {
+            firstOutputReceived = true;
             LOG.fine(tag + "[PTY line] " + line);
             synchronized (recentPtyLines) {
                 recentPtyLines.addLast(line);
@@ -248,6 +270,8 @@ public final class ClaudeSessionController {
         customModelIds = List.of();
         standardModelCount = 0;
         synchronized (recentPtyLines) { recentPtyLines.clear(); }
+        processStartedAt = 0;
+        firstOutputReceived = false;
 
         model.setModelList(List.of(), -1);
         model.clearChoiceMenu();
@@ -861,6 +885,18 @@ public final class ClaudeSessionController {
             // UNKNOWN → no transition
         }
 
+        // Hang detection: if no PTY output received within the configured timeout, kill the process
+        if (!firstOutputReceived && processStartedAt > 0) {
+            int timeoutSec = ClaudeCodePreferences.getHangTimeoutSeconds();
+            if (timeoutSec > 0) {
+                long elapsed = System.currentTimeMillis() - processStartedAt;
+                if (elapsed > timeoutSec * 1000L) {
+                    handleHang(timeoutSec);
+                    return;
+                }
+            }
+        }
+
         // Continuously sync CC screen mode → model (skip during switches and discovery)
         if (modelComboPopulated && !modeSwitchInProgress && !modelDiscoveryInProgress) {
             Optional<String> detected = screenContentDetector.detectEditMode(lines);
@@ -890,54 +926,15 @@ public final class ClaudeSessionController {
     }
 
     /**
-     * Kills the PTY process and resets timers/state, but does NOT call
-     * {@link ClaudeProcess#stop()} — so settings.local.json and the temp MCP
-     * config file are preserved until the error panel is dismissed and
-     * {@link #stopProcess()} is called.
-     *
-     * <p>{@code claudeProcess} is intentionally kept non-null so that the
-     * subsequent {@code stopProcess()} on panel dismiss can still call
-     * {@code claudeProcess.stop()} and clean up files.
-     */
-    private void killProcessForErrorPanel() {
-        if (statusTimer != null) {
-            statusTimer.stop();
-            statusTimer = null;
-        }
-        promptFlushTimer.stop();
-        if (connector != null) {
-            connector.setLineListener(null);
-        }
-        if (claudeProcess != null) {
-            claudeProcess.killOnly();
-        }
-        connector = null;
-        // claudeProcess kept — file cleanup deferred to stopProcess() on panel dismiss
-        modelComboPopulated = false;
-        modelDiscoveryInProgress = false;
-        modelDiscoveryAttempts = 0;
-        customModelIds = List.of();
-        standardModelCount = 0;
-        synchronized (recentPtyLines) { recentPtyLines.clear(); }
-        processStartedAt = 0;
-        firstOutputReceived = false;
-
-        model.setModelList(List.of(), -1);
-        model.clearChoiceMenu();
-        model.clearEditModeRegistry();
-        model.setLifecycle(SessionLifecycle.STARTING);
-    }
-
-    /**
      * Called from {@link #pollScreenState()} when the hang watchdog fires.
      * Stops the process and notifies the registered callback on the EDT.
      *
      * @param timeoutSec the configured timeout that elapsed (for the error message)
      */
     private void handleHang(int timeoutSec) {
-        LOG.severe("Hang detected in " + workingDir + ": no PTY output received within " + timeoutSec + " s — killing process");
+        LOG.warning("Hang detected: no PTY output received within " + timeoutSec + " s — killing process");
         String command = claudeProcess != null ? claudeProcess.getLastCommand() : "";
-        killProcessForErrorPanel();  // kill PTY; file cleanup deferred to panel dismiss
+        stopProcess();
         java.util.function.BiConsumer<String, String> cb = hangCallback;
         if (cb != null) {
             String msg = "No output received within " + timeoutSec
@@ -945,7 +942,6 @@ public final class ClaudeSessionController {
             cb.accept(command, msg);
         }
     }
-
 
     private void detectAndApplyInitialEditMode(List<String> lines) {
         screenContentDetector.detectEditMode(lines).ifPresent(m -> model.setEditMode(m));

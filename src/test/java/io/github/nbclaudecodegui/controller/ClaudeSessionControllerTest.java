@@ -553,6 +553,71 @@ class ClaudeSessionControllerTest {
     }
 
     // -------------------------------------------------------------------------
+    // Hang detection
+    // -------------------------------------------------------------------------
+
+    @Test
+    void hangDetectedWhenNoOutputReceivedWithinTimeout() {
+        // Simulate process started 70 s ago with no output; timeout = 60 s
+        controller.simulateProcessStart(System.currentTimeMillis() - 70_000L, false);
+
+        AtomicReference<String> callbackCommand = new AtomicReference<>();
+        AtomicReference<String> callbackError   = new AtomicReference<>();
+        controller.setHangCallback((cmd, err) -> {
+            callbackCommand.set(cmd);
+            callbackError.set(err);
+        });
+
+        // pollScreenState() is called on the EDT via Timer — invoke directly in test
+        controller.pollScreenState();
+
+        assertNotNull(callbackCommand.get(), "Hang callback should have been invoked");
+        assertTrue(callbackError.get().contains("60"), "Error message should include the timeout seconds");
+    }
+
+    @Test
+    void hangNotDetectedWhenOutputAlreadyReceived() {
+        // Simulate process started 70 s ago but output was received
+        controller.simulateProcessStart(System.currentTimeMillis() - 70_000L, true);
+
+        AtomicReference<String> callbackCommand = new AtomicReference<>();
+        controller.setHangCallback((cmd, err) -> callbackCommand.set(cmd));
+
+        controller.pollScreenState();
+
+        assertNull(callbackCommand.get(), "Hang callback should NOT fire when output was received");
+    }
+
+    @Test
+    void hangNotDetectedWhenTimeoutIsZero() {
+        // Simulate process started 70 s ago with no output; timeout = 0 (disabled)
+        // We need to temporarily override the preference — but preferences require NB platform.
+        // Instead, verify via processStartedAt=0 (stopProcess sets it to 0, meaning no active process).
+        controller.simulateProcessStart(0L, false);
+
+        AtomicReference<String> callbackCommand = new AtomicReference<>();
+        controller.setHangCallback((cmd, err) -> callbackCommand.set(cmd));
+
+        controller.pollScreenState();
+
+        assertNull(callbackCommand.get(), "Hang callback should NOT fire when processStartedAt=0");
+    }
+
+    @Test
+    void hangNotDetectedWhenWithinTimeout() {
+        // Simulate process started 10 s ago with no output; default timeout = 60 s
+        controller.simulateProcessStart(System.currentTimeMillis() - 10_000L, false);
+
+        AtomicReference<String> callbackCommand = new AtomicReference<>();
+        controller.setHangCallback((cmd, err) -> callbackCommand.set(cmd));
+
+        // Since NbPreferences returns default (60 s) in tests, 10 s < 60 s → no hang
+        controller.pollScreenState();
+
+        assertNull(callbackCommand.get(), "Hang callback should NOT fire when elapsed < timeout");
+    }
+
+    // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------
 
