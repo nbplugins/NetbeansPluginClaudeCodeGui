@@ -3,6 +3,7 @@ package io.github.nbclaudecodegui.process;
 import com.pty4j.PtyProcess;
 import io.github.nbclaudecodegui.settings.ClaudeProfile;
 import java.io.File;
+import java.util.List;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -168,6 +169,52 @@ class ClaudeProcessTest {
         assertNotNull(cleaned, "should keep file — user content remains");
         assertFalse(cleaned.contains("apiKeyHelper"), "cleaned should remove apiKeyHelper");
         assertTrue(cleaned.contains("myCustomKey"), "cleaned should preserve user content");
+    }
+
+    // -------------------------------------------------------------------------
+    // toShellCommand
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testToShellCommandNoQuoting() {
+        List<String> cmd = List.of("claude", "--continue");
+        // plain args need no quoting on either platform
+        assertEquals("claude --continue", ClaudeProcess.toShellCommand(cmd, false));
+        assertEquals("claude --continue", ClaudeProcess.toShellCommand(cmd, true));
+    }
+
+    @Test
+    void testToShellCommandQuotesJsonArgUnix() {
+        String json = ClaudeProcess.buildMcpConfigJson(28991);
+        List<String> cmd = List.of("claude", "--mcp-config", json, "--continue");
+        String result = ClaudeProcess.toShellCommand(cmd, false);
+        // Expected: claude --mcp-config "{\"mcpServers\":...}" --continue
+        assertTrue(result.startsWith("claude --mcp-config \""), "should quote JSON arg");
+        assertTrue(result.endsWith("\" --continue"), "should close quote before next arg");
+        String inner = result.substring("claude --mcp-config \"".length(),
+                result.lastIndexOf("\" --continue"));
+        // On Unix all " inside must be escaped as \"
+        for (int i = 0; i < inner.length(); i++) {
+            if (inner.charAt(i) == '"') {
+                assertTrue(i > 0 && inner.charAt(i - 1) == '\\',
+                        "unescaped double-quote at position " + i + " in: " + inner);
+            }
+        }
+    }
+
+    @Test
+    void testToShellCommandQuotesJsonArgWindows() {
+        String json = ClaudeProcess.buildMcpConfigJson(28991);
+        List<String> cmd = List.of("claude", "--mcp-config", json, "--continue");
+        String result = ClaudeProcess.toShellCommand(cmd, true);
+        // Expected: claude --mcp-config "{""mcpServers"":...}" --continue
+        assertTrue(result.startsWith("claude --mcp-config \""), "should quote JSON arg");
+        assertTrue(result.endsWith("\" --continue"), "should close quote before next arg");
+        String inner = result.substring("claude --mcp-config \"".length(),
+                result.lastIndexOf("\" --continue"));
+        // On Windows all " inside must be doubled as ""
+        assertFalse(inner.contains("\\\""), "Windows quoting must not use backslash-escape");
+        assertTrue(inner.contains("\"\""), "Windows quoting must double double-quotes");
     }
 
     // -------------------------------------------------------------------------

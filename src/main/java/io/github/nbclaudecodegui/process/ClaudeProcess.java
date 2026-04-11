@@ -177,7 +177,7 @@ public final class ClaudeProcess {
 
         appendSessionFlags(cmd, workingDir, env, extraCliArgs, mode, resumeSessionId);
 
-        lastCommand = String.join(" ", cmd);
+        lastCommand = toShellCommand(cmd);
         LOG.info("Claude command: " + lastCommand);
         PtyProcessBuilder builder = new PtyProcessBuilder(cmd.toArray(new String[0]))
                 .setEnvironment(env)
@@ -616,6 +616,37 @@ public final class ClaudeProcess {
      * Builds a minimal {@code settings.local.json} from scratch for the given port.
      * Used as a fallback when the existing file cannot be parsed.
      */
+    /**
+     * Converts a command list to a shell-pasteable string.
+     * Arguments that contain spaces, quotes, or other shell-special characters
+     * are quoted so the result can be pasted directly into a terminal.
+     * On Windows, double-quotes inside an argument are doubled ("").
+     * On other platforms, they are backslash-escaped (\").
+     */
+    static String toShellCommand(List<String> cmd) {
+        boolean windows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        return toShellCommand(cmd, windows);
+    }
+
+    static String toShellCommand(List<String> cmd, boolean windows) {
+        StringBuilder sb = new StringBuilder();
+        for (String arg : cmd) {
+            if (sb.length() > 0) sb.append(' ');
+            boolean needsQuoting = arg.isEmpty() || arg.chars().anyMatch(c ->
+                    c == ' ' || c == '\t' || c == '"' || c == '\'' || c == '\\' ||
+                    c == '{' || c == '}' || c == '(' || c == ')' ||
+                    c == '&' || c == '|' || c == '<' || c == '>');
+            if (!needsQuoting) {
+                sb.append(arg);
+            } else if (windows) {
+                sb.append('"').append(arg.replace("\"", "\"\"")).append('"');
+            } else {
+                sb.append('"').append(arg.replace("\"", "\\\"")).append('"');
+            }
+        }
+        return sb.toString();
+    }
+
     /**
      * Builds the JSON string to pass as {@code --mcp-config} to the Claude CLI.
      */
