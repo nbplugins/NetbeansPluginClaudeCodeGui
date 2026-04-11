@@ -68,11 +68,13 @@ class ClaudeProcessProfileTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void buildEnv_apiKeyProfile_injectsApiKey() {
+    void buildEnv_apiKeyProfile_doesNotInjectApiKey() {
+        // CLAUDE_API type: key is written to settings.local.json as apiKeyHelper, not env var
         ClaudeProfile p = ClaudeProfile.createNamed("API");
         p.setApiKey("sk-test-123");
         Map<String, String> env = ClaudeProcess.buildEnv(p, PROFILES_DIR);
-        assertEquals("sk-test-123", env.get("ANTHROPIC_API_KEY"));
+        assertFalse(env.containsKey("ANTHROPIC_API_KEY"),
+                "CLAUDE_API key must not be injected as env var (it goes into apiKeyHelper instead)");
     }
 
     @Test

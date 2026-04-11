@@ -146,8 +146,9 @@ public final class ClaudeProcess {
 
         Map<String, String> env = buildEnv(profile, ClaudeCodePreferences.getProfilesDir());
 
+        boolean apiKeyHelper = profile != null && !profile.getApiKey().isBlank() && profile.getBaseUrl().isBlank();
         LOG.info("Starting Claude: profile=" + (profile != null ? profile.getName() + " (" + profile.computeConnectionType() + ")" : "Default")
-                + ", ANTHROPIC_API_KEY=" + (!env.getOrDefault("ANTHROPIC_API_KEY", "").isBlank() ? "SET" : "NOT SET")
+                + ", apiKeyHelper=" + (apiKeyHelper ? "SET" : "NOT SET")
                 + ", ANTHROPIC_AUTH_TOKEN=" + (!env.getOrDefault("ANTHROPIC_AUTH_TOKEN", "").isBlank() ? "SET" : "NOT SET")
                 + ", ANTHROPIC_BASE_URL=" + env.getOrDefault("ANTHROPIC_BASE_URL", "(not set)")
                 + ", CLAUDE_CONFIG_DIR=" + env.getOrDefault("CLAUDE_CONFIG_DIR", "(inherited)")
@@ -168,7 +169,7 @@ public final class ClaudeProcess {
             cmd.add(buildMcpConfigJson(port));
             LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
             try {
-                writeSettingsLocalJson(workingDir, port);
+                writeSettingsLocalJson(workingDir, port, profile);
             } catch (IOException e) {
                 LOG.warning("Could not write .claude/settings.local.json: " + e.getMessage());
             }
@@ -336,7 +337,7 @@ public final class ClaudeProcess {
      * @param port       the port the MCP SSE server is listening on
      * @throws IOException if the file cannot be written
      */
-    static void writeSettingsLocalJson(String workingDir, int port) throws IOException {
+    static void writeSettingsLocalJson(String workingDir, int port, ClaudeProfile profile) throws IOException {
         Path claudeDir = Path.of(workingDir, ".claude");
         Files.createDirectories(claudeDir);
         Path cfg = claudeDir.resolve("settings.local.json");
@@ -345,7 +346,7 @@ public final class ClaudeProcess {
                 ? Files.readString(cfg, StandardCharsets.UTF_8)
                 : "{}";
 
-        String merged = mergeSettingsJson(existing, port);
+        String merged = mergeSettingsJson(existing, port, profile);
         Files.writeString(cfg, merged, StandardCharsets.UTF_8);
         LOG.info("settings.local.json written (merged): " + cfg.toAbsolutePath());
     }
@@ -369,7 +370,7 @@ public final class ClaudeProcess {
      * @param port         the MCP/hook server port
      * @return merged JSON string
      */
-    static String mergeSettingsJson(String existingJson, int port) {
+    static String mergeSettingsJson(String existingJson, int port, ClaudeProfile profile) {
         try {
             ObjectNode root = existingJson == null || existingJson.isBlank()
                     ? MAPPER.createObjectNode()
@@ -441,6 +442,15 @@ public final class ClaudeProcess {
             hooks.set("PermissionRequest", permArr);
 
             root.set("hooks", hooks);
+
+            // apiKeyHelper for CLAUDE_API (only apiKey set, no baseUrl)
+            if (profile != null && !profile.getApiKey().isBlank()
+                    && profile.getBaseUrl().isBlank()) {
+                String key = profile.getApiKey().replace("\"", "\\\"");
+                root.put("apiKeyHelper", "echo " + key);
+            } else {
+                root.remove("apiKeyHelper");
+            }
 
             return MAPPER.writeValueAsString(root);
 
@@ -539,6 +549,8 @@ public final class ClaudeProcess {
                     root.remove("hooks");
                 }
             }
+
+            root.remove("apiKeyHelper");
 
             return root.isEmpty() ? null : MAPPER.writeValueAsString(root);
 
