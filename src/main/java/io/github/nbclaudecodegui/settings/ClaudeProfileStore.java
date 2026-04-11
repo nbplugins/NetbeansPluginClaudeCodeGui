@@ -206,21 +206,37 @@ public final class ClaudeProfileStore {
     }
 
     /**
-     * Returns the {@code CLAUDE_CONFIG_DIR} path for a non-Default profile.
+     * Returns the storage directory (used as {@code CLAUDE_CONFIG_DIR}) for a
+     * non-Default profile.
      *
-     * <p>The path is {@code <profilesDir>/<profile.getId()>/}.
+     * <p>If the profile has an explicit {@link ClaudeProfile#getStorageDir()} set,
+     * that path is returned as-is.  Otherwise the computed path
+     * {@code <profilesDir>/<profile.getId()>} is used.
      *
-     * @param profile    the profile (must not be Default)
-     * @param profilesDir base directory for profile config dirs
+     * @param profile     the profile (must not be Default)
+     * @param profilesDir base directory for per-profile config dirs; used only
+     *                    when no explicit path is set
      * @return absolute path to this profile's config directory
      * @throws IllegalArgumentException if {@code profile.isDefault()} is {@code true}
      */
-    public static Path resolveConfigDir(ClaudeProfile profile, Path profilesDir) {
+    public static Path resolveStorageDir(ClaudeProfile profile, Path profilesDir) {
         if (profile.isDefault()) {
             throw new IllegalArgumentException(
                     "Default profile has no isolated config dir; caller must not set CLAUDE_CONFIG_DIR.");
         }
+        String explicit = profile.getStorageDir();
+        if (explicit != null && !explicit.isBlank()) {
+            return Path.of(explicit);
+        }
         return profilesDir.resolve(profile.getId());
+    }
+
+    /**
+     * @deprecated Use {@link #resolveStorageDir(ClaudeProfile, Path)} instead.
+     */
+    @Deprecated
+    public static Path resolveConfigDir(ClaudeProfile profile, Path profilesDir) {
+        return resolveStorageDir(profile, profilesDir);
     }
 
     /**

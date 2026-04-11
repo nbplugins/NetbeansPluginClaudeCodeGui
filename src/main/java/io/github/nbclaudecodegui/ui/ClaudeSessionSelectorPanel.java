@@ -417,7 +417,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         ClaudeProfile p = ClaudeProfileStore.findByName(profileName);
         if (p == null) return null;
         return io.github.nbclaudecodegui.settings.ClaudeProfileStore
-                .resolveConfigDir(p, ClaudeCodePreferences.getProfilesDir());
+                .resolveStorageDir(p, ClaudeCodePreferences.getProfilesDir());
     }
 
     private void onBrowse() {

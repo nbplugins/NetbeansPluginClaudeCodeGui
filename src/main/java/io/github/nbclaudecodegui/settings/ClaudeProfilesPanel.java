@@ -88,8 +88,12 @@ public final class ClaudeProfilesPanel extends JPanel {
     private JButton renameButton;
     /** Button to delete the current profile. */
     private JButton deleteButton;
-    /** Field showing the configuration directory for the selected profile. */
-    private JTextField configDirField;
+    /** Field showing the storage directory for the selected profile. */
+    private JTextField storageDirField;
+    /** Button to set a custom storage directory for the selected profile. */
+    private JButton changeStorageDirButton;
+    /** Button to reset the storage directory to the computed default. */
+    private JButton resetStorageDirButton;
     /** Field for extra CLI arguments passed to the claude process. */
     private JTextField extraCliArgsField;
 
@@ -224,13 +228,19 @@ public final class ClaudeProfilesPanel extends JPanel {
         mainPanel.add(profileRow, rowGbc);
         row++;
 
-        // --- Config directory (read-only) ---
+        // --- Storage directory row ---
         mainPanel.add(new JLabel("Profile Storage Directory:"), gbc(0, row, false));
-        configDirField = new JTextField(40);
-        configDirField.setEditable(false);
-        GridBagConstraints cfgGbc = gbcFill(1, row);
-        cfgGbc.gridwidth = 2;
-        mainPanel.add(configDirField, cfgGbc);
+        storageDirField = new JTextField(40);
+        storageDirField.setEditable(false);
+        mainPanel.add(storageDirField, gbcFill(1, row));
+        JPanel storageDirButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        changeStorageDirButton = new JButton("Change\u2026");
+        changeStorageDirButton.addActionListener(e -> onChangeStorageDir());
+        resetStorageDirButton = new JButton("Reset");
+        resetStorageDirButton.addActionListener(e -> onResetStorageDir());
+        storageDirButtons.add(changeStorageDirButton);
+        storageDirButtons.add(resetStorageDirButton);
+        mainPanel.add(storageDirButtons, gbc(2, row, false));
         row++;
 
         // --- Connection type section ---
@@ -626,13 +636,8 @@ public final class ClaudeProfilesPanel extends JPanel {
         renameButton.setEnabled(!def);
         deleteButton.setEnabled(!def);
 
-        // Config directory
-        if (def) {
-            configDirField.setText("~/.claude  (not overridden)");
-        } else {
-            Path profilesDir = ClaudeCodePreferences.getProfilesDir();
-            configDirField.setText(ClaudeProfileStore.resolveConfigDir(p, profilesDir).toAbsolutePath().toString());
-        }
+        // Storage directory
+        refreshStorageDirField(p);
 
         // Connection type
         ClaudeProfile.ConnectionType ct = p.computeConnectionType();
@@ -810,6 +815,46 @@ public final class ClaudeProfilesPanel extends JPanel {
             // Refresh config dir display for current profile
             ClaudeProfile p = currentProfile();
             if (p != null) loadProfileIntoForm(p);
+        }
+    }
+
+    private void onChangeStorageDir() {
+        ClaudeProfile p = currentFormProfile;
+        if (p == null || p.isDefault()) return;
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        String current = p.getStorageDir();
+        if (!current.isBlank()) {
+            chooser.setCurrentDirectory(new File(current));
+        } else {
+            Path profilesDir = ClaudeCodePreferences.getProfilesDir();
+            chooser.setCurrentDirectory(ClaudeProfileStore.resolveStorageDir(p, profilesDir).toFile());
+        }
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            p.withStorageDir(chooser.getSelectedFile().getAbsolutePath());
+            refreshStorageDirField(p);
+        }
+    }
+
+    private void onResetStorageDir() {
+        ClaudeProfile p = currentFormProfile;
+        if (p == null || p.isDefault()) return;
+        p.withStorageDir("");
+        refreshStorageDirField(p);
+    }
+
+    private void refreshStorageDirField(ClaudeProfile p) {
+        if (p.isDefault()) {
+            storageDirField.setText("~/.claude  (not overridden)");
+            changeStorageDirButton.setEnabled(false);
+            resetStorageDirButton.setEnabled(false);
+        } else {
+            Path profilesDir = ClaudeCodePreferences.getProfilesDir();
+            String resolved = ClaudeProfileStore.resolveStorageDir(p, profilesDir).toAbsolutePath().toString();
+            boolean isCustom = !p.getStorageDir().isBlank();
+            storageDirField.setText(isCustom ? resolved + "  (custom)" : resolved);
+            changeStorageDirButton.setEnabled(true);
+            resetStorageDirButton.setEnabled(isCustom);
         }
     }
 

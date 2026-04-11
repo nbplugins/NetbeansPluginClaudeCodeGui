@@ -383,7 +383,21 @@ Named profiles are stored under a common base directory (default: `~/.netbeans/c
 
 The base directory only affects newly created profiles. To move existing profiles to a new location, manually move their subdirectories to the new location first, then update the directory via the **New Profiles Directory** field (click **Change…**).
 
-The read-only **Profile Storage Directory** field shows the storage path for the selected profile. For the Default profile it shows `~/.claude (not overridden)`.
+The **Profile Storage Directory** field shows where Claude Code stores its configuration
+for the selected profile. For the **Default** profile it shows `~/.claude  (not overridden)`
+and the buttons are disabled. For named profiles:
+
+- **Computed path** (default) — `<profilesDir>/<profile-name>`. The field shows the path
+  with no suffix.
+- **Custom path** — any directory you choose. The field shows the path with a `(custom)` suffix.
+
+| Button | Effect |
+|--------|--------|
+| **Change…** | Opens a directory chooser. The chosen path is stored with the profile and used as `CLAUDE_CONFIG_DIR` when a session starts. |
+| **Reset** | Clears the custom path and reverts to the computed default. Enabled only when a custom path is set. |
+
+> **Tip:** Use a custom path to share a single Claude Code configuration directory across
+> multiple profiles, or to point a profile at an existing `~/.claude`-style directory.
 
 ### Managing profiles
 
@@ -393,7 +407,6 @@ The read-only **Profile Storage Directory** field shows the storage path for the
 | **Copy** | Duplicate the currently selected profile |
 | **Rename** | Rename the currently selected profile |
 | **Delete** | Delete the currently selected profile |
-| **Change…** | Change the profile storage directory |
 
 ### Authentication
 

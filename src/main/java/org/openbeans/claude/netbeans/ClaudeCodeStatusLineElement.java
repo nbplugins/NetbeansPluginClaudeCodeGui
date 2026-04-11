@@ -119,7 +119,7 @@ public class ClaudeCodeStatusLineElement implements StatusLineElementProvider {
         if (profileName != null && !ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
             ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
             if (profile != null) {
-                claudeConfigDir = ClaudeProfileStore.resolveConfigDir(
+                claudeConfigDir = ClaudeProfileStore.resolveStorageDir(
                         profile, ClaudeCodePreferences.getProfilesDir());
             }
         }

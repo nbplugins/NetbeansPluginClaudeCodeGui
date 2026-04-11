@@ -202,4 +202,33 @@ class ClaudeProfileStoreTest {
         assertEquals(1, loaded.size());
         assertEquals("--verbose --model foo", loaded.get(0).getExtraCliArgs());
     }
+
+    // -------------------------------------------------------------------------
+    // resolveStorageDir
+    // -------------------------------------------------------------------------
+
+    @Test
+    void resolveStorageDir_computed() {
+        ClaudeProfile p = ClaudeProfile.createNamed("MyProfile");
+        Path profilesDir = Path.of("/base/profiles");
+        Path result = ClaudeProfileStore.resolveStorageDir(p, profilesDir);
+        assertEquals(Path.of("/base/profiles/MyProfile"), result);
+    }
+
+    @Test
+    void resolveStorageDir_explicit() {
+        ClaudeProfile p = ClaudeProfile.createNamed("MyProfile");
+        p.withStorageDir("/my/custom/dir");
+        Path profilesDir = Path.of("/base/profiles");
+        Path result = ClaudeProfileStore.resolveStorageDir(p, profilesDir);
+        assertEquals(Path.of("/my/custom/dir"), result);
+    }
+
+    @Test
+    void resolveStorageDir_default_throws() {
+        ClaudeProfile def = ClaudeProfile.createDefault();
+        Path profilesDir = Path.of("/base/profiles");
+        assertThrows(IllegalArgumentException.class,
+                () -> ClaudeProfileStore.resolveStorageDir(def, profilesDir));
+    }
 }

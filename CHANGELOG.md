@@ -1,3 +1,4 @@
+- Added capability of changing the profile storage directory and sharing a single directory with several profiles
 - Fixed drag-and-drop into text fields: files are now inserted at the text caret position instead of where the mouse was dropped
 - Fixed Accept/Decline and Yes/No button colors to respect the IDE Look and Feel theme (dark themes no longer show clashing hardcoded colors)
 - Added session management when opening a session from the toolbar and when closing a tab via the Close button

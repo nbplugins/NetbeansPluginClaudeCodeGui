@@ -900,7 +900,7 @@ public class ClaudeSessionTab extends TopComponent
             io.github.nbclaudecodegui.settings.ClaudeProfile profile =
                     io.github.nbclaudecodegui.settings.ClaudeProfileStore.findByName(profileName);
             if (profile != null) {
-                claudeConfigDir = io.github.nbclaudecodegui.settings.ClaudeProfileStore.resolveConfigDir(
+                claudeConfigDir = io.github.nbclaudecodegui.settings.ClaudeProfileStore.resolveStorageDir(
                         profile, ClaudeCodePreferences.getProfilesDir());
             }
         }

@@ -51,6 +51,18 @@ class ClaudeProcessProfileTest {
         assertEquals(expected, env.get("CLAUDE_CONFIG_DIR"));
     }
 
+    @Test
+    void buildEnv_namedProfile_storageDirMatchesDefault_noClaudeConfigDir() {
+        // If a non-default profile's storage dir is explicitly set to ~/.claude
+        // (same as the default), CLAUDE_CONFIG_DIR must NOT be set.
+        Path defaultClaudeDir = Path.of(System.getProperty("user.home"), ".claude");
+        ClaudeProfile p = ClaudeProfile.createNamed("SameAsDefault");
+        p.setStorageDir(defaultClaudeDir.toString());
+        Map<String, String> env = ClaudeProcess.buildEnv(p, PROFILES_DIR);
+        assertFalse(env.containsKey("CLAUDE_CONFIG_DIR"),
+                "CLAUDE_CONFIG_DIR must not be set when storage dir equals ~/.claude");
+    }
+
     // -------------------------------------------------------------------------
     // Auth injection
     // -------------------------------------------------------------------------

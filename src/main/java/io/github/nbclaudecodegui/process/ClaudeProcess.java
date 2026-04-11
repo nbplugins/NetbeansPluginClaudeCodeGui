@@ -577,13 +577,18 @@ public final class ClaudeProcess {
         env.put("TERM", "xterm-256color");
 
         if (profile != null && !profile.isDefault()) {
-            // Set isolated CLAUDE_CONFIG_DIR for this profile
-            java.nio.file.Path configDir = ClaudeProfileStore.resolveConfigDir(profile, profilesDir);
-            env.put("CLAUDE_CONFIG_DIR", configDir.toAbsolutePath().toString());
-            try {
-                java.nio.file.Files.createDirectories(configDir);
-            } catch (java.io.IOException e) {
-                LOG.warning("Could not create profile config dir " + configDir + ": " + e.getMessage());
+            // Set isolated CLAUDE_CONFIG_DIR for this profile, unless the resolved
+            // directory is the same as the default (~/.claude) — in that case Claude
+            // already uses that directory without any override.
+            java.nio.file.Path configDir = ClaudeProfileStore.resolveStorageDir(profile, profilesDir);
+            java.nio.file.Path defaultClaudeDir = java.nio.file.Path.of(System.getProperty("user.home"), ".claude");
+            if (!configDir.toAbsolutePath().equals(defaultClaudeDir.toAbsolutePath())) {
+                env.put("CLAUDE_CONFIG_DIR", configDir.toAbsolutePath().toString());
+                try {
+                    java.nio.file.Files.createDirectories(configDir);
+                } catch (java.io.IOException e) {
+                    LOG.warning("Could not create profile config dir " + configDir + ": " + e.getMessage());
+                }
             }
         }
 

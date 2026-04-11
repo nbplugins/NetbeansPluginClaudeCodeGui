@@ -346,4 +346,43 @@ class ClaudeProfileTest {
         p.setExtraCliArgs(null);
         assertEquals("", p.getExtraCliArgs());
     }
+
+    // -------------------------------------------------------------------------
+    // storageDir
+    // -------------------------------------------------------------------------
+
+    @Test
+    void storageDir_defaultIsEmpty() {
+        assertEquals("", ClaudeProfile.createNamed("P").getStorageDir());
+    }
+
+    @Test
+    void storageDir_setAndGet() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setStorageDir("/my/custom/dir");
+        assertEquals("/my/custom/dir", p.getStorageDir());
+    }
+
+    @Test
+    void storageDir_nullTreatedAsEmpty() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setStorageDir(null);
+        assertEquals("", p.getStorageDir());
+    }
+
+    @Test
+    void storageDir_fluentSetter() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P").withStorageDir("/x/y");
+        assertEquals("/x/y", p.getStorageDir());
+    }
+
+    @Test
+    void storageDir_jacksonRoundTrip() throws Exception {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setStorageDir("/custom/path");
+        String json = mapper.writeValueAsString(p);
+        ClaudeProfile loaded = mapper.readValue(json, ClaudeProfile.class);
+        assertEquals("/custom/path", loaded.getStorageDir());
+    }
 }

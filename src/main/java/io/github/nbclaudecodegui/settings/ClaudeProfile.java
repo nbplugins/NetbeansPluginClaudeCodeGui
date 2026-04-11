@@ -150,6 +150,13 @@ public final class ClaudeProfile {
      */
     private String extraCliArgs;
 
+    /**
+     * Explicit storage directory for {@code CLAUDE_CONFIG_DIR}.
+     * When blank, the computed path {@code <profilesDir>/<id>} is used.
+     * When non-blank, this exact path is used as-is.
+     */
+    private String storageDir;
+
     // -------------------------------------------------------------------------
     // No-arg constructor (Jackson)
     // -------------------------------------------------------------------------
@@ -169,6 +176,7 @@ public final class ClaudeProfile {
         this.modelAliases  = new HashMap<>();
         this.customModels  = new ArrayList<>();
         this.extraCliArgs  = "";
+        this.storageDir    = "";
     }
 
     // -------------------------------------------------------------------------
@@ -545,6 +553,35 @@ public final class ClaudeProfile {
      */
     public void setExtraCliArgs(String extraCliArgs) {
         this.extraCliArgs = extraCliArgs != null ? extraCliArgs : "";
+    }
+
+    /**
+     * Returns the explicit storage directory for {@code CLAUDE_CONFIG_DIR}.
+     * A blank value means the computed path {@code <profilesDir>/<id>} is used.
+     *
+     * @return explicit storage dir, or {@code ""} if not set
+     */
+    public String getStorageDir() { return storageDir != null ? storageDir : ""; }
+
+    /**
+     * Sets the explicit storage directory for {@code CLAUDE_CONFIG_DIR}.
+     * Pass blank or {@code null} to fall back to the computed path.
+     *
+     * @param storageDir explicit path; {@code null} is treated as empty
+     */
+    public void setStorageDir(String storageDir) {
+        this.storageDir = storageDir != null ? storageDir : "";
+    }
+
+    /**
+     * Fluent setter for {@link #setStorageDir(String)}.
+     *
+     * @param storageDir explicit path; {@code null} clears the override
+     * @return this profile instance
+     */
+    public ClaudeProfile withStorageDir(String storageDir) {
+        setStorageDir(storageDir);
+        return this;
     }
 
     // -------------------------------------------------------------------------
