@@ -104,18 +104,22 @@ class ClaudeSessionTabErrorPanelTest {
                 .filter(t -> t.contains(":"))
                 .toList();
 
-        assertEquals(4, fieldLabels.size(), "Must have 4 field labels");
+        // 3 colon-containing labels: "Working Directory:", ":", "Command:", "Error:"
+        // Note: CLAUDE_CONFIG_DIR row uses a JTextField for the env var name + a ":" JLabel
+        assertEquals(4, fieldLabels.size(), "Must have 4 colon-containing labels");
         assertEquals("Working Directory:", fieldLabels.get(0));
-        assertEquals("CLAUDE_CONFIG_DIR:", fieldLabels.get(1));
-        assertEquals("Command:",          fieldLabels.get(2));
-        assertEquals("Error:",            fieldLabels.get(3));
+        assertEquals(":",                  fieldLabels.get(1));
+        assertEquals("Command:",           fieldLabels.get(2));
+        assertEquals("Error:",             fieldLabels.get(3));
 
+        // 5 JTextFields: dirField, cfgDirLabelField("CLAUDE_CONFIG_DIR"), cfgDirField, cmdField, errField
         java.util.List<JTextField> fields = collectFields(errorPanel);
-        assertEquals(4, fields.size(), "Must have 4 text fields");
-        assertEquals(dir.getAbsolutePath(), fields.get(0).getText());
-        assertEquals(cfgDir.toString(),     fields.get(1).getText());
-        assertEquals("claude --verbose",    fields.get(2).getText());
-        assertEquals("No such file",        fields.get(3).getText());
+        assertEquals(5, fields.size(), "Must have 5 text fields");
+        assertEquals(dir.getAbsolutePath(),  fields.get(0).getText());
+        assertEquals("CLAUDE_CONFIG_DIR",    fields.get(1).getText());
+        assertEquals(cfgDir.toString(),      fields.get(2).getText());
+        assertEquals("claude --verbose",     fields.get(3).getText());
+        assertEquals("No such file",         fields.get(4).getText());
     }
 
     @Test
@@ -130,8 +134,8 @@ class ClaudeSessionTabErrorPanelTest {
         assertNotNull(errorPanel);
 
         java.util.List<JTextField> fields = collectFields(errorPanel);
-        assertEquals(4, fields.size());
-        assertEquals("", fields.get(1).getText(), "CLAUDE_CONFIG_DIR field must be empty for default profile");
+        assertEquals(5, fields.size());
+        assertEquals("", fields.get(2).getText(), "CLAUDE_CONFIG_DIR value field must be empty for default profile");
     }
 
     @Test
