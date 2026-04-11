@@ -15,6 +15,7 @@ import io.github.nbclaudecodegui.settings.ClaudeProfile;
 import io.github.nbclaudecodegui.settings.ClaudeProfileStore;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
+import java.awt.FlowLayout;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.event.ComponentAdapter;
@@ -281,7 +282,6 @@ public class ClaudeSessionTab extends TopComponent
         setIcon(ImageUtilities.loadImage(ICON, true));
         updateDisplayName(dir);
         model.addListener(this);
-        controller.setHangCallback(this::showStartError);
     }
 
     // -------------------------------------------------------------------------
@@ -653,6 +653,17 @@ public class ClaudeSessionTab extends TopComponent
     private void startSession(File dir, String profileName, String extraCliArgs,
                                SessionMode mode, String resumeSessionId) {
         this.activeResumeSessionId = resumeSessionId;
+        Path configDir = null;
+        if (!ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
+            ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
+            if (profile != null && !profile.isDefault()) {
+                configDir = ClaudeProfileStore.resolveStorageDir(
+                        profile, ClaudeCodePreferences.getProfilesDir());
+            }
+        }
+        final Path capturedConfigDir = configDir;
+        controller.setHangCallback(
+            (cmd, err) -> showStartError(cmd, err, model.getWorkingDirectory(), capturedConfigDir));
         updateDisplayName(dir);
         sessionTag = "[" + dir.getName() + "] ";
         JediTermWidget widget = new JediTermWidget(new NetBeansSettingsProvider());
@@ -669,7 +680,7 @@ public class ClaudeSessionTab extends TopComponent
             LOG.log(Level.SEVERE, "Claude process failed to start in " + dir, ex);
             String command = controller.getLastAttemptedCommand();
             String errorMsg = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
-            showStartError(command, errorMsg);
+            showStartError(command, errorMsg, dir, capturedConfigDir);
         }
     }
 
@@ -764,11 +775,30 @@ public class ClaudeSessionTab extends TopComponent
         repaint();
     }
 
-    private void showStartError(String command, String error) {
+    /**
+     * Replaces the current layout with a diagnostics panel describing why the
+     * Claude Code process could not be started.
+     *
+     * @param command         the command that was attempted (may be empty)
+     * @param error           the error message
+     * @param workingDir      the working directory that was used (may be {@code null})
+     * @param claudeConfigDir the {@code CLAUDE_CONFIG_DIR} value in effect;
+     *                        {@code null} means the default profile (no override)
+     */
+    private void showStartError(String command, String error,
+                                File workingDir, Path claudeConfigDir) {
         if (splitPane != null) {
             remove(splitPane);
             splitPane = null;
         }
+
+        JTextField dirField = new JTextField(workingDir != null ? workingDir.getAbsolutePath() : "");
+        dirField.setEditable(false);
+        BasicTextContextMenu.attach(dirField, BasicTextContextMenu.createReadOnly(dirField));
+
+        JTextField cfgDirField = new JTextField(claudeConfigDir != null ? claudeConfigDir.toString() : "");
+        cfgDirField.setEditable(false);
+        BasicTextContextMenu.attach(cfgDirField, BasicTextContextMenu.createReadOnly(cfgDirField));
 
         JTextField cmdField = new JTextField(command);
         cmdField.setEditable(false);
@@ -784,10 +814,28 @@ public class ClaudeSessionTab extends TopComponent
         JPanel fieldsPanel = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.gridx = 0; gbc.gridy = 0; gbc.insets = new Insets(4, 0, 4, 8); gbc.anchor = GridBagConstraints.WEST;
+        fieldsPanel.add(new JLabel("Working Directory:"), gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
+        fieldsPanel.add(dirField, gbc);
+        gbc.gridx = 0; gbc.gridy = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        JTextField cfgDirLabelField = new JTextField("CLAUDE_CONFIG_DIR");
+        cfgDirLabelField.setEditable(false);
+        cfgDirLabelField.setBorder(null);
+        cfgDirLabelField.setBackground(null);
+        cfgDirLabelField.setOpaque(false);
+        BasicTextContextMenu.attach(cfgDirLabelField, BasicTextContextMenu.createReadOnly(cfgDirLabelField));
+        JPanel cfgDirLabelPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        cfgDirLabelPanel.setOpaque(false);
+        cfgDirLabelPanel.add(cfgDirLabelField);
+        cfgDirLabelPanel.add(new JLabel(":"));
+        fieldsPanel.add(cfgDirLabelPanel, gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
+        fieldsPanel.add(cfgDirField, gbc);
+        gbc.gridx = 0; gbc.gridy = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         fieldsPanel.add(new JLabel("Command:"), gbc);
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
         fieldsPanel.add(cmdField, gbc);
-        gbc.gridx = 0; gbc.gridy = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         fieldsPanel.add(new JLabel("Error:"), gbc);
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
         fieldsPanel.add(errField, gbc);
@@ -983,6 +1031,10 @@ public class ClaudeSessionTab extends TopComponent
             southCard       = null;
             southCardLayout = null;
             activeCard      = null;
+        }
+        if (errorPanel != null) {
+            remove(errorPanel);
+            errorPanel = null;
         }
         selectorPanel.setVisible(true);
         selectorPanel.unlock();
