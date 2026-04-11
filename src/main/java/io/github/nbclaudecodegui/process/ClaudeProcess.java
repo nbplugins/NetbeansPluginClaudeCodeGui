@@ -178,7 +178,7 @@ public final class ClaudeProcess {
         appendSessionFlags(cmd, workingDir, env, extraCliArgs, mode, resumeSessionId);
 
         lastCommand = toShellCommand(cmd);
-        LOG.info("Claude command: " + lastCommand);
+        LOG.info("Claude command: " + lastCommand + " (dir: " + workingDir + ")");
         PtyProcessBuilder builder = new PtyProcessBuilder(cmd.toArray(new String[0]))
                 .setEnvironment(env)
                 .setDirectory(workingDir)

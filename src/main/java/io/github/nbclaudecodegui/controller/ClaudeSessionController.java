@@ -73,6 +73,7 @@ public final class ClaudeSessionController {
 
     private ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
+    private java.io.File workingDir;
 
     /** Polls screen state every 500 ms; owned here to allow proper teardown. */
     private javax.swing.Timer statusTimer;
@@ -200,6 +201,7 @@ public final class ClaudeSessionController {
                              SessionMode mode, String resumeSessionId,
                              JediTermWidget widget) throws IOException {
         String tag = "[" + dir.getName() + "] ";
+        workingDir = dir;
         claudeProcess = new ClaudeProcess();
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
         customModelIds = profile != null ? new ArrayList<>(profile.getCustomModels()) : List.of();
@@ -979,7 +981,7 @@ public final class ClaudeSessionController {
      * @param timeoutSec the configured timeout that elapsed (for the error message)
      */
     private void handleHang(int timeoutSec) {
-        LOG.warning("Hang detected: no PTY output received within " + timeoutSec + " s — killing process");
+        LOG.severe("Hang detected in " + workingDir + ": no PTY output received within " + timeoutSec + " s — killing process");
         String command = claudeProcess != null ? claudeProcess.getLastCommand() : "";
         stopProcess();
         java.util.function.BiConsumer<String, String> cb = hangCallback;

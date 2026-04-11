@@ -25,6 +25,7 @@ import java.nio.file.Path;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
 import java.util.List;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -665,6 +666,7 @@ public class ClaudeSessionTab extends TopComponent
         try {
             controller.startProcess(dir, profileName, extraCliArgs, mode, resumeSessionId, widget);
         } catch (IOException ex) {
+            LOG.log(Level.SEVERE, "Claude process failed to start in " + dir, ex);
             String command = controller.getLastAttemptedCommand();
             String errorMsg = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
             showStartError(command, errorMsg);
