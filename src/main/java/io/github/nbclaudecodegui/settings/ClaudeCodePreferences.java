@@ -525,6 +525,32 @@ public final class ClaudeCodePreferences {
                 .putInt(KEY_HANG_TIMEOUT_SECONDS, Math.max(0, Math.min(3600, v)));
     }
 
+    // -------------------------------------------------------------------------
+    // mcpEnabled
+    // -------------------------------------------------------------------------
+
+    /** Preference key: pass {@code --mcp-config} flag to claude CLI. */
+    private static final String MCP_ENABLED = "mcpEnabled";
+
+    /**
+     * Returns whether MCP integration is enabled (default {@code true}).
+     *
+     * @return {@code true} to pass {@code --mcp-config}; {@code false} to skip it
+     */
+    public static boolean isMcpEnabled() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getBoolean(MCP_ENABLED, true);
+    }
+
+    /**
+     * Persists the MCP-enabled flag.
+     *
+     * @param v {@code true} to enable MCP integration
+     */
+    public static void setMcpEnabled(boolean v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class).putBoolean(MCP_ENABLED, v);
+    }
+
     private static String validated(String value, String fallback) {
         return ENTER.equals(value) || SHIFT_ENTER.equals(value)
                 || CTRL_ENTER.equals(value) || ALT_ENTER.equals(value)

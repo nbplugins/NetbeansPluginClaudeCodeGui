@@ -333,6 +333,8 @@ Open **Tools → Options → Claude Code** in NetBeans.
 
 ### General tab
 
+![Settings — General tab](screenshots/settings-general.png)
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Claude CLI path | (empty) | Absolute path to the `claude` executable. Leave empty to use the system `PATH`. |
@@ -341,13 +343,24 @@ Open **Tools → Options → Claude Code** in NetBeans.
 | History TTL (days) | 0 | Number of days after which history entries expire. 0 = keep forever. |
 | Send prompt key | Ctrl+Enter | Key combination that sends the prompt from the input area. |
 | Insert newline key | Enter | Key combination that inserts a newline in the input area. The send and newline keys are configured independently but cannot be set to the same value. |
-| Debug mode | Off | Enables verbose logging of all Claude I/O to the NetBeans log file and the Output window. |
 | Open diff in a separate tab | Off | Opens the diff panel in a new IDE tab instead of embedding it in the session tab. |
 | Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
 | Start new session when opening with Claude | Off (Continue last) | Checked → always start a **New session** when opening with the project context menu or when NetBeans restores a closed session tab on restart. Unchecked → **Continue last**. |
 | Session list limit | 30 | Maximum number of past sessions shown in the session selector table. |
 
+### Advanced tab
+
+![Settings — Advanced tab](screenshots/settings-advanced.png)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Debug mode | Off | Enables verbose logging of all Claude I/O to the NetBeans log file and the Output window. |
+| Hang timeout (seconds) | 60 | Kill the process if no PTY output is received within this many seconds after launch. Set to 0 to disable. |
+| Enable MCP integration | On | When unchecked, the `--mcp-config` flag is not passed to `claude`. Hooks (PreToolUse) are always configured regardless of this setting. Disable only if MCP causes issues. |
+
 ### Favorites tab
+
+![Settings — Favorites tab](screenshots/settings-favorites.png)
 
 Manages global favorites — prompts available in every project.
 
@@ -364,6 +377,10 @@ The table shows all global favorites with columns: ☐ (checkbox for multi-selec
 | **Delete** | Delete selected favorite(s) |
 
 The search field filters entries by text.
+
+### Profiles tab
+
+See [Section 12 — Profiles](#12-profiles) for full details on creating and managing profiles.
 
 ---
 
@@ -651,14 +668,14 @@ As you move the cursor or change the selection in any open editor, the plugin au
 If Claude says a tool is unavailable (e.g. "I don't have access to `getWorkspaceFolders`"):
 
 1. Check that no other application is using the MCP server port (**Tools → Options → Claude Code → General → MCP server port**, default: 28991). Change the port if needed and restart the IDE.
-2. Enable **Debug mode** and check the log file (`~/.netbeans/<version>/var/log/messages.log`) for `MCP SSE server started on port`.
+2. Enable **Debug mode** (**Tools → Options → Claude Code → Advanced**) and check the log file (`~/.netbeans/<version>/var/log/messages.log`) for `MCP SSE server started on port`.
 
 ---
 
 ## 15. Troubleshooting
 
 ### Enable debug mode
-Go to **Tools → Options → Claude Code → General** and check **Debug mode**. This writes detailed logs of all Claude I/O (PTY bytes, MCP messages, hook calls) to the NetBeans log file.
+Go to **Tools → Options → Claude Code → Advanced** and check **Debug mode**. This writes detailed logs of all Claude I/O (PTY bytes, MCP messages, hook calls) to the NetBeans log file.
 
 ### Log file location
 ```

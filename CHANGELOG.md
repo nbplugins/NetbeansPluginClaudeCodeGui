@@ -1,3 +1,4 @@
+- Added Advanced tab in Tools → Options → Claude Code with Debug mode, Hang timeout, and a new "Enable MCP integration" toggle (disabling it skips the --mcp-config flag while hooks remain active)
 - Fixed process start errors and hang timeouts now logged to the IDE log file at SEVERE level
 - Added hang detection: configurable timeout (default 60 s) kills the process and shows an error if no PTY output is received after launch; set to 0 to disable
 - Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start

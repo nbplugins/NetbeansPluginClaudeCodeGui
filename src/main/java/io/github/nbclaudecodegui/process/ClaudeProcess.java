@@ -163,11 +163,15 @@ public final class ClaudeProcess {
                 + ", port=" + (mcp != null ? mcp.getServerPort() : -1));
         if (mcp != null && mcp.isServerRunning()) {
             int port = mcp.getServerPort();
-            // Pass MCP server config via --mcp-config (Claude 2.x no longer reads
-            // mcpServers from settings.local.json; --mcp-config works in TUI mode).
-            cmd.add("--mcp-config");
-            cmd.add(buildMcpConfigJson(port));
-            LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
+            if (io.github.nbclaudecodegui.settings.ClaudeCodePreferences.isMcpEnabled()) {
+                // Pass MCP server config via --mcp-config (Claude 2.x no longer reads
+                // mcpServers from settings.local.json; --mcp-config works in TUI mode).
+                cmd.add("--mcp-config");
+                cmd.add(buildMcpConfigJson(port));
+                LOG.info("Passing --mcp-config with netbeans SSE server on port " + port);
+            } else {
+                LOG.info("MCP integration disabled by user preference; skipping --mcp-config");
+            }
             try {
                 writeSettingsLocalJson(workingDir, port, profile);
             } catch (IOException e) {
