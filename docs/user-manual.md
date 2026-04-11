@@ -545,7 +545,10 @@ While a session is running, you can close it and, optionally, open a different o
 **Close button (⏻) in the status bar** → opens the **Save & Switch** dialog:
 
 - **Session name field** — pre-filled with the current session name. Giving a session a descriptive name makes it easier to find it later in the session list when using "Resume specific".
-- **Mode panel** — choose what happens next: **Close only** (just close, don't open another session) / New session / Continue last / Resume specific. For Resume specific, a session table is shown — see [Session selector panel](#session-selector-panel) for details.
+- **Mode panel** — choose what happens next:
+  - **Close only** — stop the session and close the tab. The conversation is saved and can be resumed later.
+  - **Restart Advanced...** — stop the session and return to the session selector panel in the same tab, allowing full reconfiguration (directory, profile, mode) before starting a new session.
+  - **New session** / **Continue last** / **Resume specific** — stop and immediately start another session in the same tab. For Resume specific, a session table is shown — see [Session selector panel](#session-selector-panel) for details.
 - Click **OK** to close (and optionally rename) the session and open the next one as chosen. When "Resume specific" is selected, you can also double-click a row in the session table to confirm immediately.
 
 ![Save & Switch dialog](screenshots/save-and-switch.png)
@@ -566,7 +569,8 @@ While a session is running, you can close it and, optionally, open a different o
 | Save current session and start a fresh one (can return later) | **Via ⏻:** optionally fill in a session name → New session → OK<br>**Via context menu:** right-click input area → Start New Session (no rename option) |
 | Start fresh without being able to return to current context | Type `/clear` in the input area and send it |
 | Switch to a specific past session | ⏻ → Resume specific → pick session → OK (or double-click the row)<br>or: right-click input area → Switch to Session… → pick session |
-| Close without opening another session | × on the tab<br>or: ⏻ → Close only → OK<br>or: ⏻ → fill in a session name → Close only → OK |
+| Close tab, keep session for later | × on the tab<br>or: ⏻ → Close only → OK<br>or: ⏻ → fill in a session name → Close only → OK |
+| Stop session, reconfigure everything, then start | ⏻ → Restart Advanced... → OK — returns to the selector panel in the same tab |
 
 ### Renaming a session
 
