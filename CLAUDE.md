@@ -35,9 +35,31 @@ A release has an explicit **start** and **finish**:
 **Finishing a release** (only this, nothing else):
 - Update `CHANGELOG.md` heading to `# MAJOR.MINOR` (matching current `pom.xml`) → CI sees this as the release signal, creates release tag `MAJOR.MINOR.N`, and publishes a GitHub Release
 
-**After a published release** — any push without bumping `pom.xml` → **build error**. Start a new release first.
+**After a published release** — CI auto-edits `CHANGELOG.md`: the release heading `# MAJOR.MINOR (date)` is replaced with `# MAJOR.MINOR.N (date)`. Development can continue immediately; patch versions increment from the last released N.
 
 Implemented in `build-scripts/autotag.sh` and `.github/workflows/build.yml`.
+
+### Side releases (patch releases on an old branch)
+
+Use when a critical fix must be shipped for an older version while `main` has already moved to a newer `MAJOR.MINOR`.
+
+**Setup (once per side branch):**
+```bash
+git checkout -b release/0.17 0.18^    # commit just before the next base tag (0.18, 0.19, etc.)
+git push origin release/0.17
+```
+`pom.xml` on this branch already has `0.17.0-SNAPSHOT` — no change needed.
+
+**Development:** push fixes to `release/0.17`; CI builds snapshot versions automatically.
+Version numbers continue from the last released patch: if `0.17.3` was the last release, the next builds are `0.17.4`, `0.17.5`, etc.
+
+**Releasing a patch:**
+- Add `# 0.17 (YYYY-MM-DD)` at the top of `CHANGELOG.md` (together with the fix's bullet)
+- Push → CI creates tag `0.17.N`, publishes GitHub Release, and auto-edits `CHANGELOG.md` to `# 0.17.N (YYYY-MM-DD)`
+
+**Next patch:** add `# 0.17 (YYYY-MM-DD)` again and repeat.
+
+`main` is fully unaffected throughout.
 
 ### CHANGELOG.md rules
 
