@@ -60,14 +60,25 @@ if [[ "$(echo "$FIRST_LINE" | cut -d' ' -f1)" == "#" ]]; then
 fi
 
 if [[ "$CHANGELOG_MM" == "$MM" ]]; then
-  echo "Release signal: creating tag $FULL_VER"
-  sed '0,/^#/d;/^#/Q' "$CHANGELOG" > "$RELEASE_NOTES" || echo "Release $FULL_VER" > "$RELEASE_NOTES"
-  git tag "$FULL_VER"
-  git push origin "$FULL_VER"
+  if [[ -n "$RELEASE_TAG" ]] && ! grep -qE "^# ${MM_ESCAPED}\.[0-9]+" "$CHANGELOG"; then
+    # Stale release signal: published release exists but CHANGELOG was never auto-edited
+    # (e.g. branch created from old release commit). Rename heading, don't create new release.
+    echo "Stale release signal: renaming to $RELEASE_TAG"
+    sed -i "s|^# ${MM_ESCAPED} |# ${RELEASE_TAG} |" "$CHANGELOG"
+    git add "$CHANGELOG"
+    git commit -m "Released ${RELEASE_TAG}"
+    git push origin HEAD
+  else
+    # Fresh release signal: create new release tag
+    echo "Release signal: creating tag $FULL_VER"
+    sed '0,/^#/d;/^#/Q' "$CHANGELOG" > "$RELEASE_NOTES" || echo "Release $FULL_VER" > "$RELEASE_NOTES"
+    git tag "$FULL_VER"
+    git push origin "$FULL_VER"
 
-  # Auto-edit CHANGELOG: replace "# MM (date)" with "# FULL_VER (date)" to clear the release signal
-  sed -i "s|^# ${MM_ESCAPED} |# ${FULL_VER} |" "$CHANGELOG"
-  git add "$CHANGELOG"
-  git commit -m "Released ${FULL_VER}"
-  git push origin HEAD
+    # Auto-edit CHANGELOG: replace "# MM (date)" with "# FULL_VER (date)" to clear the release signal
+    sed -i "s|^# ${MM_ESCAPED} |# ${FULL_VER} |" "$CHANGELOG"
+    git add "$CHANGELOG"
+    git commit -m "Released ${FULL_VER}"
+    git push origin HEAD
+  fi
 fi
