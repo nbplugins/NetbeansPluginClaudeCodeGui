@@ -32,7 +32,7 @@ jobs:
           cache: maven
 
       - name: Auto-tag
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -60,9 +60,21 @@ jobs:
             fi
             UPLOAD_URL=$(gh release view "$REL_TAG" --json uploadUrl -q .uploadUrl)
           else
-            BASE_TAG=$(git tag | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || echo "0.0")
-            N=$(git rev-list "${BASE_TAG}..HEAD" --count 2>/dev/null || echo "0")
-            VER="${BASE_TAG}.${N}"
+            POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout | sed 's/-.*//')
+            MM=$(echo "$POM_VERSION" | cut -d. -f1-2)
+            MM_ESC="${MM//./\\.}"
+            LAST_REL=$(git tag | grep -E "^${MM_ESC}\.[0-9]+$" | sort -V | tail -1)
+            BASE_TAG=$(git tag | grep -E "^${MM_ESC}$" | sort -V | tail -1 || echo "")
+            if [[ -n "$LAST_REL" ]]; then
+              START=$(echo "$LAST_REL" | cut -d. -f3)
+              N=$(git rev-list "${LAST_REL}..HEAD" --count 2>/dev/null || echo "0")
+              VER="${MM}.$((START + N))"
+            elif [[ -n "$BASE_TAG" ]]; then
+              N=$(git rev-list "${BASE_TAG}..HEAD" --count 2>/dev/null || echo "0")
+              VER="${MM}.${N}"
+            else
+              VER="${MM}.0"
+            fi
             RELEASE=OFF
             UPLOAD_URL=""
             REL_TAG=""
