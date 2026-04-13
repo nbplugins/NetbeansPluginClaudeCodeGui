@@ -576,11 +576,17 @@ public class ClaudeSessionTab extends TopComponent
     /**
      * Starts a session for {@code dir} with {@code profileName} without showing any dialogs.
      *
+     * <p>The profile's {@code extraCliArgs} are resolved here so that the global
+     * "Extra CLI args" setting in Tools → Options is honoured when a session is
+     * launched from the project context menu ("Open with Claude Code").
+     * Previously passing {@code null} meant the setting was silently ignored.
+     *
      * @param dir         working directory
      * @param profileName profile name, or {@code null} for Default
      */
     public void autoStart(File dir, String profileName) {
-        autoStart(dir, profileName, null);
+        ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
+        autoStart(dir, profileName, profile.getExtraCliArgs());
     }
 
     public void autoStart(File dir, String profileName, String extraCliArgs) {
