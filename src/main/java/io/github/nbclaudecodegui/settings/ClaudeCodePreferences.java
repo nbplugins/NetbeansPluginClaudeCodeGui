@@ -422,6 +422,61 @@ public final class ClaudeCodePreferences {
                 .put(KEY_DEFAULT_EXTRA_CLI_ARGS, v != null ? v : "");
     }
 
+    // -------------------------------------------------------------------------
+    // hangTimeoutSeconds
+    // -------------------------------------------------------------------------
+
+    /** Preference key: seconds of PTY silence before a hang is declared (0 = disabled). */
+    public static final String KEY_HANG_TIMEOUT_SECONDS = "hangTimeoutSeconds";
+    /** Default: 60 seconds. */
+    public static final int DEFAULT_HANG_TIMEOUT_SECONDS = 60;
+
+    /**
+     * Returns the configured hang-detection timeout in seconds.
+     *
+     * @return timeout in seconds, or {@code 0} to disable hang detection
+     */
+    public static int getHangTimeoutSeconds() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_HANG_TIMEOUT_SECONDS, DEFAULT_HANG_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Persists the hang-detection timeout.
+     *
+     * @param v timeout in seconds; clamped to [0, 3600]; 0 disables detection
+     */
+    public static void setHangTimeoutSeconds(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_HANG_TIMEOUT_SECONDS, Math.max(0, Math.min(3600, v)));
+    }
+
+    // -------------------------------------------------------------------------
+    // mcpEnabled
+    // -------------------------------------------------------------------------
+
+    /** Preference key: pass {@code --mcp-config} flag to claude CLI. */
+    private static final String MCP_ENABLED = "mcpEnabled";
+
+    /**
+     * Returns whether MCP integration is enabled (default {@code true}).
+     *
+     * @return {@code true} to pass {@code --mcp-config}; {@code false} to skip it
+     */
+    public static boolean isMcpEnabled() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getBoolean(MCP_ENABLED, true);
+    }
+
+    /**
+     * Persists the MCP-enabled flag.
+     *
+     * @param v {@code true} to enable MCP integration
+     */
+    public static void setMcpEnabled(boolean v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class).putBoolean(MCP_ENABLED, v);
+    }
+
     private static String validated(String value, String fallback) {
         return ENTER.equals(value) || SHIFT_ENTER.equals(value)
                 || CTRL_ENTER.equals(value) || ALT_ENTER.equals(value)
