@@ -34,6 +34,9 @@ public final class ClaudeProfileStore {
     /** NbPreferences key under which the JSON array is stored. */
     public static final String KEY_PROFILES = "profiles";
 
+    /** NbPreferences key under which the full Default profile JSON is stored. */
+    private static final String KEY_DEFAULT_PROFILE = "defaultProfile";
+
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     private static final TypeReference<List<ClaudeProfile>> LIST_TYPE =
@@ -56,7 +59,32 @@ public final class ClaudeProfileStore {
     public static List<ClaudeProfile> getProfiles() {
         List<ClaudeProfile> result = new ArrayList<>();
         ClaudeProfile def = ClaudeProfile.createDefault();
-        def.setExtraCliArgs(ClaudeCodePreferences.getDefaultExtraCliArgs());
+
+        String defaultJson = NbPreferences.forModule(ClaudeProfileStore.class)
+                .get(KEY_DEFAULT_PROFILE, null);
+        if (defaultJson != null) {
+            try {
+                ClaudeProfile stored = MAPPER.readValue(defaultJson, ClaudeProfile.class);
+                def.setToken(stored.getToken());
+                def.setApiKey(stored.getApiKey());
+                def.setBaseUrl(stored.getBaseUrl());
+                def.setProxyMode(stored.getProxyMode());
+                def.setHttpProxy(stored.getHttpProxy());
+                def.setHttpsProxy(stored.getHttpsProxy());
+                def.setNoProxy(stored.getNoProxy());
+                def.setExtraEnvVars(stored.getExtraEnvVars());
+                def.setExtraCliArgs(stored.getExtraCliArgs());
+                def.setModelAliases(stored.getModelAliases());
+                def.setCustomModels(stored.getCustomModels());
+                def.setStorageDir(stored.getStorageDir());
+            } catch (Exception e) {
+                LOG.warning("Could not parse stored Default profile JSON, using defaults. Cause: " + e);
+                def.setExtraCliArgs(ClaudeCodePreferences.getDefaultExtraCliArgs());
+            }
+        } else {
+            def.setExtraCliArgs(ClaudeCodePreferences.getDefaultExtraCliArgs());
+        }
+
         result.add(def);
 
         String json = NbPreferences.forModule(ClaudeProfileStore.class)
@@ -108,7 +136,14 @@ public final class ClaudeProfileStore {
         if (profiles != null) {
             for (ClaudeProfile p : profiles) {
                 if (p.isDefault()) {
-                    ClaudeCodePreferences.setDefaultExtraCliArgs(p.getExtraCliArgs());
+                    ClaudeCodePreferences.setDefaultExtraCliArgs(p.getExtraCliArgs()); // back-compat
+                    try {
+                        String defaultJson = MAPPER.writeValueAsString(p);
+                        NbPreferences.forModule(ClaudeProfileStore.class)
+                                .put(KEY_DEFAULT_PROFILE, defaultJson);
+                    } catch (Exception e) {
+                        LOG.severe("Could not serialise Default profile: " + e.getMessage());
+                    }
                 } else {
                     toSave.add(p);
                 }

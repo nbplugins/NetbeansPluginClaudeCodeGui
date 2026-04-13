@@ -204,6 +204,83 @@ class ClaudeProfileStoreTest {
     }
 
     // -------------------------------------------------------------------------
+    // Default profile full round-trip (bug: all fields except extraCliArgs were lost)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void defaultProfile_allFields_roundTrip() {
+        try {
+            ClaudeProfile def = ClaudeProfile.createDefault();
+            def.setApiKey("sk-api-key-123");
+            def.setToken("oauth-token-xyz");
+            def.setBaseUrl("https://custom.api.example.com");
+            def.setProxyMode(ClaudeProfile.ProxyMode.CUSTOM);
+            def.setHttpProxy("http://proxy.example.com:8080");
+            def.setHttpsProxy("https://proxy.example.com:8443");
+            def.setNoProxy("localhost,127.0.0.1");
+            java.util.List<String[]> defEnvVars = new java.util.ArrayList<>();
+            defEnvVars.add(new String[]{"FOO", "bar"});
+            def.setExtraEnvVars(defEnvVars);
+            def.setExtraCliArgs("--verbose");
+
+            ClaudeProfileStore.saveProfiles(java.util.List.of(def));
+
+            List<ClaudeProfile> loaded = ClaudeProfileStore.getProfiles();
+            ClaudeProfile loadedDef = loaded.get(0);
+            assertTrue(loadedDef.isDefault());
+            assertEquals("sk-api-key-123", loadedDef.getApiKey());
+            assertEquals("oauth-token-xyz", loadedDef.getToken());
+            assertEquals("https://custom.api.example.com", loadedDef.getBaseUrl());
+            assertEquals(ClaudeProfile.ProxyMode.CUSTOM, loadedDef.getProxyMode());
+            assertEquals("http://proxy.example.com:8080", loadedDef.getHttpProxy());
+            assertEquals("https://proxy.example.com:8443", loadedDef.getHttpsProxy());
+            assertEquals("localhost,127.0.0.1", loadedDef.getNoProxy());
+            assertEquals("--verbose", loadedDef.getExtraCliArgs());
+            assertEquals(1, loadedDef.getExtraEnvVars().size());
+            assertArrayEquals(new String[]{"FOO", "bar"}, (Object[]) loadedDef.getExtraEnvVars().get(0));
+        } catch (Exception e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "NbPreferences not available");
+        }
+    }
+
+    @Test
+    void namedProfile_allFields_roundTrip() {
+        try {
+            ClaudeProfile p = ClaudeProfile.createNamed("Work");
+            p.setApiKey("sk-named-key");
+            p.setToken("named-token");
+            p.setBaseUrl("https://api.work.example.com");
+            p.setProxyMode(ClaudeProfile.ProxyMode.CUSTOM);
+            p.setHttpProxy("http://work-proxy:8080");
+            p.setHttpsProxy("https://work-proxy:8443");
+            p.setNoProxy("internal.example.com");
+            java.util.List<String[]> namedEnvVars = new java.util.ArrayList<>();
+            namedEnvVars.add(new String[]{"ENV_VAR", "value1"});
+            p.setExtraEnvVars(namedEnvVars);
+            p.setExtraCliArgs("--model claude-opus");
+
+            ClaudeProfileStore.saveProfiles(java.util.List.of(ClaudeProfile.createDefault(), p));
+
+            List<ClaudeProfile> loaded = ClaudeProfileStore.getProfiles();
+            assertEquals(2, loaded.size());
+            ClaudeProfile loadedP = loaded.get(1);
+            assertEquals("Work", loadedP.getName());
+            assertEquals("sk-named-key", loadedP.getApiKey());
+            assertEquals("named-token", loadedP.getToken());
+            assertEquals("https://api.work.example.com", loadedP.getBaseUrl());
+            assertEquals(ClaudeProfile.ProxyMode.CUSTOM, loadedP.getProxyMode());
+            assertEquals("http://work-proxy:8080", loadedP.getHttpProxy());
+            assertEquals("https://work-proxy:8443", loadedP.getHttpsProxy());
+            assertEquals("internal.example.com", loadedP.getNoProxy());
+            assertEquals("--model claude-opus", loadedP.getExtraCliArgs());
+            assertEquals(1, loadedP.getExtraEnvVars().size());
+            assertArrayEquals(new String[]{"ENV_VAR", "value1"}, (Object[]) loadedP.getExtraEnvVars().get(0));
+        } catch (Exception e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "NbPreferences not available");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // resolveStorageDir
     // -------------------------------------------------------------------------
 
