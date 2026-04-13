@@ -3,6 +3,7 @@ package io.github.nbclaudecodegui.process;
 import com.pty4j.PtyProcess;
 import io.github.nbclaudecodegui.settings.ClaudeProfile;
 import java.io.File;
+import java.util.List;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
