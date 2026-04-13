@@ -1,6 +1,7 @@
 package io.github.nbclaudecodegui.process;
 
 import com.pty4j.PtyProcess;
+import io.github.nbclaudecodegui.settings.ClaudeProfile;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -94,7 +95,7 @@ class ClaudeProcessTest {
 
     @Test
     void testMergeEmptyFileAddsOurEntries() {
-        String result = ClaudeProcess.mergeSettingsJson("{}", 8990);
+        String result = ClaudeProcess.mergeSettingsJson("{}", 8990, null);
         assertFalse(result.contains("\"netbeans\""), "mcpServers.netbeans should NOT appear in settings.local.json");
         assertFalse(result.contains("/sse"), "SSE URL should NOT appear in settings.local.json");
         assertTrue(result.contains("PreToolUse"), "should add PreToolUse hook");
@@ -106,18 +107,67 @@ class ClaudeProcessTest {
     void testMergePreservesOtherMcpServers() {
         // mcpServers in settings.local.json should be left untouched (not added to by plugin)
         String existing = "{\"mcpServers\":{\"other-server\":{\"type\":\"stdio\",\"command\":\"foo\"}}}";
-        String result = ClaudeProcess.mergeSettingsJson(existing, 9000);
+        String result = ClaudeProcess.mergeSettingsJson(existing, 9000, null);
         assertTrue(result.contains("\"other-server\""), "should preserve user-provided MCP server");
         assertFalse(result.contains("\"netbeans\""), "netbeans should NOT be written to settings.local.json");
     }
 
     @Test
     void testMergeUpdatesPortWhenAlreadyPresent() {
-        String existing = ClaudeProcess.mergeSettingsJson("{}", 8888);
-        String result = ClaudeProcess.mergeSettingsJson(existing, 9999);
+        String existing = ClaudeProcess.mergeSettingsJson("{}", 8888, null);
+        String result = ClaudeProcess.mergeSettingsJson(existing, 9999, null);
         assertTrue(result.contains("localhost:9999/hook"), "hook URL should use new port");
         assertFalse(result.contains("localhost:8888"), "should not keep old port");
         assertEquals(1, countOccurrences(result, "Edit|Write|MultiEdit"));
+    }
+
+    @Test
+    void testMergeWithClaudeApiProfileInjectsApiKeyHelper() {
+        ClaudeProfile p = ClaudeProfile.createNamed("API");
+        p.setApiKey("sk-ant-abc123");
+        String result = ClaudeProcess.mergeSettingsJson("{}", 9000, p);
+        assertTrue(result.contains("\"apiKeyHelper\""), "should inject apiKeyHelper for CLAUDE_API profile");
+        assertTrue(result.contains("echo sk-ant-abc123"), "apiKeyHelper should contain echo <key>");
+    }
+
+    @Test
+    void testMergeWithNullProfileNoApiKeyHelper() {
+        String result = ClaudeProcess.mergeSettingsJson("{}", 9000, null);
+        assertFalse(result.contains("apiKeyHelper"), "should not inject apiKeyHelper when no profile");
+    }
+
+    @Test
+    void testMergeWithOtherApiProfileNoApiKeyHelper() {
+        ClaudeProfile p = ClaudeProfile.createNamed("Other");
+        p.setApiKey("sk-ant-abc123");
+        p.setBaseUrl("https://proxy.example.com");
+        String result = ClaudeProcess.mergeSettingsJson("{}", 9000, p);
+        assertFalse(result.contains("apiKeyHelper"),
+                "should not inject apiKeyHelper for OTHER_API profile (uses env vars instead)");
+    }
+
+    @Test
+    void testCleanupRemovesApiKeyHelper() {
+        ClaudeProfile p = ClaudeProfile.createNamed("API");
+        p.setApiKey("sk-ant-abc123");
+        String merged = ClaudeProcess.mergeSettingsJson("{}", 9000, p);
+        assertTrue(merged.contains("apiKeyHelper"), "merged should have apiKeyHelper");
+        String cleaned = ClaudeProcess.cleanedSettingsJson(merged);
+        assertNull(cleaned, "file with only plugin content (including apiKeyHelper) should yield null");
+    }
+
+    @Test
+    void testCleanupRemovesApiKeyHelperButKeepsUserContent() {
+        ClaudeProfile p = ClaudeProfile.createNamed("API");
+        p.setApiKey("sk-ant-secret");
+        String existing = "{\"myCustomKey\":\"someValue\"}";
+        String merged = ClaudeProcess.mergeSettingsJson(existing, 9000, p);
+        assertTrue(merged.contains("apiKeyHelper"), "merged should have apiKeyHelper");
+        assertTrue(merged.contains("myCustomKey"), "merged should preserve user content");
+        String cleaned = ClaudeProcess.cleanedSettingsJson(merged);
+        assertNotNull(cleaned, "should keep file — user content remains");
+        assertFalse(cleaned.contains("apiKeyHelper"), "cleaned should remove apiKeyHelper");
+        assertTrue(cleaned.contains("myCustomKey"), "cleaned should preserve user content");
     }
 
     // -------------------------------------------------------------------------
@@ -146,7 +196,7 @@ class ClaudeProcessTest {
                 + "\"hooks\":{\"PreToolUse\":["
                 + "{\"matcher\":\"Read\",\"hooks\":[{\"type\":\"http\",\"url\":\"http://other/hook\"}]}"
                 + "]}}";
-        String result = ClaudeProcess.mergeSettingsJson(existing, 9000);
+        String result = ClaudeProcess.mergeSettingsJson(existing, 9000, null);
         assertTrue(result.contains("\"Read\""), "should preserve other PreToolUse hooks");
         assertTrue(result.contains("Edit|Write|MultiEdit"), "should add our hook");
         // Our matcher appears exactly once
@@ -155,8 +205,8 @@ class ClaudeProcessTest {
 
     @Test
     void testMergeReplacesOurHookWithUpdatedPort() {
-        String existing = ClaudeProcess.mergeSettingsJson("{}", 8888);
-        String result = ClaudeProcess.mergeSettingsJson(existing, 9999);
+        String existing = ClaudeProcess.mergeSettingsJson("{}", 8888, null);
+        String result = ClaudeProcess.mergeSettingsJson(existing, 9999, null);
         assertEquals(1, countOccurrences(result, "Edit|Write|MultiEdit"),
                 "our hook matcher should appear exactly once");
         assertTrue(result.contains("localhost:9999/hook"), "hook URL should be updated");
@@ -166,7 +216,7 @@ class ClaudeProcessTest {
     void testMergeRemovesStaleNetbeansEntry() {
         // Simulate a file left by old plugin (< 0.19.22) that has mcpServers.netbeans
         String stale = "{\"mcpServers\":{\"netbeans\":{\"type\":\"sse\",\"url\":\"http://localhost:8888/sse\"}}}";
-        String result = ClaudeProcess.mergeSettingsJson(stale, 9000);
+        String result = ClaudeProcess.mergeSettingsJson(stale, 9000, null);
         assertFalse(result.contains("\"netbeans\""), "stale mcpServers.netbeans should be removed on merge");
         assertFalse(result.contains("mcpServers"), "mcpServers should be gone if netbeans was the only entry");
     }
@@ -176,7 +226,7 @@ class ClaudeProcessTest {
         String stale = "{\"mcpServers\":{"
                 + "\"netbeans\":{\"type\":\"sse\",\"url\":\"http://localhost:8888/sse\"},"
                 + "\"other\":{\"type\":\"stdio\",\"command\":\"foo\"}}}";
-        String result = ClaudeProcess.mergeSettingsJson(stale, 9000);
+        String result = ClaudeProcess.mergeSettingsJson(stale, 9000, null);
         assertFalse(result.contains("\"netbeans\""), "stale netbeans entry should be removed");
         assertTrue(result.contains("\"other\""), "other mcpServers entries should be preserved");
     }
@@ -207,7 +257,7 @@ class ClaudeProcessTest {
 
     @Test
     void testCleanupReturnsNullWhenOnlyOurEntries() {
-        String merged = ClaudeProcess.mergeSettingsJson("{}", 9000);
+        String merged = ClaudeProcess.mergeSettingsJson("{}", 9000, null);
         String cleaned = ClaudeProcess.cleanedSettingsJson(merged);
         assertNull(cleaned, "file containing only plugin entries should yield null (→ delete)");
     }
@@ -219,7 +269,7 @@ class ClaudeProcessTest {
                 + "\"hooks\":{\"PreToolUse\":["
                 + "{\"matcher\":\"Read\",\"hooks\":[{\"type\":\"http\",\"url\":\"http://other/hook\"}]}"
                 + "]}}";
-        String merged = ClaudeProcess.mergeSettingsJson(existing, 9000);
+        String merged = ClaudeProcess.mergeSettingsJson(existing, 9000, null);
         String cleaned = ClaudeProcess.cleanedSettingsJson(merged);
 
         assertNotNull(cleaned, "should not delete file when user content remains");
@@ -232,7 +282,7 @@ class ClaudeProcessTest {
     @Test
     void testCleanupPreservesNonPreToolUseHooks() {
         String existing = "{\"hooks\":{\"PostToolUse\":[{\"matcher\":\"*\",\"hooks\":[]}]}}";
-        String merged = ClaudeProcess.mergeSettingsJson(existing, 9000);
+        String merged = ClaudeProcess.mergeSettingsJson(existing, 9000, null);
         String cleaned = ClaudeProcess.cleanedSettingsJson(merged);
 
         assertNotNull(cleaned, "should not delete when PostToolUse hook remains");
@@ -248,7 +298,7 @@ class ClaudeProcessTest {
         Path claudeDir = tmpDir.resolve(".claude");
         Files.createDirectories(claudeDir);
         Path cfg = claudeDir.resolve("settings.local.json");
-        Files.writeString(cfg, ClaudeProcess.mergeSettingsJson("{}", 9000), StandardCharsets.UTF_8);
+        Files.writeString(cfg, ClaudeProcess.mergeSettingsJson("{}", 9000, null), StandardCharsets.UTF_8);
 
         ClaudeProcess.cleanupSettingsLocalJson(tmpDir.toString());
 
@@ -261,7 +311,7 @@ class ClaudeProcessTest {
         Files.createDirectories(claudeDir);
         Path cfg = claudeDir.resolve("settings.local.json");
         String userContent = "{\"mcpServers\":{\"my-server\":{\"type\":\"stdio\",\"command\":\"bar\"}}}";
-        Files.writeString(cfg, ClaudeProcess.mergeSettingsJson(userContent, 9000), StandardCharsets.UTF_8);
+        Files.writeString(cfg, ClaudeProcess.mergeSettingsJson(userContent, 9000, null), StandardCharsets.UTF_8);
 
         ClaudeProcess.cleanupSettingsLocalJson(tmpDir.toString());
 

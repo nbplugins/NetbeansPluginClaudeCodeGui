@@ -1,3 +1,5 @@
+- Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start
+
 # 0.20.4 (2026-04-09)
 
 - Added Maven Central publication support: `release` Maven profile with GPG signing and Sonatype Central Portal deployment, plus CI `deploy` job that publishes artifacts on release builds

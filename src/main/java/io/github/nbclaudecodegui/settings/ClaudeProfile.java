@@ -259,7 +259,7 @@ public final class ClaudeProfile {
         // Auth
         switch (computeConnectionType()) {
             case SUBSCRIPTION -> env.put("CLAUDE_CODE_OAUTH_TOKEN", blankToEmpty(token));
-            case CLAUDE_API   -> env.put("ANTHROPIC_API_KEY", blankToEmpty(apiKey));
+            case CLAUDE_API   -> { /* API key is written to settings.local.json as apiKeyHelper */ }
             case OTHER_API    -> {
                 env.put("ANTHROPIC_AUTH_TOKEN", blankToEmpty(apiKey));
                 env.put("ANTHROPIC_BASE_URL", blankToEmpty(baseUrl));
