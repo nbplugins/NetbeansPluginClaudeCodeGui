@@ -13,6 +13,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -494,7 +496,13 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
         DefaultComboBoxModel<ProjectItem> cbModel = new DefaultComboBoxModel<>();
         cbModel.addElement(new ProjectItem(null,
                 NbBundle.getMessage(ClaudeSessionSelectorPanel.class, "LBL_SelectProject")));
-        for (Project p : OpenProjects.getDefault().getOpenProjects()) {
+        // Sort projects alphabetically (case-insensitive) so the user can find
+        // their project quickly regardless of the order NetBeans returns them.
+        Project[] projects = OpenProjects.getDefault().getOpenProjects();
+        Arrays.sort(projects, Comparator.comparing(
+                p -> ProjectUtils.getInformation(p).getDisplayName(),
+                String.CASE_INSENSITIVE_ORDER));
+        for (Project p : projects) {
             cbModel.addElement(new ProjectItem(p,
                     ProjectUtils.getInformation(p).getDisplayName()));
         }

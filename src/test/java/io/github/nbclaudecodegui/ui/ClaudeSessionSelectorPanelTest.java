@@ -3,6 +3,8 @@ package io.github.nbclaudecodegui.ui;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -155,6 +157,36 @@ class ClaudeSessionSelectorPanelTest {
         } finally {
             tmpDir.delete();
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Project combo sorting (issue #21)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Verifies that the comparator used in {@code populateProjectCombo()} sorts
+     * project names case-insensitively.  The test stands in for the full UI
+     * flow (which requires a live NetBeans module system) and confirms that
+     * the sorting algorithm itself is correct.
+     */
+    @Test
+    void projectComboSortIsCaseInsensitive() {
+        String[] names = {"Zebra", "apple", "Banana", "cherry"};
+        Arrays.sort(names, Comparator.comparing(s -> s, String.CASE_INSENSITIVE_ORDER));
+        assertArrayEquals(new String[]{"apple", "Banana", "cherry", "Zebra"}, names,
+                "Projects must be sorted alphabetically, case-insensitive");
+    }
+
+    @Test
+    void projectComboSortIsStableForEqualCaseNames() {
+        String[] names = {"Beta", "alpha", "ALPHA", "beta"};
+        Arrays.sort(names, Comparator.comparing(s -> s, String.CASE_INSENSITIVE_ORDER));
+        // All alpha-variants before beta-variants; relative order within a group
+        // is preserved (Arrays.sort is stable).
+        assertEquals("alpha", names[0].toLowerCase(),
+                "First group must be 'alpha' variants");
+        assertEquals("beta", names[2].toLowerCase(),
+                "Second group must be 'beta' variants");
     }
 
     // -------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+- Added alphabetical sorting to the "Select Project" dropdown (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/21)
 - Fixed Default profile settings (API key, connection type, proxy, etc.) not being saved when edited in Tools → Options → Claude Code → Profiles
 - Fixed MCP config not working on Windows due to quote stripping in CreateProcess (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/13)
 - Improved error panel on process start failure: shows Working Directory and CLAUDE_CONFIG_DIR fields (before Command and Error) for easier diagnosis; all fields have a right-click Copy menu; fixed "Restart Advanced…" not dismissing the error panel
