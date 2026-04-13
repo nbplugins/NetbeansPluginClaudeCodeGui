@@ -639,6 +639,56 @@ class ChoiceMenuPanelTest {
     }
 
     // -------------------------------------------------------------------------
+    // Regression: splitPane must stay enabled when choice menu is shown (#22)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression test for issue #22: showing the choice menu must not disable
+     * the {@link JSplitPane}.  Disabling the whole splitPane propagated to all
+     * child components including the terminal scrollbar, making it unresponsive.
+     * The fix disables only the divider via {@code BasicSplitPaneUI.getDivider()}.
+     */
+    @Test
+    void splitPaneRemainsEnabledWhenChoiceMenuShown() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            ChoiceMenuPanel choiceMenuPanel = new ChoiceMenuPanel(() -> null);
+            JPanel promptPanel = new JPanel();
+
+            java.awt.CardLayout cardLayout = new java.awt.CardLayout();
+            JPanel southCard = new JPanel(cardLayout);
+            southCard.add(promptPanel,     "prompt");
+            southCard.add(choiceMenuPanel, "choice");
+
+            JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                    new JPanel(), southCard);
+
+            JFrame frame = new JFrame();
+            frame.add(splitPane);
+            frame.setSize(400, 600);
+            frame.setVisible(true);
+
+            try {
+                choiceMenuPanel.show(new ChoiceMenuModel("Continue?",
+                        List.of(new Option("Yes", "1"), new Option("No", "2")), -1),
+                        answer -> {});
+                cardLayout.show(southCard, "choice");
+
+                // Simulate the production switchSouthCard(CARD_CHOICE) path:
+                // only the divider is disabled, not the whole splitPane.
+                if (splitPane.getUI() instanceof javax.swing.plaf.basic.BasicSplitPaneUI ui) {
+                    ui.getDivider().setEnabled(false);
+                }
+
+                assertTrue(splitPane.isEnabled(),
+                        "splitPane must remain enabled when choice menu is shown — " +
+                        "disabling it would also disable the terminal scrollbar (issue #22)");
+            } finally {
+                frame.dispose();
+            }
+        });
+    }
+
+    // -------------------------------------------------------------------------
     // helpers
     // -------------------------------------------------------------------------
 

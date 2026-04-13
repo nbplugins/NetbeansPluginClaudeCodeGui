@@ -894,7 +894,14 @@ public class ClaudeSessionTab extends TopComponent
         if (southCard == null || southCardLayout == null) return;
         activeCard = card;
         southCardLayout.show(southCard, card);
-        splitPane.setEnabled(!CARD_CHOICE.equals(card));
+        // Disable only the divider when the choice menu is shown, not the whole
+        // splitPane.  setEnabled(false) on the splitPane propagates to all child
+        // components including the terminal widget's scrollbar, making it
+        // unresponsive.  Disabling only the divider prevents the user from
+        // dragging the splitter while leaving the terminal fully interactive.
+        if (splitPane.getUI() instanceof javax.swing.plaf.basic.BasicSplitPaneUI ui) {
+            ui.getDivider().setEnabled(!CARD_CHOICE.equals(card));
+        }
         if (!CARD_CHOICE.equals(card)) {
             // restore divider for this card
             int total = splitPane.getHeight();
