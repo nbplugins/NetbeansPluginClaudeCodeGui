@@ -1,3 +1,4 @@
+- Fixed terminal scrollbar disappearing when Claude shows a choice/confirmation prompt (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
 - Fixed Cancel button sending Ctrl+C instead of Esc, making it impossible to exit /usage and similar screens
 - Fixed Default profile settings not saving in Tools → Options → Profiles (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/31)
 - Fixed "Open with Claude Code" context menu not applying Default profile settings (API key, proxy, Extra CLI args, etc.) (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/23)
