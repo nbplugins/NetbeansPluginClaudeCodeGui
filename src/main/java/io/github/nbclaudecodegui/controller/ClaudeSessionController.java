@@ -365,13 +365,13 @@ public final class ClaudeSessionController {
     }
 
     /**
-     * Sends Ctrl+C (0x03) to the PTY and transitions to READY state.
+     * Sends ESC (0x1B) to the PTY and transitions to READY state.
      * No-op if no PTY connector is active.
      */
     public void cancelPrompt() {
         if (connector == null) return;
         try {
-            sendCancelToPty(new byte[]{0x03});
+            sendCancelToPty(new byte[]{0x1b});
         } catch (IOException ex) {
             LOG.warning("cancelPrompt failed: " + ex.getMessage());
         }
