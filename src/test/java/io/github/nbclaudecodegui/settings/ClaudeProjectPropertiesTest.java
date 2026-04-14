@@ -73,16 +73,6 @@ class ClaudeProjectPropertiesTest {
     }
 
     // -------------------------------------------------------------------------
-    // resolveProfile — null dir falls back to Default
-    // -------------------------------------------------------------------------
-
-    @Test
-    void resolveProfile_nullDir_returnsDefault() {
-        ClaudeProfile profile = ClaudeProjectProperties.resolveProfile(null);
-        assertTrue(profile.isDefault());
-    }
-
-    // -------------------------------------------------------------------------
     // renameAssignments
     // -------------------------------------------------------------------------
 

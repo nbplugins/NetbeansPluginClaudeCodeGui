@@ -20,8 +20,9 @@ import org.openide.util.NbPreferences;
  * // Assign a profile to a project
  * ClaudeProjectProperties.setProfileName(projectDir, "MyProfile");
  *
- * // Retrieve the assigned profile (falls back to Default)
- * ClaudeProfile profile = ClaudeProjectProperties.resolveProfile(projectDir);
+ * // Retrieve the assigned profile name (falls back to Default when blank)
+ * String profileName = ClaudeProjectProperties.getProfileName(projectDir);
+ * ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
  * }</pre>
  */
 public final class ClaudeProjectProperties {
@@ -49,31 +50,6 @@ public final class ClaudeProjectProperties {
         if (projectDir == null) return "";
         return NbPreferences.forModule(ClaudeProjectProperties.class)
                 .get(KEY_PREFIX + projectDir.getAbsolutePath(), "");
-    }
-
-    /**
-     * Resolves the {@link ClaudeProfile} for the given project directory.
-     *
-     * <p>If no profile name is stored, or the stored name is blank, the
-     * Default profile is returned.  If the stored name cannot be found in
-     * {@link ClaudeProfileStore}, the Default profile is returned and a
-     * warning is logged.
-     *
-     * @param projectDir the project root directory; may be {@code null}
-     * @return the assigned profile, or the Default profile if not set / not found
-     */
-    public static ClaudeProfile resolveProfile(File projectDir) {
-        String name = getProfileName(projectDir);
-        if (name.isBlank()) {
-            return ClaudeProfile.createDefault();
-        }
-        ClaudeProfile found = ClaudeProfileStore.findByName(name);
-        if (found.isDefault() && !name.isBlank()) {
-            LOG.warning("Profile '" + name + "' assigned to project "
-                    + (projectDir != null ? projectDir.getAbsolutePath() : "null")
-                    + " not found — using Default.");
-        }
-        return found;
     }
 
     // -------------------------------------------------------------------------

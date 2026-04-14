@@ -1,4 +1,4 @@
-- Fixed "Open with Claude Code" context menu not applying the global Extra CLI args setting (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/23)
+- Fixed "Open with Claude Code" context menu not applying Default profile settings (API key, proxy, Extra CLI args, etc.) (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/23)
 - Added alphabetical sorting to the "Select Project" dropdown (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/21)
 - Fixed Default profile settings (API key, connection type, proxy, etc.) not being saved when edited in Tools → Options → Claude Code → Profiles
 - Fixed MCP config not working on Windows due to quote stripping in CreateProcess (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/13)

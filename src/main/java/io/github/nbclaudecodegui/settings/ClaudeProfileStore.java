@@ -101,6 +101,22 @@ public final class ClaudeProfileStore {
     }
 
     /**
+     * Returns the preference-backed Default profile.
+     *
+     * <p>Unlike {@link ClaudeProfile#createDefault()}, this method goes through
+     * {@link #getProfiles()}, which loads stored settings (API key, proxy,
+     * extraCliArgs, etc.) from {@code NbPreferences}.  Callers that need the
+     * Default profile should use this method so the user's configuration is
+     * honoured rather than silently discarded.
+     *
+     * @return the Default profile with settings loaded from preferences
+     */
+    public static ClaudeProfile getDefaultProfile() {
+        return getProfiles().stream().filter(ClaudeProfile::isDefault).findFirst()
+                .orElseGet(ClaudeProfile::createDefault);
+    }
+
+    /**
      * Looks up a profile by name.
      *
      * @param name profile name, or {@code null}/{@code ""} for Default
@@ -108,14 +124,10 @@ public final class ClaudeProfileStore {
      */
     public static ClaudeProfile findByName(String name) {
         if (name == null || name.isBlank()) {
-            return ClaudeProfile.createDefault();
+            return getDefaultProfile();
         }
-        for (ClaudeProfile p : getProfiles()) {
-            if (p.getName().equals(name)) {
-                return p;
-            }
-        }
-        return ClaudeProfile.createDefault();
+        return getProfiles().stream().filter(p -> p.getName().equals(name)).findFirst()
+                .orElseGet(ClaudeProfileStore::getDefaultProfile);
     }
 
     // -------------------------------------------------------------------------
