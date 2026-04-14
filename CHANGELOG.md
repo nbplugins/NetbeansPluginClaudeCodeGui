@@ -1,3 +1,4 @@
+- Fixed Cancel button sending Ctrl+C instead of Esc, making it impossible to exit /usage and similar screens
 - Fixed Default profile settings not saving in Tools → Options → Profiles (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/31)
 - Fixed "Open with Claude Code" context menu not applying Default profile settings (API key, proxy, Extra CLI args, etc.) (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/23)
 - Added Advanced tab in Tools → Options → Claude Code with Debug mode, Hang timeout, and a new "Enable MCP integration" toggle (disabling it skips the --mcp-config flag while hooks remain active)
