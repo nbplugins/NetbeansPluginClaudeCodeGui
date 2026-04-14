@@ -83,6 +83,49 @@ class ClaudeProfileStoreTest {
         assertTrue(found.isDefault());
     }
 
+    @Test
+    void findByName_unknownName_returnsDefault() {
+        ClaudeProfile found = ClaudeProfileStore.findByName("nonexistent-profile-xyz");
+        assertTrue(found.isDefault(),
+                "findByName with unknown name must fall back to the Default profile");
+    }
+
+    // -------------------------------------------------------------------------
+    // getDefaultProfile (issue #23)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression test for issue #23: {@code getDefaultProfile()} must return
+     * the preference-backed Default profile, matching what {@code getProfiles()}
+     * returns — not a bare {@code createDefault()} with empty fields.
+     *
+     * <p>{@code createDefault()} sets {@code extraCliArgs = ""} unconditionally,
+     * so using it in {@code findByName(null)} would silently discard any Extra
+     * CLI args the user configured in Tools → Options.
+     */
+    @Test
+    void getDefaultProfile_isDefault() {
+        ClaudeProfile p = ClaudeProfileStore.getDefaultProfile();
+        assertTrue(p.isDefault(), "getDefaultProfile() must return the Default profile");
+        assertEquals("Default", p.getName());
+    }
+
+    @Test
+    void getDefaultProfile_matchesGetProfiles() {
+        ClaudeProfile fromList  = ClaudeProfileStore.getProfiles().get(0);
+        ClaudeProfile fromMethod = ClaudeProfileStore.getDefaultProfile();
+        assertEquals(fromList.getExtraCliArgs(), fromMethod.getExtraCliArgs(),
+                "getDefaultProfile() must return the same extraCliArgs as getProfiles().get(0)");
+    }
+
+    @Test
+    void findByName_null_delegatesToGetDefaultProfile() {
+        ClaudeProfile fromFind   = ClaudeProfileStore.findByName(null);
+        ClaudeProfile fromMethod = ClaudeProfileStore.getDefaultProfile();
+        assertEquals(fromMethod.getExtraCliArgs(), fromFind.getExtraCliArgs(),
+                "findByName(null) must delegate to getDefaultProfile()");
+    }
+
     // -------------------------------------------------------------------------
     // saveProfile / Default cannot be saved
     // -------------------------------------------------------------------------

@@ -8,6 +8,8 @@ import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
 import io.github.nbclaudecodegui.model.SessionLifecycle;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
+import io.github.nbclaudecodegui.settings.ClaudeProfile;
+import io.github.nbclaudecodegui.settings.ClaudeProfileStore;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
