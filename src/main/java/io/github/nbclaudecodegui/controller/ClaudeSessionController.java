@@ -58,7 +58,7 @@ public final class ClaudeSessionController {
     /** ESC byte sent to the PTY (dismiss autocomplete, close menus). */
     private static final byte[] PTY_ESC = {0x1b};
 
-    private static final int MAX_MODEL_DISCOVERY_ATTEMPTS = 3;
+    private static final int MAX_MODEL_DISCOVERY_ATTEMPTS = 1;
 
     private final ClaudeSessionModel model;
 
@@ -74,6 +74,7 @@ public final class ClaudeSessionController {
     private ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
     private java.io.File workingDir;
+    private volatile JediTermWidget terminalWidget;
 
     /** Polls screen state every 500 ms; owned here to allow proper teardown. */
     private javax.swing.Timer statusTimer;
@@ -236,6 +237,7 @@ public final class ClaudeSessionController {
             });
         });
 
+        this.terminalWidget = widget;
         widget.setTtyConnector(connector);
         widget.start();
 
@@ -289,6 +291,7 @@ public final class ClaudeSessionController {
         }
         connector = null;
         claudeProcess = null;
+        terminalWidget = null;
         modelComboPopulated = false;
         modelDiscoveryInProgress = false;
         modelDiscoveryAttempts = 0;
@@ -770,7 +773,36 @@ public final class ClaudeSessionController {
         Thread t = new Thread(() -> {
             try {
                 openModelMenu();
-                List<String> lines = screenLines.get();
+
+                // Poll the screen until the model selection menu appears.
+                // openModelMenu() types /model + Enter, but Claude CLI needs
+                // time to render the numbered menu.  Poll up to ~5 s.
+                List<String> lines = null;
+                Optional<ChoiceMenuModel> menuOpt = Optional.empty();
+                for (int poll = 0; poll < 16; poll++) {
+                    Thread.sleep(300);
+                    lines = screenLines.get();
+                    if (LOG.isLoggable(java.util.logging.Level.FINE)) {
+                        StringBuilder sb = new StringBuilder("[discoverModels] poll ")
+                                .append(poll + 1).append(" screen (")
+                                .append(lines.size()).append(" lines):");
+                        for (int li = 0; li < lines.size(); li++) {
+                            String l = lines.get(li);
+                            if (!l.isBlank()) sb.append("\n  ").append(li).append(": ").append(l);
+                        }
+                        LOG.fine(sb.toString());
+                    }
+                    menuOpt = screenContentDetector.detectChoiceMenu(lines);
+                    if (menuOpt.isPresent() && !menuOpt.get().options().isEmpty()) {
+                        LOG.fine("[discoverModels] detectChoiceMenu found menu on poll " + (poll + 1));
+                        break;
+                    }
+                    ModelMenuParser.ModelDiscovery probe = new ModelMenuParser().parse(lines);
+                    if (!probe.models().isEmpty()) {
+                        LOG.fine("[discoverModels] ModelMenuParser found models on poll " + (poll + 1));
+                        break;
+                    }
+                }
 
                 // Scan the rolling PTY line buffer for the /model hint line, which is
                 // shorter and never truncated (e.g. "/model  … (currently anthropic/claude-sonnet-4.6)").
@@ -785,7 +817,6 @@ public final class ClaudeSessionController {
 
                 List<String> models;
                 int selIdx;
-                Optional<ChoiceMenuModel> menuOpt = screenContentDetector.detectChoiceMenu(lines);
                 if (menuOpt.isPresent() && !menuOpt.get().options().isEmpty()) {
                     List<ChoiceMenuModel.Option> opts = menuOpt.get().options();
                     Pattern descPat = Pattern.compile("(?:\u2714\\s+|\\s{3,})(.+?)(?:\\s*[·\u00b7].*)?$");
@@ -835,18 +866,27 @@ public final class ClaudeSessionController {
                 final int finalSelIdx = selIdx;
                 if (!finalModels.isEmpty()) {
                     model.setModelList(finalModels, finalSelIdx);
-                    onClaudeIdle();
                 } else {
                     SwingUtilities.invokeLater(() -> modelComboPopulated = false);
-                    onClaudeIdle();
                 }
             } catch (IOException | InterruptedException ex) {
                 LOG.warning("discoverModels failed: " + ex.getMessage());
                 SwingUtilities.invokeLater(() -> modelComboPopulated = false);
-                onClaudeIdle();
             } finally {
+                // Wait for Claude CLI to finish its normal redraw after Esc,
+                // then send a single SIGWINCH to force a complete TUI redraw
+                // (the Esc-dismiss redraw often leaves stale /model fragments).
+                // Finally wait for the resize-triggered redraw to complete
+                // before transitioning to READY — setting READY too early
+                // causes pollScreenState to see mid-redraw garbage → WORKING,
+                // and the session gets stuck.
                 try { Thread.sleep(600); } catch (InterruptedException ignored) {}
-                SwingUtilities.invokeLater(() -> modelDiscoveryInProgress = false);
+                forceTerminalRedraw();
+                try { Thread.sleep(400); } catch (InterruptedException ignored) {}
+                SwingUtilities.invokeLater(() -> {
+                    modelDiscoveryInProgress = false;
+                    onClaudeIdle();
+                });
             }
         }, "claude-model-discovery");
         t.setDaemon(true);
@@ -1225,4 +1265,21 @@ public final class ClaudeSessionController {
         connector.write(bytes);
         onClaudeIdle();
     }
+
+    /**
+     * Sends a single SIGWINCH pair (shrink by one row, then restore) to force
+     * Claude CLI to fully redraw the TUI.  Used after model discovery Esc
+     * dismiss, which often leaves stale content on screen.
+     */
+    private void forceTerminalRedraw() {
+        JediTermWidget w = terminalWidget;
+        if (connector == null || w == null) return;
+        com.jediterm.core.util.TermSize ts = w.getTerminalPanel()
+                .getTerminalSizeFromComponent();
+        if (ts == null || ts.getColumns() <= 0 || ts.getRows() <= 1) return;
+        connector.resize(new java.awt.Dimension(ts.getColumns(), ts.getRows() - 1));
+        connector.resize(new java.awt.Dimension(ts.getColumns(), ts.getRows()));
+        LOG.fine("[forceTerminalRedraw] cols=" + ts.getColumns() + " rows=" + ts.getRows());
+    }
+
 }
