@@ -825,11 +825,6 @@ public class ClaudeSessionTab extends TopComponent
         }
         southCard.revalidate();
         southCard.repaint();
-        // Keep the terminal scrolled to the bottom after layout changes
-        if (terminalWidget != null) {
-            SwingUtilities.invokeLater(
-                    () -> terminalWidget.getTerminalPanel().scrollToShowAllOutput());
-        }
     }
 
     private void stopProcess() {
