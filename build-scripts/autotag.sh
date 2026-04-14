@@ -69,16 +69,27 @@ if [[ "$CHANGELOG_MM" == "$MM" ]]; then
     git commit -m "Released ${RELEASE_TAG}"
     git push origin HEAD
   else
-    # Fresh release signal: create new release tag
+    # Fresh release signal: create new release tag.
+    # +1 because we are about to add the CHANGELOG commit on top of HEAD,
+    # and the tag must land on that commit so its name matches the commit count.
+    if [[ -n "$RELEASE_TAG" ]]; then
+      START_PATCH=$(echo "$RELEASE_TAG" | cut -d. -f3)
+      N=$(git rev-list "${RELEASE_TAG}..HEAD" --count)
+      FULL_VER="${MM}.$((START_PATCH + N + 1))"
+    else
+      N=$(git rev-list "${BASE_TAG}..HEAD" --count)
+      FULL_VER="${MM}.$((N + 1))"
+    fi
     echo "Release signal: creating tag $FULL_VER"
     sed '0,/^#/d;/^#/Q' "$CHANGELOG" > "$RELEASE_NOTES" || echo "Release $FULL_VER" > "$RELEASE_NOTES"
-    git tag "$FULL_VER"
-    git push origin "$FULL_VER"
 
     # Auto-edit CHANGELOG: replace "# MM (date)" with "# FULL_VER (date)" to clear the release signal
     sed -i "s|^# ${MM_ESCAPED} |# ${FULL_VER} |" "$CHANGELOG"
     git add "$CHANGELOG"
     git commit -m "Released ${FULL_VER}"
+    # Tag the CHANGELOG commit so "git tag --points-at HEAD" finds it in Calculate version
+    git tag "$FULL_VER"
     git push origin HEAD
+    git push origin "$FULL_VER"
   fi
 fi
