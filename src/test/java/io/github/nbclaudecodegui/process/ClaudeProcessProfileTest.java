@@ -140,6 +140,49 @@ class ClaudeProcessProfileTest {
     }
 
     // -------------------------------------------------------------------------
+    // NO_PROXY auto-injection
+    // -------------------------------------------------------------------------
+
+    @Test
+    void buildEnv_customProxy_noProxyBlank_injectsLocalhost() {
+        ClaudeProfile p = ClaudeProfile.createNamed("CustomProxyNoNP");
+        p.setProxyMode(ProxyMode.CUSTOM);
+        p.setHttpProxy("http://proxy:3128");
+        p.setHttpsProxy("");
+        p.setNoProxy("");
+        Map<String, String> env = ClaudeProcess.buildEnv(p, PROFILES_DIR);
+        String noProxy = env.getOrDefault("NO_PROXY", "");
+        assertTrue(noProxy.contains("localhost"), "NO_PROXY should contain localhost, was: " + noProxy);
+        assertTrue(noProxy.contains("127.0.0.1"), "NO_PROXY should contain 127.0.0.1, was: " + noProxy);
+    }
+
+    @Test
+    void buildEnv_customProxy_noProxyHasLocalhost_notDuplicated() {
+        ClaudeProfile p = ClaudeProfile.createNamed("CustomProxyHasNP");
+        p.setProxyMode(ProxyMode.CUSTOM);
+        p.setHttpProxy("http://proxy:3128");
+        p.setHttpsProxy("");
+        p.setNoProxy("localhost,127.0.0.1");
+        Map<String, String> env = ClaudeProcess.buildEnv(p, PROFILES_DIR);
+        String noProxy = env.getOrDefault("NO_PROXY", "");
+        // Should not contain duplicates
+        int localhostCount = noProxy.split("localhost", -1).length - 1;
+        assertEquals(1, localhostCount, "localhost should appear exactly once in NO_PROXY: " + noProxy);
+    }
+
+    @Test
+    void buildEnv_noProxyActive_noLocalhostInjected() {
+        ClaudeProfile p = ClaudeProfile.createNamed("CustomNoProxyActive");
+        p.setProxyMode(ProxyMode.NO_PROXY);
+        Map<String, String> env = ClaudeProcess.buildEnv(p, PROFILES_DIR);
+        // NO_PROXY should be empty (explicitly cleared by NO_PROXY mode)
+        // and since no proxy is set, ensureLocalhostInNoProxy should not add anything
+        String noProxy = env.getOrDefault("NO_PROXY", "");
+        assertFalse(noProxy.contains("localhost"),
+                "With no proxy active, localhost should not be injected: " + noProxy);
+    }
+
+    // -------------------------------------------------------------------------
     // Extra env vars
     // -------------------------------------------------------------------------
 

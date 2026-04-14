@@ -155,6 +155,9 @@ public final class ClaudeProcess {
                 + ", ANTHROPIC_AUTH_TOKEN=" + (!env.getOrDefault("ANTHROPIC_AUTH_TOKEN", "").isBlank() ? "SET" : "NOT SET")
                 + ", ANTHROPIC_BASE_URL=" + env.getOrDefault("ANTHROPIC_BASE_URL", "(not set)")
                 + ", CLAUDE_CONFIG_DIR=" + env.getOrDefault("CLAUDE_CONFIG_DIR", "(inherited)")
+                + ", HTTP_PROXY="  + env.getOrDefault("HTTP_PROXY",  env.getOrDefault("http_proxy",  "(not set)"))
+                + ", HTTPS_PROXY=" + env.getOrDefault("HTTPS_PROXY", env.getOrDefault("https_proxy", "(not set)"))
+                + ", NO_PROXY="    + env.getOrDefault("NO_PROXY",    env.getOrDefault("no_proxy",    "(not set)"))
                 + ", sessionMode=" + mode
                 + (mode == SessionMode.RESUME_SPECIFIC ? ", resumeId=" + resumeSessionId : ""));
 
@@ -647,7 +650,34 @@ public final class ClaudeProcess {
             env.putAll(profile.toEnvVars());
         }
 
+        // Ensure localhost is excluded from proxy to protect MCP SSE server
+        ensureLocalhostInNoProxy(env);
+
         return env;
+    }
+
+    private static void ensureLocalhostInNoProxy(Map<String, String> env) {
+        // Normalize lowercase no_proxy → NO_PROXY (Linux systems may use either)
+        if (!env.containsKey("NO_PROXY") && env.containsKey("no_proxy")) {
+            env.put("NO_PROXY", env.get("no_proxy"));
+        }
+
+        String httpProxy  = env.getOrDefault("HTTP_PROXY",  env.getOrDefault("http_proxy",  ""));
+        String httpsProxy = env.getOrDefault("HTTPS_PROXY", env.getOrDefault("https_proxy", ""));
+        if (httpProxy.isBlank() && httpsProxy.isBlank()) return; // no proxy active, nothing to do
+
+        String noProxy = env.getOrDefault("NO_PROXY", "");
+        List<String> required = List.of("localhost", "127.0.0.1");
+        List<String> missing = required.stream()
+                .filter(h -> !noProxy.contains(h))
+                .collect(java.util.stream.Collectors.toList());
+        if (missing.isEmpty()) return;
+
+        String updated = noProxy.isBlank()
+                ? String.join(",", missing)
+                : noProxy + "," + String.join(",", missing);
+        env.put("NO_PROXY", updated);
+        LOG.fine("Auto-added to NO_PROXY: " + missing + " → NO_PROXY=" + updated);
     }
 
     /**
