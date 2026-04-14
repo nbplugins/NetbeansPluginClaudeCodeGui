@@ -229,6 +229,50 @@ class ClaudeProfileStoreTest {
     }
 
     // -------------------------------------------------------------------------
+    // Default profile all-fields round-trip (issue #31)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void defaultProfile_allFields_roundTrip() {
+        try {
+            ClaudeProfile def = ClaudeProfile.createDefault();
+            def.setApiKey("sk-ant-default");
+            def.setExtraCliArgs("--verbose");
+            ClaudeProfileStore.saveProfiles(java.util.List.of(def));
+
+            ClaudeProfile loaded = ClaudeProfileStore.getDefaultProfile();
+            assertTrue(loaded.isDefault());
+            assertEquals("sk-ant-default", loaded.getApiKey(),
+                    "Default profile apiKey must survive save/load");
+            assertEquals("--verbose", loaded.getExtraCliArgs(),
+                    "Default profile extraCliArgs must survive save/load");
+        } catch (Exception e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "NbPreferences not available");
+        }
+    }
+
+    @Test
+    void namedProfile_allFields_roundTrip() {
+        try {
+            ClaudeProfile p = ClaudeProfile.createNamed("Work");
+            p.setApiKey("sk-ant-work");
+            p.setExtraCliArgs("--model claude-3-5-sonnet-20241022");
+            ClaudeProfileStore.saveProfiles(java.util.List.of(p));
+
+            List<ClaudeProfile> loaded = ClaudeProfileStore.getProfiles();
+            assertEquals(2, loaded.size(), "Expected Default + Work");
+            ClaudeProfile work = loaded.get(1);
+            assertEquals("Work", work.getName());
+            assertEquals("sk-ant-work", work.getApiKey(),
+                    "Named profile apiKey must survive save/load");
+            assertEquals("--model claude-3-5-sonnet-20241022", work.getExtraCliArgs(),
+                    "Named profile extraCliArgs must survive save/load");
+        } catch (Exception e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "NbPreferences not available");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // extraCliArgs serialization round-trip
     // -------------------------------------------------------------------------
 
