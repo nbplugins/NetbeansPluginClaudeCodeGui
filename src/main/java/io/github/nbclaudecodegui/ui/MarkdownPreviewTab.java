@@ -134,7 +134,7 @@ public class MarkdownPreviewTab extends TopComponent {
         tab.fileObject = fo;
 
         String html = MarkdownRenderer.toHtml(content != null ? content : "");
-        tab.pane = MarkdownRenderer.createOutputPane(html);
+        tab.pane = MarkdownRenderer.createOutputPane(html, new java.io.File(filePath).getParent());
 
         String name = new java.io.File(filePath).getName();
         tab.setDisplayName("Preview: " + name);

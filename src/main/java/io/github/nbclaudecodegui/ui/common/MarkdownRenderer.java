@@ -42,7 +42,8 @@ public final class MarkdownRenderer {
             + "|\\*\\*(.+?)\\*\\*"       // group 2: bold
             + "|\\*([^*\\n]+)\\*"        // group 3: italic
             + "|`([^`]+)`"               // group 4: inline code
-            + "|\\[([^\\]]+)\\]\\(([^)]+)\\)",  // group 5: link text, group 6: link url
+            + "|!\\[([^\\]]*)\\]\\(([^)]+)\\)"  // group 5: image alt, group 6: image src
+            + "|\\[([^\\]]+)\\]\\(([^)]+)\\)",  // group 7: link text, group 8: link url
             Pattern.DOTALL);
 
     // -------------------------------------------------------------------------
@@ -60,6 +61,28 @@ public final class MarkdownRenderer {
      */
     public static JEditorPane createOutputPane(String html) {
         JEditorPane pane = createOutputPane();
+        pane.setText(html);
+        return pane;
+    }
+
+    /**
+     * Creates and configures a {@link JEditorPane} with HTML content and a base directory for
+     * resolving relative image paths.
+     *
+     * @param html       initial HTML content to display
+     * @param baseDirPath absolute path of the directory containing the rendered file, or null
+     * @return a ready-to-use output pane
+     */
+    public static JEditorPane createOutputPane(String html, String baseDirPath) {
+        JEditorPane pane = createOutputPane();
+        if (baseDirPath != null) {
+            try {
+                ((HTMLDocument) pane.getDocument()).setBase(
+                        new java.net.URL("file://" + baseDirPath + "/"));
+            } catch (java.net.MalformedURLException ignored) {
+                // fall through — relative images won't resolve but nothing breaks
+            }
+        }
         pane.setText(html);
         return pane;
     }
@@ -398,8 +421,11 @@ public final class MarkdownRenderer {
             } else if (m.group(4) != null) {
                 sb.append("<code>").append(esc(m.group(4))).append("</code>");
             } else if (m.group(5) != null) {
-                sb.append("<a href=\"").append(esc(m.group(6))).append("\">")
-                        .append(esc(m.group(5))).append("</a>");
+                sb.append("<img src=\"").append(esc(m.group(6)))
+                        .append("\" alt=\"").append(esc(m.group(5))).append("\">");
+            } else if (m.group(7) != null) {
+                sb.append("<a href=\"").append(esc(m.group(8))).append("\">")
+                        .append(esc(m.group(7))).append("</a>");
             }
             lastEnd = m.end();
         }

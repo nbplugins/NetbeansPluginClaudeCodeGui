@@ -1,3 +1,4 @@
+- Fixed markdown preview not rendering images (`![alt](path)` syntax)
 - Fixed session tab blocking resize below ~600px when docked as a side panel (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/19)
 - Fixed terminal appearing blank after dismissing the model selection menu
 - Fixed MCP connection to localhost being routed through an active HTTP_PROXY/HTTPS_PROXY; NO_PROXY is now automatically extended with localhost and 127.0.0.1 when a proxy is configured

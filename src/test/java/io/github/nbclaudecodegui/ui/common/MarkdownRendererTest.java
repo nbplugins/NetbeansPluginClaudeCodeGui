@@ -208,4 +208,33 @@ class MarkdownRendererTest {
         assertTrue(html.contains("<table>"),         "table present");
         assertTrue(html.contains("Some text after"), "paragraph after table");
     }
+
+    // -------------------------------------------------------------------------
+    // Bug 2: Images
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testInlineImage() {
+        String result = MarkdownRenderer.inlineToHtml("![alt text](image.png)");
+        assertTrue(result.contains("<img "), "img tag");
+        assertTrue(result.contains("src=\"image.png\""), "img src");
+        assertTrue(result.contains("alt=\"alt text\""), "img alt");
+        assertFalse(result.contains("!["), "raw markdown should not appear");
+    }
+
+    @Test
+    void testInlineImageInParagraph() {
+        String html = MarkdownRenderer.toHtml("Here is an image: ![logo](logo.png)");
+        assertTrue(html.contains("<img "), "img tag in paragraph");
+        assertTrue(html.contains("src=\"logo.png\""), "img src");
+    }
+
+    @Test
+    void testInlineImageEmptyAlt() {
+        String result = MarkdownRenderer.inlineToHtml("![](photo.jpg)");
+        assertTrue(result.contains("<img "), "img tag");
+        assertTrue(result.contains("src=\"photo.jpg\""), "img src");
+        assertTrue(result.contains("alt=\"\""), "empty alt");
+    }
+
 }
