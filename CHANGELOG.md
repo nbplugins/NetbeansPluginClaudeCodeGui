@@ -1,24 +1,28 @@
+- Added minimum tested Claude Code CLI version (2.1.78) to installation requirements (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/29)
 - Fixed anchor link clicks (`#section`) in markdown preview not enabling the Back button; Back now returns to the position before the anchor jump
 - Fixed markdown preview not rendering images (`![alt](path)` syntax)
 - Fixed session tab blocking resize below ~600px when docked as a side panel (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/19)
-- Fixed terminal appearing blank after dismissing the model selection menu
-- Fixed MCP connection to localhost being routed through an active HTTP_PROXY/HTTPS_PROXY; NO_PROXY is now automatically extended with localhost and 127.0.0.1 when a proxy is configured
-- Fixed terminal scrollbar disappearing when Claude shows a choice/confirmation prompt (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
-- Fixed Cancel button sending Ctrl+C instead of Esc, making it impossible to exit /usage and similar screens
-- Fixed "Open with Claude Code" context menu not applying Default profile settings (API key, proxy, Extra CLI args, etc.) (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/23)
 - Added alphabetical sorting to the "Select Project" dropdown (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/21)
-- Fixed Default profile settings (API key, connection type, proxy, etc.) not being saved when edited in Tools → Options → Claude Code → Profiles
-- Fixed MCP config not working on Windows due to quote stripping in CreateProcess (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/13)
 - Improved error panel on process start failure: shows Working Directory and CLAUDE_CONFIG_DIR fields (before Command and Error) for easier diagnosis; all fields have a right-click Copy menu; fixed "Restart Advanced…" not dismissing the error panel
-- Added Advanced tab in Tools → Options → Claude Code with Debug mode, Hang timeout, and a new "Enable MCP integration" toggle (disabling it skips the --mcp-config flag while hooks remain active)
-- Fixed process start errors and hang timeouts now logged to the IDE log file at SEVERE level
-- Added hang detection: configurable timeout (default 60 s) kills the process and shows an error if no PTY output is received after launch; set to 0 to disable
-- Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start
 - Added capability of changing the profile storage directory and sharing a single directory with several profiles
 - Fixed drag-and-drop into text fields: files are now inserted at the text caret position instead of where the mouse was dropped
 - Fixed Accept/Decline and Yes/No button colors to respect the IDE Look and Feel theme (dark themes no longer show clashing hardcoded colors)
 - Added session management when opening a session from the toolbar and when closing a tab via the Close button
 - Added configurable session mode: choose to resume the last session or start a new one
+
+# 0.20.20 (2026-04-14)
+
+- Fixed terminal appearing blank after dismissing the model selection menu
+- Fixed MCP connection to localhost being routed through an active HTTP_PROXY/HTTPS_PROXY; NO_PROXY is now automatically extended with localhost and 127.0.0.1 when a proxy is configured
+- Fixed terminal scrollbar disappearing when Claude shows a choice/confirmation prompt (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
+- Fixed Cancel button sending Ctrl+C instead of Esc, making it impossible to exit /usage and similar screens
+- Fixed "Open with Claude Code" context menu not applying Default profile settings (API key, proxy, Extra CLI args, etc.) (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/23)
+- Fixed Default profile settings (API key, connection type, proxy, etc.) not being saved when edited in Tools → Options → Claude Code → Profiles
+- Fixed MCP config not working on Windows due to quote stripping in CreateProcess (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/13)
+- Added Advanced tab in Tools → Options → Claude Code with Debug mode, Hang timeout, and a new "Enable MCP integration" toggle (disabling it skips the --mcp-config flag while hooks remain active)
+- Fixed process start errors and hang timeouts now logged to the IDE log file at SEVERE level
+- Added hang detection: configurable timeout (default 60 s) kills the process and shows an error if no PTY output is received after launch; set to 0 to disable
+- Fixed authentication for profiles with the "Claude API" connection type: the API key is now correctly recognised by Claude Code on session start
 
 # 0.20 (2026-04-09)
 

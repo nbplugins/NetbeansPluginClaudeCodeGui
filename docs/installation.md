@@ -6,7 +6,9 @@
 |-------------|-----------------|
 | [Apache NetBeans IDE](https://netbeans.apache.org/front/main/download/) | 23 (RELEASE230) |
 | Java | 17 |
-| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/getting-started) (`claude`) | latest stable |
+| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/getting-started) (`claude`) | 2.1.78 |
+
+> **Note:** The plugin has been tested with Claude Code CLI 2.1.78 and newer. Older versions may not work correctly.
 
 The `claude` executable must be on your system `PATH` **or** its absolute path must be configured in **Tools → Options → Claude Code → General → Claude CLI path** after installing the plugin.
 
