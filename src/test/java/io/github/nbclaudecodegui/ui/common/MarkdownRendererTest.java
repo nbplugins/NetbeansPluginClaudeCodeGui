@@ -71,9 +71,9 @@ class MarkdownRendererTest {
     @Test
     void testHeadings() {
         String html = MarkdownRenderer.toHtml("# H1\n## H2\n### H3");
-        assertTrue(html.contains("<h1>H1</h1>"), "h1");
-        assertTrue(html.contains("<h2>H2</h2>"), "h2");
-        assertTrue(html.contains("<h3>H3</h3>"), "h3");
+        assertTrue(html.contains("<h1>") && html.contains("H1") && html.contains("</h1>"), "h1");
+        assertTrue(html.contains("<h2>") && html.contains("H2") && html.contains("</h2>"), "h2");
+        assertTrue(html.contains("<h3>") && html.contains("H3") && html.contains("</h3>"), "h3");
     }
 
     @Test
@@ -237,4 +237,32 @@ class MarkdownRendererTest {
         assertTrue(result.contains("alt=\"\""), "empty alt");
     }
 
+    // -------------------------------------------------------------------------
+    // Bug 3: Named anchors in headings for anchor navigation
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testHeadingH1HasNamedAnchor() {
+        String html = MarkdownRenderer.toHtml("# My Heading");
+        assertTrue(html.contains("<a name=\"my-heading\">"), "h1 named anchor");
+        assertTrue(html.contains("<h1>"), "h1 tag");
+    }
+
+    @Test
+    void testHeadingH2HasNamedAnchor() {
+        String html = MarkdownRenderer.toHtml("## Section Two");
+        assertTrue(html.contains("<a name=\"section-two\">"), "h2 named anchor");
+    }
+
+    @Test
+    void testHeadingH3HasNamedAnchor() {
+        String html = MarkdownRenderer.toHtml("### Sub Section");
+        assertTrue(html.contains("<a name=\"sub-section\">"), "h3 named anchor");
+    }
+
+    @Test
+    void testHeadingSlugStripNonAlphanumeric() {
+        String html = MarkdownRenderer.toHtml("# Hello, World! (2024)");
+        assertTrue(html.contains("<a name=\"hello-world-2024\">"), "slug strips punctuation");
+    }
 }

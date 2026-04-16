@@ -261,20 +261,23 @@ public final class MarkdownRenderer {
 
             // --- Headings ---
             if (line.startsWith("# ")) {
-                html.append("<h1>").append(inlineToHtml(line.substring(2).trim()))
-                        .append("</h1>");
+                String heading = line.substring(2).trim();
+                html.append("<h1><a name=\"").append(slugify(heading)).append("\">")
+                        .append(inlineToHtml(heading)).append("</a></h1>");
                 i++;
                 continue;
             }
             if (line.startsWith("## ")) {
-                html.append("<h2>").append(inlineToHtml(line.substring(3).trim()))
-                        .append("</h2>");
+                String heading = line.substring(3).trim();
+                html.append("<h2><a name=\"").append(slugify(heading)).append("\">")
+                        .append(inlineToHtml(heading)).append("</a></h2>");
                 i++;
                 continue;
             }
             if (line.startsWith("### ")) {
-                html.append("<h3>").append(inlineToHtml(line.substring(4).trim()))
-                        .append("</h3>");
+                String heading = line.substring(4).trim();
+                html.append("<h3><a name=\"").append(slugify(heading)).append("\">")
+                        .append(inlineToHtml(heading)).append("</a></h3>");
                 i++;
                 continue;
             }
@@ -475,6 +478,19 @@ public final class MarkdownRenderer {
                 || isUnordered(line)
                 || isOrdered(line)
                 || isTableRow(line);
+    }
+
+    /**
+     * Converts heading text to a URL-friendly slug for use as a named anchor.
+     * Lowercases the text, strips non-alphanumeric characters (except spaces and hyphens),
+     * trims, replaces spaces with hyphens, and collapses consecutive hyphens.
+     */
+    static String slugify(String text) {
+        return text.toLowerCase()
+                   .replaceAll("[^a-z0-9\\s-]", "")
+                   .trim()
+                   .replaceAll("\\s+", "-")
+                   .replaceAll("-+", "-");
     }
 
     /**
