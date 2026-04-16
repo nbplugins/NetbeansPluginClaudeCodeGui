@@ -974,8 +974,14 @@ public class ClaudeSessionTab extends TopComponent
         io.github.nbclaudecodegui.model.SavedSession recent =
                 io.github.nbclaudecodegui.process.ClaudeSessionStore.findMostRecent(
                         workingDir.toPath(), claudeConfigDir);
-        String currentName = recent != null ? recent.displayName() : "";
-        String currentId   = recent != null ? recent.sessionId() : null;
+        long procStart = controller.getProcessStartedAt();
+        // If a process is running and the most recent JSONL predates it, it's an OLD session —
+        // not the currently running one (which hasn't written its JSONL yet)
+        boolean isCurrentSession = recent != null
+                && (procStart == 0 || (recent.lastAt() != null
+                        && recent.lastAt().toEpochMilli() >= procStart));
+        String currentName = isCurrentSession ? recent.displayName() : "";
+        String currentId   = isCurrentSession ? recent.sessionId() : null;
 
         final ClaudeSessionTab self = this;
         final Path configDir = claudeConfigDir;

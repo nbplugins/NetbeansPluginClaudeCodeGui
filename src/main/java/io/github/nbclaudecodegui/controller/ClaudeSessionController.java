@@ -1222,6 +1222,9 @@ public final class ClaudeSessionController {
         return claudeProcess != null && claudeProcess.isRunning();
     }
 
+    /** Returns the timestamp (ms) when the current PTY process was launched, or 0 if none. */
+    public long getProcessStartedAt() { return processStartedAt; }
+
     /**
      * Reads the Claude CLI version string from the running process.
      *
