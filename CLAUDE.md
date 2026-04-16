@@ -33,7 +33,7 @@ A release has an explicit **start** and **finish**:
 **During development** — add user-visible changes to `CHANGELOG.md` (see rules below).
 
 **Finishing a release** (only this, nothing else):
-- Update `CHANGELOG.md` heading to `# MAJOR.MINOR` (matching current `pom.xml`) → CI sees this as the release signal, creates release tag `MAJOR.MINOR.N`, and publishes a GitHub Release
+- Update `CHANGELOG.md` heading to `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` (matching current `pom.xml`) → CI sees this as the release signal, creates release tag `MAJOR.MINOR.N`, and publishes a GitHub Release. If the date is omitted, CI inserts today's date automatically.
 
 **After a published release** — CI auto-edits `CHANGELOG.md`: the release heading `# MAJOR.MINOR (date)` is replaced with `# MAJOR.MINOR.N (date)`. Development can continue immediately; patch versions increment from the last released N.
 
@@ -54,18 +54,18 @@ git push origin release/0.17
 Version numbers continue from the last released patch: if `0.17.3` was the last release, the next builds are `0.17.4`, `0.17.5`, etc.
 
 **Releasing a patch:**
-- Add `# 0.17 (YYYY-MM-DD)` at the top of `CHANGELOG.md` (together with the fix's bullet)
+- Add `# 0.17` or `# 0.17 (YYYY-MM-DD)` at the top of `CHANGELOG.md` (together with the fix's bullet). If the date is omitted, CI inserts today's date automatically.
 - Push → CI creates tag `0.17.N`, publishes GitHub Release, and auto-edits `CHANGELOG.md` to `# 0.17.N (YYYY-MM-DD)`
 
-**Next patch:** add `# 0.17 (YYYY-MM-DD)` again and repeat.
+**Next patch:** add `# 0.17` or `# 0.17 (YYYY-MM-DD)` again and repeat.
 
 `main` is fully unaffected throughout.
 
 ### CHANGELOG.md rules
 
-The heading `# MAJOR.MINOR (YYYY-MM-DD)` is the CI release signal — **only add it when finishing a release**. Always include the release date in parentheses (e.g. `# 0.18 (2026-04-04)`).
+The heading `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` is the CI release signal — **only add it when finishing a release**. The date is optional; if omitted, CI inserts today's date automatically (e.g. `# 0.18` or `# 0.18 (2026-04-04)`).
 
-During development, add bullet lines at the **very top** of `CHANGELOG.md` (above any existing heading), with no section heading. When finishing a release, add the `# MAJOR.MINOR (YYYY-MM-DD)` heading above those bullets.
+During development, add bullet lines at the **very top** of `CHANGELOG.md` (above any existing heading), with no section heading. When finishing a release, add the `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` heading above those bullets.
 
 The changelog within a release is **cumulative**: if a feature was added and later refined or fixed within the same release cycle, **update the existing bullet** rather than adding a new one. Do not add separate "Fixed" entries for bugs in functionality that was introduced in the current (unreleased) version — only the final user-visible state matters.
 

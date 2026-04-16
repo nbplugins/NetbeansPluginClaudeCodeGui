@@ -58,13 +58,16 @@ FIRST_LINE=$(head -n 1 "$CHANGELOG" 2>/dev/null || echo "")
 if [[ "$(echo "$FIRST_LINE" | cut -d' ' -f1)" == "#" ]]; then
   CHANGELOG_MM=$(echo "$FIRST_LINE" | cut -d' ' -f2)
 fi
+# Extract date from heading (e.g. "# 0.21 (2026-04-16)"), or default to today
+HEADING_DATE=$(echo "$FIRST_LINE" | sed -n 's/^# [^ ]* (\(.*\))$/\1/p')
+RELEASE_DATE="${HEADING_DATE:-$(date +%Y-%m-%d)}"
 
 if [[ "$CHANGELOG_MM" == "$MM" ]]; then
   if [[ -n "$RELEASE_TAG" ]] && ! grep -qE "^# ${MM_ESCAPED}\.[0-9]+" "$CHANGELOG"; then
     # Stale release signal: published release exists but CHANGELOG was never auto-edited
     # (e.g. branch created from old release commit). Rename heading, don't create new release.
     echo "Stale release signal: renaming to $RELEASE_TAG"
-    sed -i "s|^# ${MM_ESCAPED} |# ${RELEASE_TAG} |" "$CHANGELOG"
+    sed -i "1s|^.*$|# ${RELEASE_TAG} (${RELEASE_DATE})|" "$CHANGELOG"
     git add "$CHANGELOG"
     git commit -m "Released ${RELEASE_TAG}"
     git push origin HEAD
@@ -84,7 +87,7 @@ if [[ "$CHANGELOG_MM" == "$MM" ]]; then
     sed '0,/^#/d;/^#/Q' "$CHANGELOG" > "$RELEASE_NOTES" || echo "Release $FULL_VER" > "$RELEASE_NOTES"
 
     # Auto-edit CHANGELOG: replace "# MM (date)" with "# FULL_VER (date)" to clear the release signal
-    sed -i "s|^# ${MM_ESCAPED} |# ${FULL_VER} |" "$CHANGELOG"
+    sed -i "1s|^.*$|# ${FULL_VER} (${RELEASE_DATE})|" "$CHANGELOG"
     git add "$CHANGELOG"
     git commit -m "Released ${FULL_VER}"
     # Tag the CHANGELOG commit so "git tag --points-at HEAD" finds it in Calculate version
