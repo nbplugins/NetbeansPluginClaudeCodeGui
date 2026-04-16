@@ -1,3 +1,5 @@
+# 0.21
+
 - Added minimum tested Claude Code CLI version (2.1.78) to installation requirements (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/29)
 - Fixed anchor link clicks (`#section`) in markdown preview not enabling the Back button; Back now returns to the position before the anchor jump
 - Fixed markdown preview not rendering images with relative paths (`![alt](path)` syntax)
