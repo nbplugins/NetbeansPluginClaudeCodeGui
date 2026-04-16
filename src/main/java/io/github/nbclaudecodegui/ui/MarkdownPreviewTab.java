@@ -83,6 +83,7 @@ public class MarkdownPreviewTab extends TopComponent {
     // Navigation history
     final List<String> historyPaths = new ArrayList<>();
     final List<FileObject> historyFos = new ArrayList<>();
+    final List<String> historyAnchors = new ArrayList<>();
     int historyIndex = -1;
 
     /** The href under the mouse at last ENTERED event; null when not hovering a link. */
@@ -155,6 +156,7 @@ public class MarkdownPreviewTab extends TopComponent {
         // Push initial entry into history
         tab.historyPaths.add(filePath);
         tab.historyFos.add(fo);
+        tab.historyAnchors.add(null);
         tab.historyIndex = 0;
 
         OPEN_TABS.put(filePath, tab);
@@ -282,9 +284,11 @@ public class MarkdownPreviewTab extends TopComponent {
             while (historyPaths.size() > historyIndex + 1) {
                 historyPaths.remove(historyPaths.size() - 1);
                 historyFos.remove(historyFos.size() - 1);
+                historyAnchors.remove(historyAnchors.size() - 1);
             }
             historyPaths.add(newPath);
             historyFos.add(newFo);
+            historyAnchors.add(null);
             historyIndex++;
         }
 
@@ -317,17 +321,56 @@ public class MarkdownPreviewTab extends TopComponent {
         return historyIndex < historyPaths.size() - 1;
     }
 
+    void navigateToAnchor(String anchor) {
+        // Truncate forward entries
+        while (historyPaths.size() > historyIndex + 1) {
+            historyPaths.remove(historyPaths.size() - 1);
+            historyFos.remove(historyFos.size() - 1);
+            historyAnchors.remove(historyAnchors.size() - 1);
+        }
+        historyPaths.add(filePath);
+        historyFos.add(fileObject);
+        historyAnchors.add(anchor);
+        historyIndex++;
+        pane.scrollToReference(anchor);
+    }
+
     void navigateBack() {
         if (canGoBack()) {
             historyIndex--;
-            navigateTo(historyPaths.get(historyIndex), historyFos.get(historyIndex), false);
+            restoreHistoryEntry(historyIndex);
         }
     }
 
     void navigateForward() {
         if (canGoForward()) {
             historyIndex++;
-            navigateTo(historyPaths.get(historyIndex), historyFos.get(historyIndex), false);
+            restoreHistoryEntry(historyIndex);
+        }
+    }
+
+    private void restoreHistoryEntry(int idx) {
+        String targetPath = historyPaths.get(idx);
+        FileObject targetFo = historyFos.get(idx);
+        String anchor = historyAnchors.size() > idx ? historyAnchors.get(idx) : null;
+
+        if (targetPath.equals(filePath)) {
+            // Same file — just scroll
+            if (anchor != null) {
+                pane.scrollToReference(anchor);
+            } else {
+                // Scroll to top
+                SwingUtilities.invokeLater(() -> {
+                    if (scrollPane != null) {
+                        scrollPane.getViewport().setViewPosition(new Point(0, 0));
+                    }
+                });
+            }
+        } else {
+            navigateTo(targetPath, targetFo, false);
+            if (anchor != null) {
+                SwingUtilities.invokeLater(() -> pane.scrollToReference(anchor));
+            }
         }
     }
 
@@ -350,6 +393,10 @@ public class MarkdownPreviewTab extends TopComponent {
     }
 
     void openLinkInSameTab(String href) {
+        if (href != null && href.startsWith("#")) {
+            navigateToAnchor(href.substring(1));
+            return;
+        }
         File resolved = resolveLink(href);
         if (resolved != null) {
             FileObject fo = FileUtil.toFileObject(resolved);
@@ -556,6 +603,7 @@ public class MarkdownPreviewTab extends TopComponent {
         if (historyPaths.isEmpty()) {
             historyPaths.add(path);
             historyFos.add(fo);
+            historyAnchors.add(null);
             historyIndex = 0;
         }
 

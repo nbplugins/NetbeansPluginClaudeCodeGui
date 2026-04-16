@@ -323,6 +323,60 @@ class MarkdownPreviewTabTest {
                 "savedScrollRatio must be 0.0 when no scrollPane is present");
     }
 
+    // --- Anchor history tests ---
+
+    @Test
+    void canGoBackTrueAfterNavigateToAnchor() {
+        MarkdownPreviewTab tab = new MarkdownPreviewTab();
+        tab.historyPaths.add("/file.md");
+        tab.historyFos.add(null);
+        tab.historyAnchors.add(null);
+        tab.historyIndex = 0;
+        tab.setFilePathForTest("/file.md");
+        tab.setPaneForTest(new JEditorPane());
+
+        tab.navigateToAnchor("section");
+
+        assertTrue(tab.canGoBack(), "canGoBack() should be true after navigateToAnchor()");
+    }
+
+    @Test
+    void canGoBackFalseAfterNavigateToAnchorThenBack() {
+        MarkdownPreviewTab tab = new MarkdownPreviewTab();
+        tab.historyPaths.add("/file.md");
+        tab.historyFos.add(null);
+        tab.historyAnchors.add(null);
+        tab.historyIndex = 0;
+        tab.setFilePathForTest("/file.md");
+        tab.setPaneForTest(new JEditorPane());
+
+        tab.navigateToAnchor("section");
+        tab.navigateBack();
+
+        assertFalse(tab.canGoBack(), "canGoBack() should be false after navigating back to initial entry");
+    }
+
+    @Test
+    void forwardTruncationClearsAnchorHistory() {
+        MarkdownPreviewTab tab = new MarkdownPreviewTab();
+        tab.historyPaths.add("/file.md");
+        tab.historyFos.add(null);
+        tab.historyAnchors.add(null);
+        tab.historyPaths.add("/file.md");
+        tab.historyFos.add(null);
+        tab.historyAnchors.add("old-anchor");
+        tab.historyIndex = 0;
+        tab.setFilePathForTest("/file.md");
+        tab.setPaneForTest(new JEditorPane());
+
+        // Navigate to new anchor (should truncate forward entry)
+        tab.navigateToAnchor("new-anchor");
+
+        assertEquals(2, tab.historyAnchors.size(), "History should have 2 entries after truncation and new push");
+        assertNull(tab.historyAnchors.get(0), "First entry anchor should be null");
+        assertEquals("new-anchor", tab.historyAnchors.get(1), "Second entry should be new anchor");
+    }
+
     private static List<String> menuItemLabels(JPopupMenu menu) {
         List<String> labels = new ArrayList<>();
         for (int i = 0; i < menu.getComponentCount(); i++) {
