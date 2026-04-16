@@ -265,4 +265,50 @@ class MarkdownRendererTest {
         String html = MarkdownRenderer.toHtml("# Hello, World! (2024)");
         assertTrue(html.contains("<a name=\"hello-world-2024\">"), "slug strips punctuation");
     }
+
+    // -------------------------------------------------------------------------
+    // resolveImagePaths()
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testResolveImagePathsRelative() {
+        String html = "<img src=\"screenshots/overview.png\" alt=\"\">";
+        String result = MarkdownRenderer.resolveImagePaths(html, "/docs");
+        assertEquals("<img src=\"file:///docs/screenshots/overview.png\" alt=\"\">", result);
+    }
+
+    @Test
+    void testResolveImagePathsAbsoluteHttpUnchanged() {
+        String html = "<img src=\"https://example.com/img.png\" alt=\"\">";
+        String result = MarkdownRenderer.resolveImagePaths(html, "/docs");
+        assertEquals(html, result);
+    }
+
+    @Test
+    void testResolveImagePathsFileUriUnchanged() {
+        String html = "<img src=\"file:///abs/path/img.png\" alt=\"\">";
+        String result = MarkdownRenderer.resolveImagePaths(html, "/docs");
+        assertEquals(html, result);
+    }
+
+    @Test
+    void testResolveImagePathsDataUriUnchanged() {
+        String html = "<img src=\"data:image/png;base64,abc\" alt=\"\">";
+        String result = MarkdownRenderer.resolveImagePaths(html, "/docs");
+        assertEquals(html, result);
+    }
+
+    @Test
+    void testResolveImagePathsNullBaseDirReturnsUnchanged() {
+        String html = "<img src=\"img.png\" alt=\"\">";
+        String result = MarkdownRenderer.resolveImagePaths(html, null);
+        assertEquals(html, result);
+    }
+
+    @Test
+    void testResolveImagePathsWindowsBackslashesNormalized() {
+        String html = "<img src=\"img.png\" alt=\"\">";
+        String result = MarkdownRenderer.resolveImagePaths(html, "C:\\docs\\project");
+        assertEquals("<img src=\"file://C:/docs/project/img.png\" alt=\"\">", result);
+    }
 }

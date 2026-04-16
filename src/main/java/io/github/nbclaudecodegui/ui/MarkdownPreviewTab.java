@@ -80,6 +80,9 @@ public class MarkdownPreviewTab extends TopComponent {
     /** Absolute path key used to identify this tab in {@link #OPEN_TABS}. */
     String filePath;
 
+    /** Parent directory of {@link #filePath}; used to resolve relative image paths. */
+    String baseDirPath;
+
     // Navigation history
     final List<String> historyPaths = new ArrayList<>();
     final List<FileObject> historyFos = new ArrayList<>();
@@ -133,9 +136,10 @@ public class MarkdownPreviewTab extends TopComponent {
         MarkdownPreviewTab tab = new MarkdownPreviewTab();
         tab.filePath = filePath;
         tab.fileObject = fo;
+        tab.baseDirPath = new java.io.File(filePath).getParent();
 
         String html = MarkdownRenderer.toHtml(content != null ? content : "");
-        tab.pane = MarkdownRenderer.createOutputPane(html, new java.io.File(filePath).getParent());
+        tab.pane = MarkdownRenderer.createOutputPane(html, tab.baseDirPath);
 
         String name = new java.io.File(filePath).getName();
         tab.setDisplayName("Preview: " + name);
@@ -171,7 +175,8 @@ public class MarkdownPreviewTab extends TopComponent {
      * @param markdown markdown text to render
      */
     public void updateContent(String markdown) {
-        String html = MarkdownRenderer.toHtml(markdown != null ? markdown : "");
+        String html = MarkdownRenderer.resolveImagePaths(
+                MarkdownRenderer.toHtml(markdown != null ? markdown : ""), baseDirPath);
         SwingUtilities.invokeLater(() -> {
             if (pane == null) return;
             if (scrollPane == null) {
@@ -298,6 +303,7 @@ public class MarkdownPreviewTab extends TopComponent {
         }
         this.filePath = newPath;
         this.fileObject = newFo;
+        this.baseDirPath = new File(newPath).getParent();
         OPEN_TABS.put(newPath, this);
 
         setDisplayName("Preview: " + new File(newPath).getName());
@@ -583,8 +589,9 @@ public class MarkdownPreviewTab extends TopComponent {
         FileObject fo = FileUtil.toFileObject(f);
         if (pane == null) {
             try {
+                baseDirPath = f.getParent();
                 String content = fo != null ? fo.asText() : "";
-                pane = MarkdownRenderer.createOutputPane(MarkdownRenderer.toHtml(content));
+                pane = MarkdownRenderer.createOutputPane(MarkdownRenderer.toHtml(content), baseDirPath);
             } catch (IOException e) {
                 return;
             }

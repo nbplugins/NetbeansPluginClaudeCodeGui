@@ -1,6 +1,6 @@
 - Added minimum tested Claude Code CLI version (2.1.78) to installation requirements (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/29)
 - Fixed anchor link clicks (`#section`) in markdown preview not enabling the Back button; Back now returns to the position before the anchor jump
-- Fixed markdown preview not rendering images (`![alt](path)` syntax)
+- Fixed markdown preview not rendering images with relative paths (`![alt](path)` syntax)
 - Fixed session tab blocking resize below ~600px when docked as a side panel (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/19)
 - Added alphabetical sorting to the "Select Project" dropdown (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/21)
 - Improved error panel on process start failure: shows Working Directory and CLAUDE_CONFIG_DIR fields (before Command and Error) for easier diagnosis; all fields have a right-click Copy menu; fixed "Restart Advanced…" not dismissing the error panel

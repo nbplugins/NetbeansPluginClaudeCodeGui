@@ -75,16 +75,26 @@ public final class MarkdownRenderer {
      */
     public static JEditorPane createOutputPane(String html, String baseDirPath) {
         JEditorPane pane = createOutputPane();
-        if (baseDirPath != null) {
-            try {
-                ((HTMLDocument) pane.getDocument()).setBase(
-                        new java.net.URL("file://" + baseDirPath + "/"));
-            } catch (java.net.MalformedURLException ignored) {
-                // fall through — relative images won't resolve but nothing breaks
-            }
-        }
-        pane.setText(html);
+        pane.setText(resolveImagePaths(html, baseDirPath));
         return pane;
+    }
+
+    /**
+     * Replaces relative {@code src} attributes in {@code <img>} tags with absolute
+     * {@code file://} URIs so Swing's HTMLEditorKit can load them regardless of the
+     * document base URL setting.
+     *
+     * @param html        HTML fragment (may contain {@code <img src="...">} tags)
+     * @param baseDirPath absolute directory path of the file being rendered, or null
+     * @return the HTML with relative image paths resolved, or the original HTML if
+     *         {@code baseDirPath} is null
+     */
+    public static String resolveImagePaths(String html, String baseDirPath) {
+        if (baseDirPath == null) return html;
+        String base = baseDirPath.replace("\\", "/");
+        return html.replaceAll(
+                "src=\"(?!https?://|file://|data:)([^\"]+)\"",
+                "src=\"file://" + base + "/$1\"");
     }
 
     /**
