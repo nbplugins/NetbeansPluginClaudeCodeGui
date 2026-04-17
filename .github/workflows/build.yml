@@ -89,7 +89,6 @@ jobs:
     needs: calc_ver
     runs-on: ubuntu-latest
     outputs:
-      deployment_id: ${{ steps.deploy.outputs.deployment_id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,24 +112,15 @@ jobs:
         # xvfb-run provides a virtual display so Swing UI tests don't throw HeadlessException
         run: xvfb-run mvn package --batch-mode
       - name: Deploy to Maven Central (release only)
-        id: deploy
         if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
         run: |
           VERSION="${{ needs.calc_ver.outputs.project_ver }}"
-          AUTH=$(echo -n "$MAVEN_USERNAME:$MAVEN_PASSWORD" | base64 -w0)
-
-          EXISTING_ID=$(curl -sf -H "Authorization: Bearer $AUTH" \
-            "https://central.sonatype.com/api/v1/publisher/deployments/search?namespace=io.github.nbclaudecodegui&name=netbeans-claude-code-gui&version=$VERSION" \
-            | jq -r '.deployments[0].deploymentId // empty' || echo "")
-
-          if [[ -n "$EXISTING_ID" ]]; then
-            echo "Reusing existing deployment: $EXISTING_ID"
-            echo "deployment_id=$EXISTING_ID" >> $GITHUB_OUTPUT
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            "https://repo1.maven.org/maven2/io/github/nbclaudecodegui/netbeans-claude-code-gui/$VERSION/netbeans-claude-code-gui-$VERSION.pom")
+          if [[ "$STATUS" == "200" ]]; then
+            echo "Version $VERSION already published to Maven Central, skipping."
           else
-            DEPLOY_LOG=$(mktemp)
-            mvn deploy -P release -DskipTests --batch-mode 2>&1 | tee "$DEPLOY_LOG"
-            DEPLOYMENT_ID=$(grep -oP '(?<=deploymentId: )[a-f0-9-]+' "$DEPLOY_LOG" || true)
-            echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+            mvn deploy -P release -DskipTests --batch-mode
           fi
         env:
           MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
@@ -172,59 +162,4 @@ jobs:
             gh release edit "$REL_TAG" --draft=false --repo ${{ github.repository }}
           fi
 
-      - name: Publish to Maven Central and wait
-        run: |
-          AUTH=$(echo -n "$MAVEN_USERNAME:$MAVEN_PASSWORD" | base64 -w0)
-          DEPLOYMENT_ID="${{ needs.build.outputs.deployment_id }}"
 
-          if [[ -z "$DEPLOYMENT_ID" ]]; then
-            echo "No deployment ID available, skipping Maven Central publication."
-            exit 0
-          fi
-
-          # Poll until deployment reaches a stable pre-publish state
-          # (right after upload the state may be empty — log raw response for diagnostics)
-          STATUS=""
-          for i in $(seq 1 20); do
-            RAW=$(curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" \
-              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID")
-            echo "[$i/20] Raw status response: $RAW"
-            STATUS=$(echo "$RAW" | jq -r '.deploymentState // empty' 2>/dev/null || echo "PARSE_FAILED")
-            echo "[$i/20] Deployment state: $STATUS"
-            [[ "$STATUS" == "VALIDATED" || "$STATUS" == "PUBLISHED" || "$STATUS" == "FAILED" ]] && break
-            sleep 30
-          done
-
-          if [[ "$STATUS" == "PUBLISHED" ]]; then
-            echo "Already published to Maven Central."
-            exit 0
-          fi
-
-          if [[ "$STATUS" == "FAILED" ]]; then
-            echo "Deployment validation failed." && exit 1
-          fi
-
-          if [[ "$STATUS" != "VALIDATED" ]]; then
-            echo "Timed out or unexpected state before publish: $STATUS" && exit 1
-          fi
-
-          curl --fail --location \
-            --request POST \
-            --header "Authorization: Bearer $AUTH" \
-            "https://central.sonatype.com/api/v1/publisher/publish?id=$DEPLOYMENT_ID"
-
-          for i in $(seq 1 30); do
-            sleep 30
-            RAW=$(curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" \
-              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID")
-            STATUS=$(echo "$RAW" | jq -r '.deploymentState // empty' 2>/dev/null || echo "PARSE_FAILED")
-            echo "[$i/30] State: $STATUS"
-            [[ "$STATUS" == "PUBLISHED" ]] && break
-            [[ "$STATUS" == "FAILED" ]] && echo "Sonatype publication failed." && exit 1
-          done
-
-          [[ "$STATUS" != "PUBLISHED" ]] && echo "Timed out waiting for Maven Central publication." && exit 1
-          echo "Published successfully to Maven Central."
-        env:
-          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
