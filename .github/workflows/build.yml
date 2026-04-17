@@ -182,18 +182,30 @@ jobs:
             exit 0
           fi
 
-          STATUS=$(curl -sf -H "Authorization: Bearer $AUTH" \
-            "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" \
-            | jq -r '.deploymentState' || echo "UNKNOWN")
-          echo "Current deployment state: $STATUS"
+          # Poll until deployment reaches a stable pre-publish state
+          # (right after upload the state may be empty — log raw response for diagnostics)
+          STATUS=""
+          for i in $(seq 1 20); do
+            RAW=$(curl -sf -H "Authorization: Bearer $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" || echo "CURL_FAILED")
+            echo "[$i/20] Raw status response: $RAW"
+            STATUS=$(echo "$RAW" | jq -r '.deploymentState // empty' 2>/dev/null || echo "PARSE_FAILED")
+            echo "[$i/20] Deployment state: $STATUS"
+            [[ "$STATUS" == "VALIDATED" || "$STATUS" == "PUBLISHED" || "$STATUS" == "FAILED" ]] && break
+            sleep 30
+          done
 
           if [[ "$STATUS" == "PUBLISHED" ]]; then
             echo "Already published to Maven Central."
             exit 0
           fi
 
-          if [[ "$STATUS" != "PENDING" && "$STATUS" != "VALIDATED" && "$STATUS" != "UPLOADING" ]]; then
-            echo "Unexpected deployment state: $STATUS" && exit 1
+          if [[ "$STATUS" == "FAILED" ]]; then
+            echo "Deployment validation failed." && exit 1
+          fi
+
+          if [[ "$STATUS" != "VALIDATED" ]]; then
+            echo "Timed out or unexpected state before publish: $STATUS" && exit 1
           fi
 
           curl --fail --location \
@@ -203,9 +215,9 @@ jobs:
 
           for i in $(seq 1 30); do
             sleep 30
-            STATUS=$(curl -sf -H "Authorization: Bearer $AUTH" \
-              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" \
-              | jq -r '.deploymentState')
+            RAW=$(curl -sf -H "Authorization: Bearer $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" || echo "CURL_FAILED")
+            STATUS=$(echo "$RAW" | jq -r '.deploymentState // empty' 2>/dev/null || echo "PARSE_FAILED")
             echo "[$i/30] State: $STATUS"
             [[ "$STATUS" == "PUBLISHED" ]] && break
             [[ "$STATUS" == "FAILED" ]] && echo "Sonatype publication failed." && exit 1
