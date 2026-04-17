@@ -186,8 +186,8 @@ jobs:
           # (right after upload the state may be empty — log raw response for diagnostics)
           STATUS=""
           for i in $(seq 1 20); do
-            RAW=$(curl -sf -H "Authorization: Bearer $AUTH" \
-              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" || echo "CURL_FAILED")
+            RAW=$(curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID")
             echo "[$i/20] Raw status response: $RAW"
             STATUS=$(echo "$RAW" | jq -r '.deploymentState // empty' 2>/dev/null || echo "PARSE_FAILED")
             echo "[$i/20] Deployment state: $STATUS"
@@ -215,8 +215,8 @@ jobs:
 
           for i in $(seq 1 30); do
             sleep 30
-            RAW=$(curl -sf -H "Authorization: Bearer $AUTH" \
-              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" || echo "CURL_FAILED")
+            RAW=$(curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID")
             STATUS=$(echo "$RAW" | jq -r '.deploymentState // empty' 2>/dev/null || echo "PARSE_FAILED")
             echo "[$i/30] State: $STATUS"
             [[ "$STATUS" == "PUBLISHED" ]] && break
