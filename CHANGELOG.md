@@ -1,3 +1,7 @@
+# 0.21
+
+- Fixed Maven Central publication being skipped after upload
+
 # 0.21.34 (2026-04-17)
 
 - Added minimum tested Claude Code CLI version (2.1.78) to installation requirements (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/29)
