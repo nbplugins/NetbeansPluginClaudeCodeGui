@@ -88,6 +88,8 @@ jobs:
   build:
     needs: calc_ver
     runs-on: ubuntu-latest
+    outputs:
+      deployment_id: ${{ steps.deploy.outputs.deployment_id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,13 +109,28 @@ jobs:
         run: sudo apt-get install -y pandoc
       - name: Set version
         run: mvn versions:set -DnewVersion=${{ needs.calc_ver.outputs.project_ver }} --batch-mode
-      - name: Build
+      - name: Build and test
         # xvfb-run provides a virtual display so Swing UI tests don't throw HeadlessException
+        run: xvfb-run mvn package --batch-mode
+      - name: Deploy to Maven Central (release only)
+        id: deploy
+        if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
         run: |
-          if [[ "${{ needs.calc_ver.outputs.release_flag }}" == "ON" ]]; then
-            xvfb-run mvn deploy -P release -DskipTests -DskipDeploy=true --batch-mode
+          VERSION="${{ needs.calc_ver.outputs.project_ver }}"
+          AUTH=$(echo -n "$MAVEN_USERNAME:$MAVEN_PASSWORD" | base64 -w0)
+
+          EXISTING_ID=$(curl -sf -H "Authorization: Bearer $AUTH" \
+            "https://central.sonatype.com/api/v1/publisher/deployments/search?namespace=io.github.nbclaudecodegui&name=netbeans-claude-code-gui&version=$VERSION" \
+            | jq -r '.deployments[0].deploymentId // empty' || echo "")
+
+          if [[ -n "$EXISTING_ID" ]]; then
+            echo "Reusing existing deployment: $EXISTING_ID"
+            echo "deployment_id=$EXISTING_ID" >> $GITHUB_OUTPUT
           else
-            xvfb-run mvn package --batch-mode
+            DEPLOY_LOG=$(mktemp)
+            mvn deploy -P release -DskipTests --batch-mode 2>&1 | tee "$DEPLOY_LOG"
+            DEPLOYMENT_ID=$(grep -oP '(?<=Deployment ID: )[a-f0-9-]+' "$DEPLOY_LOG" || true)
+            echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
           fi
         env:
           MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
@@ -137,41 +154,65 @@ jobs:
             target/*-docs.html
           upload-release-files: ${{ needs.calc_ver.outputs.release_flag == 'ON' }}
           release-upload-url: ${{ needs.calc_ver.outputs.release_upload_url }}
-      - name: Upload Central bundle
-        if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
-        uses: actions/upload-artifact@v4
-        with:
-          name: central-bundle
-          path: target/central-publishing/central-bundle.zip
-          if-no-files-found: error
 
   release:
     needs: [calc_ver, build]
     if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
     runs-on: ubuntu-latest
     steps:
-      - name: Download Central bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: central-bundle
-          path: central-bundle
-
-      - name: Publish to Maven Central
-        run: |
-          AUTH=$(echo -n "$MAVEN_USERNAME:$MAVEN_PASSWORD" | base64 -w0)
-          curl --fail --location \
-            --request POST \
-            --header "Authorization: Bearer $AUTH" \
-            --form "bundle=@central-bundle/central-bundle.zip" \
-            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
-        env:
-          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-
       - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit "${{ needs.calc_ver.outputs.release_tag }}" \
-            --draft=false \
-            --repo ${{ github.repository }}
+          REL_TAG="${{ needs.calc_ver.outputs.release_tag }}"
+          IS_DRAFT=$(gh release view "$REL_TAG" --json isDraft -q .isDraft 2>/dev/null || echo "true")
+          if [[ "$IS_DRAFT" == "false" ]]; then
+            echo "GitHub Release already published."
+          else
+            gh release edit "$REL_TAG" --draft=false --repo ${{ github.repository }}
+          fi
+
+      - name: Publish to Maven Central and wait
+        run: |
+          AUTH=$(echo -n "$MAVEN_USERNAME:$MAVEN_PASSWORD" | base64 -w0)
+          DEPLOYMENT_ID="${{ needs.build.outputs.deployment_id }}"
+
+          if [[ -z "$DEPLOYMENT_ID" ]]; then
+            echo "No deployment ID available, skipping Maven Central publication."
+            exit 0
+          fi
+
+          STATUS=$(curl -sf -H "Authorization: Bearer $AUTH" \
+            "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" \
+            | jq -r '.deploymentState' || echo "UNKNOWN")
+          echo "Current deployment state: $STATUS"
+
+          if [[ "$STATUS" == "PUBLISHED" ]]; then
+            echo "Already published to Maven Central."
+            exit 0
+          fi
+
+          if [[ "$STATUS" != "PENDING" && "$STATUS" != "VALIDATED" && "$STATUS" != "UPLOADING" ]]; then
+            echo "Unexpected deployment state: $STATUS" && exit 1
+          fi
+
+          curl --fail --location \
+            --request POST \
+            --header "Authorization: Bearer $AUTH" \
+            "https://central.sonatype.com/api/v1/publisher/publish?id=$DEPLOYMENT_ID"
+
+          for i in $(seq 1 30); do
+            sleep 30
+            STATUS=$(curl -sf -H "Authorization: Bearer $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" \
+              | jq -r '.deploymentState')
+            echo "[$i/30] State: $STATUS"
+            [[ "$STATUS" == "PUBLISHED" ]] && break
+            [[ "$STATUS" == "FAILED" ]] && echo "Sonatype publication failed." && exit 1
+          done
+
+          [[ "$STATUS" != "PUBLISHED" ]] && echo "Timed out waiting for Maven Central publication." && exit 1
+          echo "Published successfully to Maven Central."
+        env:
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
