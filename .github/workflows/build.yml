@@ -129,7 +129,7 @@ jobs:
           else
             DEPLOY_LOG=$(mktemp)
             mvn deploy -P release -DskipTests --batch-mode 2>&1 | tee "$DEPLOY_LOG"
-            DEPLOYMENT_ID=$(grep -oP '(?<=Deployment ID: )[a-f0-9-]+' "$DEPLOY_LOG" || true)
+            DEPLOYMENT_ID=$(grep -oP '(?<=deploymentId: )[a-f0-9-]+' "$DEPLOY_LOG" || true)
             echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
           fi
         env:
