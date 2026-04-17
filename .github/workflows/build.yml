@@ -114,7 +114,7 @@ jobs:
         if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
         run: |
           VERSION="${{ needs.calc_ver.outputs.project_ver }}"
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             "https://repo1.maven.org/maven2/io/github/nbclaudecodegui/netbeans-claude-code-gui/$VERSION/netbeans-claude-code-gui-$VERSION.pom")
           if [[ "$STATUS" == "200" ]]; then
             echo "Version $VERSION already published to Maven Central, skipping."
