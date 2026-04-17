@@ -88,7 +88,6 @@ jobs:
   build:
     needs: calc_ver
     runs-on: ubuntu-latest
-    outputs:
     steps:
       - uses: actions/checkout@v4
         with:
