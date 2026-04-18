@@ -939,6 +939,12 @@ public class ClaudeSessionTab extends TopComponent
         }
         southCard.revalidate();
         southCard.repaint();
+        // Keep the terminal scrolled to the bottom after layout changes caused by
+        // setDividerLocation() — JediTerm resets scroll position to top on resize.
+        if (terminalWidget != null) {
+            SwingUtilities.invokeLater(
+                    () -> terminalWidget.getTerminalPanel().scrollToShowAllOutput());
+        }
     }
 
     /**
