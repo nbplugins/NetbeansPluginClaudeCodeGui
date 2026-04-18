@@ -162,9 +162,10 @@ public class ClaudeSessionTab extends TopComponent
     private JediTermWidget  terminalWidget;
     private JSplitPane      splitPane;
     private JPanel          errorPanel;
-    private JPanel          southCard;
-    private CardLayout      southCardLayout;
-    private String          activeCard;
+    JPanel          southCard;
+    CardLayout      southCardLayout;
+    String          activeCard;
+    JPanel          currentDiffCard;
     private Runnable        pendingDiffOnClose;
 
     // -------------------------------------------------------------------------
@@ -741,19 +742,10 @@ public class ClaudeSessionTab extends TopComponent
             public void componentResized(ComponentEvent e) {
                 int total = splitPane.getHeight();
                 if (total <= 0) return;
-                int bottom;
-                if (!savingEnabled[0]) {
-                    bottom = savedBottomHeight > 0 ? savedBottomHeight
-                                                   : southCard.getPreferredSize().height;
-                    savingEnabled[0] = true;
-                } else {
-                    bottom = NbPreferences.forModule(ClaudeSessionTab.class)
-                            .getInt(getSavedCardKey(), southCard.getPreferredSize().height);
-                }
-                int divLoc = total - splitPane.getDividerSize() - bottom;
-                LOG.fine(sessionTag + "[splitPane resize] total=" + total
-                        + " bottom=" + bottom + " divLoc=" + divLoc);
-                splitPane.setDividerLocation(divLoc);
+                LOG.fine(sessionTag + "[componentResized] activeCard=" + activeCard
+                        + " total=" + total + " savedBottomHeight=" + savedBottomHeight);
+                applyDividerForCard(activeCard, total, savedBottomHeight);
+                savingEnabled[0] = true;
             }
         });
         splitPane.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY, e -> {
@@ -893,11 +885,53 @@ public class ClaudeSessionTab extends TopComponent
      * @return preference key string
      */
     private String getSavedCardKey() {
-        if (CARD_PROMPT.equals(activeCard) || activeCard == null) return "bottomHeight";
-        return activeCard + "Height";
+        return getSavedCardKeyFor(activeCard);
     }
 
-    private void switchSouthCard(String card) {
+    /**
+     * Reads the saved divider height for {@code card}, falls back to sensible defaults,
+     * sets the divider location, and returns the bottom height used.
+     * {@code legacyPromptHeight} is the pre-migration "bottomHeight" value (pass -1 to skip).
+     */
+    private int applyDividerForCard(String card, int total, int legacyPromptHeight) {
+        int saved = NbPreferences.forModule(ClaudeSessionTab.class)
+                .getInt(getSavedCardKeyFor(card), -1);
+        int bottom = computeBottomHeight(card, total, saved, legacyPromptHeight,
+                southCard.getPreferredSize().height);
+        int divLoc = total - splitPane.getDividerSize() - bottom;
+        LOG.fine(sessionTag + "[applyDivider] card=" + card
+                + " total=" + total + " saved=" + saved
+                + " legacy=" + legacyPromptHeight
+                + " preferred=" + southCard.getPreferredSize().height
+                + " bottom=" + bottom + " divLoc=" + divLoc);
+        if (divLoc >= 0) splitPane.setDividerLocation(divLoc);
+        return bottom;
+    }
+
+    /**
+     * Pure function: computes the south-panel height for a given card.
+     * Extracted for unit testing — no Swing state access.
+     *
+     * @param card              active card name (CARD_PROMPT or CARD_DIFF)
+     * @param total             total splitPane height
+     * @param saved             persisted height (negative means not saved)
+     * @param legacyPromptHeight "bottomHeight" pref value for backward-compat (negative to skip)
+     * @param preferredHeight   southCard preferred height (fallback)
+     */
+    static int computeBottomHeight(String card, int total, int saved,
+                                   int legacyPromptHeight, int preferredHeight) {
+        if (saved > 0) return saved;
+        if (CARD_DIFF.equals(card)) return total * 2 / 3;
+        if (CARD_PROMPT.equals(card) && legacyPromptHeight > 0) return legacyPromptHeight;
+        return preferredHeight;
+    }
+
+    String getSavedCardKeyFor(String card) {
+        if (CARD_PROMPT.equals(card) || card == null) return "bottomHeight";
+        return card + "Height";
+    }
+
+    void switchSouthCard(String card) {
         if (southCard == null || southCardLayout == null) return;
         activeCard = card;
         southCardLayout.show(southCard, card);
@@ -912,11 +946,14 @@ public class ClaudeSessionTab extends TopComponent
         if (!CARD_CHOICE.equals(card)) {
             // restore divider for this card
             int total = splitPane.getHeight();
+            LOG.fine(sessionTag + "[switchSouthCard] card=" + card + " total=" + total);
             if (total > 0) {
-                int bottom = NbPreferences.forModule(ClaudeSessionTab.class)
-                        .getInt(getSavedCardKey(), DEFAULT_DIFF_HEIGHT);
-                int divLoc = total - splitPane.getDividerSize() - bottom;
-                splitPane.setDividerLocation(divLoc);
+                applyDividerForCard(card, total, -1);
+            } else {
+                SwingUtilities.invokeLater(() -> {
+                    int t = splitPane != null ? splitPane.getHeight() : 0;
+                    if (t > 0) applyDividerForCard(activeCard, t, -1);
+                });
             }
         } else {
             // lock divider for choice menu
@@ -1058,6 +1095,7 @@ public class ClaudeSessionTab extends TopComponent
             southCard       = null;
             southCardLayout = null;
             activeCard      = null;
+            currentDiffCard = null;
         }
         if (errorPanel != null) {
             remove(errorPanel);
@@ -1124,6 +1162,10 @@ public class ClaudeSessionTab extends TopComponent
             permPanel.showWarning(outsideWarning);
         }
 
+        if (currentDiffCard != null) {
+            southCard.remove(currentDiffCard);
+            currentDiffCard = null;
+        }
         JPanel diffCard = new JPanel(new BorderLayout());
         if (toolbar != null) {
             diffCard.add(toolbar, BorderLayout.NORTH);
@@ -1131,7 +1173,8 @@ public class ClaudeSessionTab extends TopComponent
         diffCard.add(diffComponent, BorderLayout.CENTER);
         diffCard.add(permPanel,     BorderLayout.SOUTH);
 
-        southCard.add(diffCard, CARD_DIFF);
+        currentDiffCard = diffCard;
+        southCard.add(currentDiffCard, CARD_DIFF);
 
         pendingDiffOnClose = onTabClose;
         switchSouthCard(CARD_DIFF);
@@ -1148,6 +1191,10 @@ public class ClaudeSessionTab extends TopComponent
         pendingDiffOnClose = null;
         if (southCard == null) return;
         switchSouthCard(CARD_PROMPT);
+        if (currentDiffCard != null) {
+            southCard.remove(currentDiffCard);
+            currentDiffCard = null;
+        }
         revalidate();
         repaint();
     }
