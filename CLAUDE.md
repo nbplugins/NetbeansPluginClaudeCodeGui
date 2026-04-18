@@ -12,7 +12,7 @@ mvn test                    # Run all unit tests
 mvn test -Dtest=ClassName   # Run a single test class
 ```
 
-After every fix or change, increment the patch version in `pom.xml` and rebuild.
+**Version bump is always the first step** before implementing any fix or feature: increment the patch version in `pom.xml`. Running `mvn package` is always the last step after all changes are done.
 
 ## Release & Versioning
 
@@ -80,6 +80,13 @@ Each changelog entry must be committed **together with the code change it descri
 ### Commit message rules
 
 Commit messages must also start with a past-tense verb (e.g. "Fixed ...", "Added ..."). The subject line describes *what* was done; the body (if needed) explains *how* or *why*.
+
+When the commit fixes a GitHub issue:
+- The CHANGELOG entry must include the full issue URL: e.g. `Fixed ... (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/N)`
+- The commit subject line should match the CHANGELOG entry text (without the leading `-`)
+- The commit body must include `Resolves: #N` followed by implementation explanation
+
+When finishing a release by adding `# MAJOR.MINOR` to CHANGELOG.md, the commit message must be `"Requested release MAJOR.MINOR"` (not `"Released MAJOR.MINOR"`).
 
 ## Architecture
 
@@ -224,6 +231,7 @@ After any action the originating `ClaudeSessionTab` is re-activated automaticall
 - Integration test: `ClaudeCodePluginIT` uses `NbModuleSuite` for full IDE lifecycle
 - Test fixtures (JSON): `src/test/resources/fixtures/`
 - `ClaudeProcessTest` skips on Windows; uses a fake `claude` shell script
+- Test resources in `src/test/resources/` must mirror the package structure of `src/main/java/`. For example, resources for `io.github.nbclaudecodegui.process.ScreenContentDetector` go in `src/test/resources/io/github/nbclaudecodegui/process/`.
 
 ## Bug Fixing Protocol
 
@@ -247,11 +255,31 @@ After any action the originating `ClaudeSessionTab` is re-activated automaticall
 
 8. **On successful fix — commit** all changed files, including Python tests and `to-do.md` if the bug was tracked there
 
+## Commit Workflow
+
+After implementing any feature or fix:
+1. Build (`mvn package` or `mvn nbm:nbm`)
+2. Present a manual test plan to the user
+3. Wait for the user to confirm tests passed
+4. Only then commit
+
+## Logging
+
+Use `LOG.fine(...)` for debug/diagnostic messages — no `isDebugMode()` guard needed.
+Reserve `LOG.info` for important events; wrap with `isDebugMode()` only when using `LOG.info` for debug output.
+
 ## Git Workflow
 
 - `origin` — personal fork
 - `upstream` — org repo (`nbclaudecodegui/NetbeansClaudeCodeGui`)
 
 **Never push directly to upstream.** Always:
-1. Push to a new branch in `origin`
-2. Open a PR from that branch into `upstream/main`
+1. Run `git fetch upstream` before creating a branch
+2. Base the new branch on `upstream/main` (or `upstream/release/*` for backports)
+3. Push to a new branch in `origin`
+4. Open a PR from that branch into `upstream/main`
+
+### Branch naming
+- `bugfix/<description>` — for bug fixes
+- `feature/<description>` — for new features
+- Backport branches: `<type>/<version>/<description>` (e.g. `bugfix/0.20/issue-22-scrollbar-disappears`)
