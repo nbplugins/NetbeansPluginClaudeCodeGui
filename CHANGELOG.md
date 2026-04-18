@@ -1,3 +1,5 @@
+- Fixed terminal scrolling to the beginning when a choice menu or diff panel appears (regression since 0.20.20)
+
 # 0.21.46 (2026-04-17)
 
 - Fixed Maven Central publication being skipped after upload
