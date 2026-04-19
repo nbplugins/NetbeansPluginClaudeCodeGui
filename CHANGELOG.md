@@ -1,3 +1,5 @@
+# 0.21
+
 - Fixed diff panel appearing at wrong height (nearly invisible) after Reset Windows or on first use
 - Fixed second diff in the same Claude session being invisible (stale card accumulation)
 - Fixed terminal scrolling to the beginning when a choice menu or diff panel appears (regression since 0.20.20)
