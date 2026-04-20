@@ -294,6 +294,17 @@ public class ClaudeSessionTab extends TopComponent
      *
      * <p>Focuses an existing idle session if one is open; otherwise opens a new one.
      */
+    private static void dockAndOpen(ClaudeSessionTab tab) {
+        String modeName = ClaudeCodePreferences.getSessionDockMode();
+        if (!ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE.equals(modeName)) {
+            org.openide.windows.Mode mode = WindowManager.getDefault().findMode(modeName);
+            if (mode != null) {
+                mode.dockInto(tab);
+            }
+        }
+        tab.open();
+    }
+
     public static void openNewOrFocus() {
         SwingUtilities.invokeLater(() -> {
             for (TopComponent tc : WindowManager.getDefault().getRegistry().getOpened()) {
@@ -310,7 +321,7 @@ public class ClaudeSessionTab extends TopComponent
             }
             LOG.fine("openNewOrFocus: no idle tab found, opening new tab");
             ClaudeSessionTab tab = new ClaudeSessionTab();
-            tab.open();
+            dockAndOpen(tab);
             tab.requestActive();
         });
     }
@@ -342,7 +353,7 @@ public class ClaudeSessionTab extends TopComponent
                 }
             }
             ClaudeSessionTab tab = new ClaudeSessionTab(dir);
-            tab.open();
+            dockAndOpen(tab);
             tab.requestActive();
             tab.autoStart(dir, profileName);
         });

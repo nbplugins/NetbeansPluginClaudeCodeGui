@@ -1,5 +1,8 @@
+- Added a global setting to choose the default dock position of the Claude Code session tab (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/24)
+
+# 0.21.50 (2026-04-19)
+
 - Fixed diff panel appearing at wrong height (nearly invisible) after Reset Windows or on first use
-- Fixed second diff in the same Claude session being invisible (stale card accumulation)
 - Fixed terminal scrolling to the beginning when a choice menu or diff panel appears (regression since 0.20.20)
 
 # 0.21.46 (2026-04-17)

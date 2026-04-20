@@ -40,6 +40,13 @@ import javax.swing.table.AbstractTableModel;
  */
 public final class ClaudeCodeOptionsPanel extends JPanel {
 
+    private static final String[] DOCK_MODE_VALUES = {
+        "editor", "commonpalette", "explorer", "navigator", "output"
+    };
+    private static final String[] DOCK_MODE_LABELS = {
+        "Editor area (default)", "Right side", "Left side top", "Left side bottom", "Bottom dock"
+    };
+
     private static final String[] KEY_VALUES = {
         ClaudeCodePreferences.ENTER,
         ClaudeCodePreferences.SHIFT_ENTER,
@@ -68,6 +75,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private javax.swing.JCheckBox startNewSessionCheck;
     /** Spinner for the maximum number of sessions shown in the session list. */
     private JSpinner sessionListLimitSpinner;
+    /** Dropdown for the dock position of the Claude Code session tab. */
+    private javax.swing.JComboBox<String> dockModeCombo;
     /** Spinner for the hang-detection timeout in seconds (0 = disabled). */
     private JSpinner hangTimeoutSpinner;
     /** Checkbox to enable MCP integration (pass --mcp-config flag). */
@@ -222,6 +231,13 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         form.add(sessionListLimitSpinner, gbc(1, row, false));
         row++;
 
+        // --- session tab dock position ---
+        form.add(new JLabel("Session tab dock position:"), gbc(0, row, false));
+        dockModeCombo = new javax.swing.JComboBox<>(DOCK_MODE_LABELS);
+        dockModeCombo.setToolTipText("Where to dock the Claude Code session tab when opening it");
+        form.add(dockModeCombo, gbc(1, row, false));
+        row++;
+
         // spacer
         GridBagConstraints spacer = new GridBagConstraints();
         spacer.gridx = 0; spacer.gridy = row;
@@ -357,6 +373,9 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                 ClaudeCodePreferences.getContextMenuSessionMode()
                         == io.github.nbclaudecodegui.model.SessionMode.NEW);
         sessionListLimitSpinner.setValue(ClaudeCodePreferences.getSessionListLimit());
+        String dockMode = ClaudeCodePreferences.getSessionDockMode();
+        int dockIdx = java.util.Arrays.asList(DOCK_MODE_VALUES).indexOf(dockMode);
+        dockModeCombo.setSelectedIndex(dockIdx >= 0 ? dockIdx : 0);
         hangTimeoutSpinner.setValue(ClaudeCodePreferences.getHangTimeoutSeconds());
         mcpEnabledCheckBox.setSelected(ClaudeCodePreferences.isMcpEnabled());
 
@@ -391,6 +410,11 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         ? io.github.nbclaudecodegui.model.SessionMode.NEW
                         : io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST);
         ClaudeCodePreferences.setSessionListLimit((Integer) sessionListLimitSpinner.getValue());
+        int dockSel = dockModeCombo.getSelectedIndex();
+        ClaudeCodePreferences.setSessionDockMode(
+                dockSel >= 0 && dockSel < DOCK_MODE_VALUES.length
+                        ? DOCK_MODE_VALUES[dockSel]
+                        : ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
         ClaudeCodePreferences.setHangTimeoutSeconds((Integer) hangTimeoutSpinner.getValue());
         ClaudeCodePreferences.setMcpEnabled(mcpEnabledCheckBox.isSelected());
         ClaudeCodePreferences.setSendKey(selectedValue(sendRadios));

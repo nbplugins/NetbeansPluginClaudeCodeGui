@@ -551,6 +551,25 @@ public final class ClaudeCodePreferences {
         NbPreferences.forModule(ClaudeCodePreferences.class).putBoolean(MCP_ENABLED, v);
     }
 
+    // -------------------------------------------------------------------------
+    // sessionDockMode
+    // -------------------------------------------------------------------------
+
+    /** Preference key: dock mode for the Claude Code session tab. */
+    public static final String KEY_SESSION_DOCK_MODE = "sessionDockMode";
+    /** Default: editor area. */
+    public static final String DEFAULT_SESSION_DOCK_MODE = "editor";
+
+    public static String getSessionDockMode() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_SESSION_DOCK_MODE, DEFAULT_SESSION_DOCK_MODE);
+    }
+
+    public static void setSessionDockMode(String mode) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_SESSION_DOCK_MODE, mode != null ? mode : DEFAULT_SESSION_DOCK_MODE);
+    }
+
     private static String validated(String value, String fallback) {
         return ENTER.equals(value) || SHIFT_ENTER.equals(value)
                 || CTRL_ENTER.equals(value) || ALT_ENTER.equals(value)

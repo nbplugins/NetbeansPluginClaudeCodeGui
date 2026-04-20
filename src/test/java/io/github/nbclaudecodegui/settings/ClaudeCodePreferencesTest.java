@@ -17,6 +17,7 @@ class ClaudeCodePreferencesTest {
         ClaudeCodePreferences.setMcpPort(ClaudeCodePreferences.DEFAULT_MCP_PORT);
         ClaudeCodePreferences.setOpenDiffInSeparateTab(ClaudeCodePreferences.DEFAULT_OPEN_DIFF_IN_SEPARATE_TAB);
         ClaudeCodePreferences.setMdPreviewInDiff(ClaudeCodePreferences.DEFAULT_MD_PREVIEW_IN_DIFF);
+        ClaudeCodePreferences.setSessionDockMode(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
     }
 
     @Test
@@ -96,5 +97,25 @@ class ClaudeCodePreferencesTest {
     void mdPreviewInDiffStoreAndRetrieve() {
         ClaudeCodePreferences.setMdPreviewInDiff(false);
         assertFalse(ClaudeCodePreferences.isMdPreviewInDiff());
+    }
+
+    @Test
+    void sessionDockModeDefaultIsEditor() {
+        assertEquals(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE,
+                ClaudeCodePreferences.getSessionDockMode());
+        assertEquals("editor", ClaudeCodePreferences.getSessionDockMode());
+    }
+
+    @Test
+    void sessionDockModeStoreAndRetrieve() {
+        ClaudeCodePreferences.setSessionDockMode("output");
+        assertEquals("output", ClaudeCodePreferences.getSessionDockMode());
+    }
+
+    @Test
+    void sessionDockModeNullFallsBackToDefault() {
+        ClaudeCodePreferences.setSessionDockMode(null);
+        assertEquals(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE,
+                ClaudeCodePreferences.getSessionDockMode());
     }
 }
