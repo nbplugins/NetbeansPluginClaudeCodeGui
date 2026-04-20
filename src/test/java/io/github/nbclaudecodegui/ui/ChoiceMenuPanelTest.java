@@ -40,7 +40,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Allow?",
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             assertTrue(panel.getComponentCount() > 0, "panel should have components after show()");
 
@@ -58,7 +58,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Q?",
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JButton btn = findButton(panel, UiUtils.ICON_CHECK + " Yes");
             assertNotNull(btn, "Yes button must exist");
@@ -72,7 +72,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Q?",
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JButton btn = findButton(panel, UiUtils.ICON_CROSS + " No");
             assertNotNull(btn, "No button must exist");
@@ -86,7 +86,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Q?",
                     List.of(new Option("Maybe", "3")), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JRadioButton rb = findRadioButton(panel, "Maybe");
             assertNotNull(rb, "Non-Yes/No option should render as JRadioButton");
@@ -98,21 +98,21 @@ class ChoiceMenuPanelTest {
         // With Yes/No only
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {}, true);
             assertNotNull(findButton(panel, "Cancel"), "Cancel must be present with Yes/No options");
         });
 
         // With radio options
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "3")), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "3")), -1), a -> {}, true);
             assertNotNull(findButton(panel, "Cancel"), "Cancel must be present with radio options");
         });
 
         // Free-form
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(), -1), a -> {}, true);
             assertNotNull(findButton(panel, "Cancel"), "Cancel must be present for free-form input");
         });
     }
@@ -121,7 +121,7 @@ class ChoiceMenuPanelTest {
     void testSendAbsentWhenOnlyYesNo() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {}, true);
             assertNull(findButton(panel, "Send"), "Send button must NOT be present when only Yes/No options");
         });
     }
@@ -131,7 +131,7 @@ class ChoiceMenuPanelTest {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             panel.show(new ChoiceMenuModel("Q?",
-                    List.of(new Option("Yes", "1"), new Option("Maybe", "3")), -1), a -> {});
+                    List.of(new Option("Yes", "1"), new Option("Maybe", "3")), -1), a -> {}, true);
             assertNotNull(findButton(panel, "Send"), "Send button must be present when other options exist");
         });
     }
@@ -140,7 +140,7 @@ class ChoiceMenuPanelTest {
     void testSendDisabledUntilRadioSelected() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "3")), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "3")), -1), a -> {}, true);
             JButton send = findButton(panel, "Send");
             assertNotNull(send, "Send must exist");
             assertFalse(send.isEnabled(), "Send must be disabled when no radio is selected");
@@ -156,7 +156,7 @@ class ChoiceMenuPanelTest {
     void testSendEnabledWhenDefaultRadioSelected() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "1")), 0), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "1")), 0), a -> {}, true);
             JButton send = findButton(panel, "Send");
             assertNotNull(send, "Send must exist");
             assertTrue(send.isEnabled(), "Send must be enabled when default radio is pre-selected");
@@ -167,7 +167,7 @@ class ChoiceMenuPanelTest {
     void testDefaultRadioSelected() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "1")), 0), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "1")), 0), a -> {}, true);
             JRadioButton rb = findRadioButton(panel, "Maybe");
             assertNotNull(rb, "JRadioButton for Maybe must exist");
             assertTrue(rb.isSelected(), "Radio button for default option should be selected");
@@ -182,7 +182,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Allow?",
                     List.of(new Option("Yes", "1"), new Option("No", "2")), -1);
-            panel.show(model, received::add);
+            panel.show(model, received::add, true);
 
             JButton yesBtn = findButton(panel, UiUtils.ICON_CHECK + " Yes");
             assertNotNull(yesBtn, "Yes button must exist");
@@ -198,7 +198,7 @@ class ChoiceMenuPanelTest {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Go?", List.of(new Option("Yes", "1")), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JButton btn = findButton(panel, UiUtils.ICON_CHECK + " Yes");
             assertNotNull(btn);
@@ -219,7 +219,7 @@ class ChoiceMenuPanelTest {
             panel.show(model, answer -> {
                 if (answer == null) nullReceived.add(true);
                 else received.add(answer);
-            });
+            }, true);
 
             JButton cancelBtn = findButton(panel, "Cancel");
             assertNotNull(cancelBtn, "Cancel button must exist");
@@ -237,7 +237,7 @@ class ChoiceMenuPanelTest {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1")), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
             assertTrue(panel.getComponentCount() > 0, "panel should have components after show()");
 
             panel.dismiss();
@@ -250,7 +250,7 @@ class ChoiceMenuPanelTest {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Enter your response:", List.of(), -1);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
             assertTrue(panel.getComponentCount() > 0, "panel should have components after show()");
 
             List<String> btnLabels = collectButtonLabels(panel);
@@ -263,7 +263,7 @@ class ChoiceMenuPanelTest {
     void testCancelAndSendAreInRightCol() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "3")), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Maybe", "3")), -1), a -> {}, true);
 
             JPanel rightCol = findPanelByName(panel, "rightCol");
             assertNotNull(rightCol, "rightCol panel must exist");
@@ -276,7 +276,7 @@ class ChoiceMenuPanelTest {
     void testCancelInRightColWhenOnlyYesNo() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
-            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {});
+            panel.show(new ChoiceMenuModel("Q?", List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {}, true);
 
             JPanel rightCol = findPanelByName(panel, "rightCol");
             assertNotNull(rightCol, "rightCol panel must exist");
@@ -297,7 +297,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Do you want to proceed?",
                     List.of(new Option(" Yes", "1"), new Option(" No", "3")), 0);
-            panel.show(model, answer -> received.add(String.valueOf(answer)));
+            panel.show(model, answer -> received.add(String.valueOf(answer)), true);
 
             assertTrue(panel.getComponentCount() > 0, "panel must have components after show()");
             assertTrue(received.isEmpty(), "callback must not fire before user action");
@@ -322,7 +322,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Option A", "1"),
                             new Option("Type something.", "2")), 0);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JTextField tf = findTextField(panel);
             assertNotNull(tf, "panel must contain a JTextField for 'Type something.' option");
@@ -336,7 +336,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Option A", "1"),
                             new Option("Type something.", "2")), 0);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JTextField tf = findTextField(panel);
             assertNotNull(tf);
@@ -352,7 +352,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Option A", "1"),
                             new Option("Type something.", "2")), 0);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             JRadioButton typeRb = findRadioButtonByName(panel, "typeInputRb");
             assertNotNull(typeRb, "type-input radio button must exist");
@@ -375,7 +375,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Option A", "1"),
                             new Option("Type something.", "2")), 0);
-            panel.show(model, captured::add);
+            panel.show(model, captured::add, true);
 
             JRadioButton typeRb = findRadioButtonByName(panel, "typeInputRb");
             assertNotNull(typeRb, "type-input radio button must exist with name 'typeInputRb'");
@@ -406,7 +406,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Option A", "1"),
                             new Option("Type something.", "2")), 0);
-            panel.show(model, s -> {});
+            panel.show(model, s -> {}, true);
 
             JPanel typeInputRow = findPanelByName(panel, "typeInputRow");
             assertNotNull(typeInputRow, "typeInputRow panel must exist");
@@ -427,7 +427,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose?",
                     List.of(new Option("Option A", "1"),
                             new Option("Option B", "2")), 0);
-            panel.show(model, s -> {});
+            panel.show(model, s -> {}, true);
 
             java.awt.FocusTraversalPolicy ftp = panel.getFocusTraversalPolicy();
             assertNotNull(ftp, "panel must have an explicit FocusTraversalPolicy");
@@ -454,7 +454,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose releases:",
                     List.of(new Option("Release A", "1", null, false, true),
                             new Option("Release B", "2", null, false, true)), 0);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             assertNotNull(findCheckBox(panel, "Release A"), "hasCheckbox=true option must render as JCheckBox");
             assertNotNull(findCheckBox(panel, "Release B"), "hasCheckbox=true option must render as JCheckBox");
@@ -469,7 +469,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Release A", "1", null, false, true),
                             new Option("Chat about this", "2")), 0);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             assertNotNull(findCheckBox(panel, "Release A"), "hasCheckbox=true must be JCheckBox");
             assertNotNull(findRadioButton(panel, "Chat about this"), "hasCheckbox=false must be JRadioButton");
@@ -482,7 +482,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
             ChoiceMenuModel model = new ChoiceMenuModel("Choose releases:",
                     List.of(new Option("Release A", "1", null, false, true)), 0);
-            panel.show(model, answer -> {});
+            panel.show(model, answer -> {}, true);
 
             assertNotNull(findButton(panel, "Submit"), "must have Submit button when checkbox options exist");
             assertNull(findButton(panel, "Send"), "must NOT have Send button when checkbox options exist");
@@ -497,7 +497,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose releases:",
                     List.of(new Option("Release A", "1", null, false, true),
                             new Option("Release B", "2", null, false, true)), 0);
-            panel.show(model, captured::add);
+            panel.show(model, captured::add, true);
 
             JCheckBox cb = findCheckBox(panel, "Release A");
             assertNotNull(cb);
@@ -520,7 +520,7 @@ class ChoiceMenuPanelTest {
             ChoiceMenuModel model = new ChoiceMenuModel("Choose:",
                     List.of(new Option("Release A", "1", null, false, true),
                             new Option("Chat about this", "6")), 0);
-            panel.show(model, captured::add);
+            panel.show(model, captured::add, true);
 
             JRadioButton rb = findRadioButton(panel, "Chat about this");
             assertNotNull(rb, "Chat about this must be a radio button");
@@ -553,7 +553,7 @@ class ChoiceMenuPanelTest {
             int heightBefore = panel.getPreferredSize().height;
 
             panel.show(new ChoiceMenuModel("Allow?",
-                    List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {});
+                    List.of(new Option("Yes", "1"), new Option("No", "2")), -1), a -> {}, true);
 
             int heightAfter = panel.getPreferredSize().height;
 
@@ -607,7 +607,7 @@ class ChoiceMenuPanelTest {
                         List.of(new Option("Yes", "1"),
                                 new Option("Yes, and allow Claude to edit its own settings for this session", "2"),
                                 new Option("No", "3")), -1),
-                        answer -> {});
+                        answer -> {}, true);
                 cardLayout.show(southCard, "choice");
 
                 // Simulate lockDividerForChoiceMenu WITH validate() (the fix)
@@ -670,7 +670,7 @@ class ChoiceMenuPanelTest {
             try {
                 choiceMenuPanel.show(new ChoiceMenuModel("Continue?",
                         List.of(new Option("Yes", "1"), new Option("No", "2")), -1),
-                        answer -> {});
+                        answer -> {}, true);
                 cardLayout.show(southCard, "choice");
 
                 // Simulate the production switchSouthCard(CARD_CHOICE) path:

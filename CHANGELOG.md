@@ -1,3 +1,4 @@
+- Added a setting to control whether the choice menu grabs keyboard focus (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/20)
 - Added a global setting to choose the default dock position of the Claude Code session tab (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/24)
 
 # 0.21.50 (2026-04-19)

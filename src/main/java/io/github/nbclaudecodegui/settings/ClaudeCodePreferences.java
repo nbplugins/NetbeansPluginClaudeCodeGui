@@ -570,6 +570,31 @@ public final class ClaudeCodePreferences {
                 .put(KEY_SESSION_DOCK_MODE, mode != null ? mode : DEFAULT_SESSION_DOCK_MODE);
     }
 
+    // -------------------------------------------------------------------------
+    // choiceMenuFocusMode
+    // -------------------------------------------------------------------------
+
+    /** Preference key: focus behavior when the choice menu appears. */
+    public static final String KEY_CHOICE_MENU_FOCUS_MODE = "choiceMenuFocusMode";
+    /** Value: grab keyboard focus (current / default behavior). */
+    public static final String CHOICE_MENU_GRAB_FOCUS    = "grab_focus";
+    /** Value: show the panel without grabbing keyboard focus. */
+    public static final String CHOICE_MENU_SHOW_NO_FOCUS = "show_no_focus";
+    /** Value: do not show the choice menu panel at all. */
+    public static final String CHOICE_MENU_HIDE_MENU     = "hide_menu";
+    /** Default: grab focus. */
+    public static final String DEFAULT_CHOICE_MENU_FOCUS_MODE = CHOICE_MENU_GRAB_FOCUS;
+
+    public static String getChoiceMenuFocusMode() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_CHOICE_MENU_FOCUS_MODE, DEFAULT_CHOICE_MENU_FOCUS_MODE);
+    }
+
+    public static void setChoiceMenuFocusMode(String mode) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_CHOICE_MENU_FOCUS_MODE, mode != null ? mode : DEFAULT_CHOICE_MENU_FOCUS_MODE);
+    }
+
     private static String validated(String value, String fallback) {
         return ENTER.equals(value) || SHIFT_ENTER.equals(value)
                 || CTRL_ENTER.equals(value) || ALT_ENTER.equals(value)

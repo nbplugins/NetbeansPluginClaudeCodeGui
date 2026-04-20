@@ -489,13 +489,18 @@ public class ClaudeSessionTab extends TopComponent
         if (menu != null) {
             LOG.fine(sessionTag + "[onChoiceMenuChanged] showing menu: \"" + menu.text()
                     + "\" EDT=" + SwingUtilities.isEventDispatchThread());
+            String focusMode = io.github.nbclaudecodegui.settings.ClaudeCodePreferences.getChoiceMenuFocusMode();
+            if (io.github.nbclaudecodegui.settings.ClaudeCodePreferences.CHOICE_MENU_HIDE_MENU.equals(focusMode)) {
+                return;
+            }
+            boolean grabFocus = io.github.nbclaudecodegui.settings.ClaudeCodePreferences.CHOICE_MENU_GRAB_FOCUS.equals(focusMode);
             choiceMenuPanel.show(menu, answer -> {
                 LOG.fine(sessionTag + "[PTY prompt answer] " + answer);
                 SwingUtilities.invokeLater(() -> switchSouthCard(CARD_PROMPT));
                 revalidate();
                 repaint();
                 controller.writePtyAnswer(answer);
-            });
+            }, grabFocus);
             switchSouthCard(CARD_CHOICE);
         } else {
             if (CARD_CHOICE.equals(activeCard)) {

@@ -40,6 +40,15 @@ import javax.swing.table.AbstractTableModel;
  */
 public final class ClaudeCodeOptionsPanel extends JPanel {
 
+    private static final String[] CHOICE_MENU_FOCUS_VALUES = {
+        ClaudeCodePreferences.CHOICE_MENU_GRAB_FOCUS,
+        ClaudeCodePreferences.CHOICE_MENU_SHOW_NO_FOCUS,
+        ClaudeCodePreferences.CHOICE_MENU_HIDE_MENU
+    };
+    private static final String[] CHOICE_MENU_FOCUS_LABELS = {
+        "Grab focus (default)", "Show without grabbing focus", "Hide menu"
+    };
+
     private static final String[] DOCK_MODE_VALUES = {
         "editor", "commonpalette", "explorer", "navigator", "output"
     };
@@ -77,6 +86,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private JSpinner sessionListLimitSpinner;
     /** Dropdown for the dock position of the Claude Code session tab. */
     private javax.swing.JComboBox<String> dockModeCombo;
+    /** Dropdown for the choice menu focus behavior. */
+    private javax.swing.JComboBox<String> choiceMenuFocusCombo;
     /** Spinner for the hang-detection timeout in seconds (0 = disabled). */
     private JSpinner hangTimeoutSpinner;
     /** Checkbox to enable MCP integration (pass --mcp-config flag). */
@@ -238,6 +249,13 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         form.add(dockModeCombo, gbc(1, row, false));
         row++;
 
+        // --- choice menu focus mode ---
+        form.add(new JLabel("Choice menu focus:"), gbc(0, row, false));
+        choiceMenuFocusCombo = new javax.swing.JComboBox<>(CHOICE_MENU_FOCUS_LABELS);
+        choiceMenuFocusCombo.setToolTipText("Controls whether the choice menu grabs keyboard focus when it appears");
+        form.add(choiceMenuFocusCombo, gbc(1, row, false));
+        row++;
+
         // spacer
         GridBagConstraints spacer = new GridBagConstraints();
         spacer.gridx = 0; spacer.gridy = row;
@@ -376,6 +394,9 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         String dockMode = ClaudeCodePreferences.getSessionDockMode();
         int dockIdx = java.util.Arrays.asList(DOCK_MODE_VALUES).indexOf(dockMode);
         dockModeCombo.setSelectedIndex(dockIdx >= 0 ? dockIdx : 0);
+        String focusMode = ClaudeCodePreferences.getChoiceMenuFocusMode();
+        int focusIdx = java.util.Arrays.asList(CHOICE_MENU_FOCUS_VALUES).indexOf(focusMode);
+        choiceMenuFocusCombo.setSelectedIndex(focusIdx >= 0 ? focusIdx : 0);
         hangTimeoutSpinner.setValue(ClaudeCodePreferences.getHangTimeoutSeconds());
         mcpEnabledCheckBox.setSelected(ClaudeCodePreferences.isMcpEnabled());
 
@@ -415,6 +436,11 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                 dockSel >= 0 && dockSel < DOCK_MODE_VALUES.length
                         ? DOCK_MODE_VALUES[dockSel]
                         : ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
+        int focusSel = choiceMenuFocusCombo.getSelectedIndex();
+        ClaudeCodePreferences.setChoiceMenuFocusMode(
+                focusSel >= 0 && focusSel < CHOICE_MENU_FOCUS_VALUES.length
+                        ? CHOICE_MENU_FOCUS_VALUES[focusSel]
+                        : ClaudeCodePreferences.DEFAULT_CHOICE_MENU_FOCUS_MODE);
         ClaudeCodePreferences.setHangTimeoutSeconds((Integer) hangTimeoutSpinner.getValue());
         ClaudeCodePreferences.setMcpEnabled(mcpEnabledCheckBox.isSelected());
         ClaudeCodePreferences.setSendKey(selectedValue(sendRadios));

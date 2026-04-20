@@ -62,7 +62,7 @@ public final class ChoiceMenuPanel extends JPanel {
      * @param model    the menu model
      * @param callback invoked with the chosen response string, or {@code null} on Cancel
      */
-    public void show(ChoiceMenuModel model, Consumer<String> callback) {
+    public void show(ChoiceMenuModel model, Consumer<String> callback, boolean grabFocus) {
         this.callback = callback;
         removeAll();
 
@@ -520,7 +520,7 @@ public final class ChoiceMenuPanel extends JPanel {
         } else {
             focusTarget = sendBtn;
         }
-        if (focusTarget != null) {
+        if (grabFocus && focusTarget != null) {
             javax.swing.SwingUtilities.invokeLater(focusTarget::requestFocusInWindow);
         }
     }
