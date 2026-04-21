@@ -557,17 +557,97 @@ public final class ClaudeCodePreferences {
 
     /** Preference key: dock mode for the Claude Code session tab. */
     public static final String KEY_SESSION_DOCK_MODE = "sessionDockMode";
-    /** Default: editor area. */
-    public static final String DEFAULT_SESSION_DOCK_MODE = "editor";
+    /** Default dock position for the session tab: editor area. */
+    public static final DockMode DEFAULT_SESSION_DOCK_MODE = DockMode.EDITOR;
 
-    public static String getSessionDockMode() {
-        return NbPreferences.forModule(ClaudeCodePreferences.class)
-                .get(KEY_SESSION_DOCK_MODE, DEFAULT_SESSION_DOCK_MODE);
+    /**
+     * Returns the configured dock position for the Claude Code session tab.
+     *
+     * @return configured {@link DockMode}, or {@link DockMode#EDITOR} as fallback
+     */
+    public static DockMode getSessionDockMode() {
+        String stored = NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_SESSION_DOCK_MODE, DEFAULT_SESSION_DOCK_MODE.getModeName());
+        return DockMode.fromModeName(stored);
     }
 
-    public static void setSessionDockMode(String mode) {
+    /**
+     * Persists the dock position for the Claude Code session tab.
+     *
+     * @param mode desired dock position; {@code null} falls back to {@link DockMode#EDITOR}
+     */
+    public static void setSessionDockMode(DockMode mode) {
         NbPreferences.forModule(ClaudeCodePreferences.class)
-                .put(KEY_SESSION_DOCK_MODE, mode != null ? mode : DEFAULT_SESSION_DOCK_MODE);
+                .put(KEY_SESSION_DOCK_MODE,
+                        mode != null ? mode.getModeName() : DEFAULT_SESSION_DOCK_MODE.getModeName());
+    }
+
+    // -------------------------------------------------------------------------
+    // markdownPreviewDockMode
+    // -------------------------------------------------------------------------
+
+    /** Preference key: dock mode for the Markdown Preview tab. */
+    public static final String KEY_MARKDOWN_PREVIEW_DOCK_MODE = "markdownPreviewDockMode";
+    /** Default dock position for the Markdown Preview tab: right side. */
+    public static final DockMode DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE = DockMode.RIGHT;
+
+    /**
+     * Returns the configured dock position for the Markdown Preview tab.
+     *
+     * @return configured {@link DockMode}, or {@link DockMode#RIGHT} as fallback
+     */
+    public static DockMode getMarkdownPreviewDockMode() {
+        String stored = NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_MARKDOWN_PREVIEW_DOCK_MODE,
+                        DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE.getModeName());
+        return DockMode.fromModeName(stored);
+    }
+
+    /**
+     * Persists the dock position for the Markdown Preview tab.
+     *
+     * @param mode desired dock position; {@code null} falls back to {@link DockMode#RIGHT}
+     */
+    public static void setMarkdownPreviewDockMode(DockMode mode) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_MARKDOWN_PREVIEW_DOCK_MODE,
+                        mode != null ? mode.getModeName()
+                                     : DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE.getModeName());
+    }
+
+    // -------------------------------------------------------------------------
+    // fileDiffDockMode
+    // -------------------------------------------------------------------------
+
+    /** Preference key: dock mode for the File Diff tab (separate-tab mode only). */
+    public static final String KEY_FILE_DIFF_DOCK_MODE = "fileDiffDockMode";
+    /** Default dock position for the File Diff tab: editor area. */
+    public static final DockMode DEFAULT_FILE_DIFF_DOCK_MODE = DockMode.EDITOR;
+
+    /**
+     * Returns the configured dock position for the File Diff tab.
+     *
+     * <p>Only used when "Open diff in a separate tab" is enabled.
+     *
+     * @return configured {@link DockMode}, or {@link DockMode#EDITOR} as fallback
+     */
+    public static DockMode getFileDiffDockMode() {
+        String stored = NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_FILE_DIFF_DOCK_MODE,
+                        DEFAULT_FILE_DIFF_DOCK_MODE.getModeName());
+        return DockMode.fromModeName(stored);
+    }
+
+    /**
+     * Persists the dock position for the File Diff tab.
+     *
+     * @param mode desired dock position; {@code null} falls back to {@link DockMode#EDITOR}
+     */
+    public static void setFileDiffDockMode(DockMode mode) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_FILE_DIFF_DOCK_MODE,
+                        mode != null ? mode.getModeName()
+                                     : DEFAULT_FILE_DIFF_DOCK_MODE.getModeName());
     }
 
     // -------------------------------------------------------------------------

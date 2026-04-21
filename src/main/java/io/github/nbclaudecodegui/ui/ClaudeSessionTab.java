@@ -295,14 +295,8 @@ public class ClaudeSessionTab extends TopComponent
      * <p>Focuses an existing idle session if one is open; otherwise opens a new one.
      */
     private static void dockAndOpen(ClaudeSessionTab tab) {
-        String modeName = ClaudeCodePreferences.getSessionDockMode();
-        if (!ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE.equals(modeName)) {
-            org.openide.windows.Mode mode = WindowManager.getDefault().findMode(modeName);
-            if (mode != null) {
-                mode.dockInto(tab);
-            }
-        }
-        tab.open();
+        io.github.nbclaudecodegui.ui.common.UiUtils.dockAndOpen(
+                tab, ClaudeCodePreferences.getSessionDockMode());
     }
 
     public static void openNewOrFocus() {

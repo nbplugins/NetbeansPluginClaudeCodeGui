@@ -343,7 +343,8 @@ public final class FileDiffOpener {
             }
             diffTC.add(permPanel, java.awt.BorderLayout.SOUTH);
 
-            diffTC.open();
+            io.github.nbclaudecodegui.ui.common.UiUtils.dockAndOpen(
+                    diffTC, ClaudeCodePreferences.getFileDiffDockMode());
             diffTC.requestActive();
             SwingUtilities.invokeLater(permPanel::requestAcceptFocus);
         });

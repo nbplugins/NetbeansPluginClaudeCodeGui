@@ -280,7 +280,7 @@ After submitting or cancelling, the input area is restored automatically.
 
 When Claude Code is about to edit or create a file, the plugin intercepts the operation and shows a diff panel **before** the change is written to disk.
 
-The diff panel appears either **embedded in the session tab** (replacing the input area) or in a **separate IDE tab**, depending on the setting in **Tools → Options → Claude Code → General → Open diff in a separate tab**.
+The diff panel appears either **embedded in the session tab** (replacing the input area) or in a **separate IDE tab**, depending on the setting in **Tools → Options → Claude Code → General → Open file diff in a separate tab**.
 
 ![Diff panel with permission bar](screenshots/diff-panel.png)
 
@@ -343,10 +343,14 @@ Open **Tools → Options → Claude Code** in NetBeans.
 | History TTL (days) | 0 | Number of days after which history entries expire. 0 = keep forever. |
 | Send prompt key | Ctrl+Enter | Key combination that sends the prompt from the input area. |
 | Insert newline key | Enter | Key combination that inserts a newline in the input area. The send and newline keys are configured independently but cannot be set to the same value. |
-| Open diff in a separate tab | Off | Opens the diff panel in a new IDE tab instead of embedding it in the session tab. |
-| Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
 | Start new session when opening with Claude | Off (Continue last) | Checked → always start a **New session** when opening with the project context menu or when NetBeans restores a closed session tab on restart. Unchecked → **Continue last**. |
 | Session list limit | 30 | Maximum number of past sessions shown in the session selector table. |
+| Session tab dock position | Editor area | Where the Claude Code session tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
+| Open file diff in a separate tab | Off | Opens the diff panel in a new IDE tab instead of embedding it in the session tab. |
+| File diff tab dock position | Editor area | Where the File Diff tab is docked when opened as a separate tab. Enabled only when "Open file diff in a separate tab" is checked. |
+| Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
+| Markdown preview dock position | Right side | Where the Markdown Preview tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
+| Choice menu focus | Grab focus | Controls whether the choice menu panel grabs keyboard focus when it appears. Choices: Grab focus, Show without grabbing focus, Hide menu. |
 
 ### Advanced tab
 

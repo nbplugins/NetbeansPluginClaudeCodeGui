@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import io.github.nbclaudecodegui.settings.DockMode;
 
 /**
  * Unit tests for {@link ClaudeCodePreferences}.
@@ -18,6 +19,8 @@ class ClaudeCodePreferencesTest {
         ClaudeCodePreferences.setOpenDiffInSeparateTab(ClaudeCodePreferences.DEFAULT_OPEN_DIFF_IN_SEPARATE_TAB);
         ClaudeCodePreferences.setMdPreviewInDiff(ClaudeCodePreferences.DEFAULT_MD_PREVIEW_IN_DIFF);
         ClaudeCodePreferences.setSessionDockMode(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
+        ClaudeCodePreferences.setMarkdownPreviewDockMode(ClaudeCodePreferences.DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE);
+        ClaudeCodePreferences.setFileDiffDockMode(ClaudeCodePreferences.DEFAULT_FILE_DIFF_DOCK_MODE);
     }
 
     @Test
@@ -101,21 +104,55 @@ class ClaudeCodePreferencesTest {
 
     @Test
     void sessionDockModeDefaultIsEditor() {
-        assertEquals(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE,
-                ClaudeCodePreferences.getSessionDockMode());
-        assertEquals("editor", ClaudeCodePreferences.getSessionDockMode());
+        assertEquals(DockMode.EDITOR, ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
+        assertEquals(DockMode.EDITOR, ClaudeCodePreferences.getSessionDockMode());
     }
 
     @Test
     void sessionDockModeStoreAndRetrieve() {
-        ClaudeCodePreferences.setSessionDockMode("output");
-        assertEquals("output", ClaudeCodePreferences.getSessionDockMode());
+        ClaudeCodePreferences.setSessionDockMode(DockMode.BOTTOM);
+        assertEquals(DockMode.BOTTOM, ClaudeCodePreferences.getSessionDockMode());
     }
 
     @Test
     void sessionDockModeNullFallsBackToDefault() {
         ClaudeCodePreferences.setSessionDockMode(null);
-        assertEquals(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE,
-                ClaudeCodePreferences.getSessionDockMode());
+        assertEquals(DockMode.EDITOR, ClaudeCodePreferences.getSessionDockMode());
+    }
+
+    @Test
+    void markdownPreviewDockModeDefaultIsRight() {
+        assertEquals(DockMode.RIGHT, ClaudeCodePreferences.DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE);
+        assertEquals(DockMode.RIGHT, ClaudeCodePreferences.getMarkdownPreviewDockMode());
+    }
+
+    @Test
+    void markdownPreviewDockModeStoreAndRetrieve() {
+        ClaudeCodePreferences.setMarkdownPreviewDockMode(DockMode.BOTTOM);
+        assertEquals(DockMode.BOTTOM, ClaudeCodePreferences.getMarkdownPreviewDockMode());
+    }
+
+    @Test
+    void markdownPreviewDockModeNullFallsBackToDefault() {
+        ClaudeCodePreferences.setMarkdownPreviewDockMode(null);
+        assertEquals(DockMode.RIGHT, ClaudeCodePreferences.getMarkdownPreviewDockMode());
+    }
+
+    @Test
+    void fileDiffDockModeDefaultIsEditor() {
+        assertEquals(DockMode.EDITOR, ClaudeCodePreferences.DEFAULT_FILE_DIFF_DOCK_MODE);
+        assertEquals(DockMode.EDITOR, ClaudeCodePreferences.getFileDiffDockMode());
+    }
+
+    @Test
+    void fileDiffDockModeStoreAndRetrieve() {
+        ClaudeCodePreferences.setFileDiffDockMode(DockMode.BOTTOM);
+        assertEquals(DockMode.BOTTOM, ClaudeCodePreferences.getFileDiffDockMode());
+    }
+
+    @Test
+    void fileDiffDockModeNullFallsBackToDefault() {
+        ClaudeCodePreferences.setFileDiffDockMode(null);
+        assertEquals(DockMode.EDITOR, ClaudeCodePreferences.getFileDiffDockMode());
     }
 }

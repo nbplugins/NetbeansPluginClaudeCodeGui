@@ -1,6 +1,8 @@
 package io.github.nbclaudecodegui.ui;
 
+import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.ui.common.MarkdownRenderer;
+import io.github.nbclaudecodegui.ui.common.UiUtils;
 import java.awt.BorderLayout;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
@@ -164,7 +166,7 @@ public class MarkdownPreviewTab extends TopComponent {
         tab.historyIndex = 0;
 
         OPEN_TABS.put(filePath, tab);
-        tab.open();
+        UiUtils.dockAndOpen(tab, ClaudeCodePreferences.getMarkdownPreviewDockMode());
         tab.requestActive();
     }
 
@@ -262,7 +264,7 @@ public class MarkdownPreviewTab extends TopComponent {
         tab.setDisplayName("Preview: " + name);
         tab.setLayout(new BorderLayout());
         tab.add(new MarkdownDiffPanel(before, after), BorderLayout.CENTER);
-        tab.open();
+        UiUtils.dockAndOpen(tab, ClaudeCodePreferences.getMarkdownPreviewDockMode());
         tab.requestActive();
     }
 

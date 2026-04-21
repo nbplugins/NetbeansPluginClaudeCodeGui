@@ -1,8 +1,11 @@
 package io.github.nbclaudecodegui.ui.common;
 
+import io.github.nbclaudecodegui.settings.DockMode;
 import java.awt.Color;
 import javax.swing.JButton;
 import javax.swing.UIManager;
+import org.openide.windows.TopComponent;
+import org.openide.windows.WindowManager;
 
 /** Shared UI utility helpers for the plugin. */
 public final class UiUtils {
@@ -14,6 +17,28 @@ public final class UiUtils {
     public static final String ICON_CROSS = "\u2717";
 
     private UiUtils() {}
+
+    /**
+     * Docks {@code tc} into the window-manager mode specified by {@code mode},
+     * then opens the component.
+     *
+     * <p>When {@code mode} is {@link DockMode#EDITOR} no docking call is made and
+     * the component opens in its default position, preserving any manual
+     * repositioning the user may have done.
+     *
+     * @param tc   the TopComponent to open
+     * @param mode desired dock position
+     */
+    public static void dockAndOpen(TopComponent tc, DockMode mode) {
+        if (mode != DockMode.EDITOR) {
+            org.openide.windows.Mode m =
+                    WindowManager.getDefault().findMode(mode.getModeName());
+            if (m != null) {
+                m.dockInto(tc);
+            }
+        }
+        tc.open();
+    }
 
     /**
      * Resolves a theme-aware color: tries the FlatLaf {@code UIManager} key first;

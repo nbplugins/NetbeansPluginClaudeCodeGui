@@ -49,13 +49,6 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         "Grab focus (default)", "Show without grabbing focus", "Hide menu"
     };
 
-    private static final String[] DOCK_MODE_VALUES = {
-        "editor", "commonpalette", "explorer", "navigator", "output"
-    };
-    private static final String[] DOCK_MODE_LABELS = {
-        "Editor area (default)", "Right side", "Left side top", "Left side bottom", "Bottom dock"
-    };
-
     private static final String[] KEY_VALUES = {
         ClaudeCodePreferences.ENTER,
         ClaudeCodePreferences.SHIFT_ENTER,
@@ -86,6 +79,14 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private JSpinner sessionListLimitSpinner;
     /** Dropdown for the dock position of the Claude Code session tab. */
     private javax.swing.JComboBox<String> dockModeCombo;
+    /** Dropdown for the dock position of the Markdown Preview tab. */
+    private javax.swing.JComboBox<String> mdPreviewDockModeCombo;
+    /** Label for the Markdown Preview dock position combo. */
+    private javax.swing.JLabel mdPreviewDockModeLabel;
+    /** Dropdown for the dock position of the File Diff tab. */
+    private javax.swing.JComboBox<String> fileDiffDockModeCombo;
+    /** Label for the File Diff dock position combo. */
+    private javax.swing.JLabel fileDiffDockModeLabel;
     /** Dropdown for the choice menu focus behavior. */
     private javax.swing.JComboBox<String> choiceMenuFocusCombo;
     /** Spinner for the hang-detection timeout in seconds (0 = disabled). */
@@ -204,26 +205,6 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
             newlineRadios.get(val).addActionListener(e -> syncExclusion(val, false));
         }
 
-        // --- diff in session ---
-        diffInSessionCheck = new javax.swing.JCheckBox("Open diff in a separate tab");
-        GridBagConstraints diffGbc = new GridBagConstraints();
-        diffGbc.gridx = 0; diffGbc.gridy = row;
-        diffGbc.gridwidth = 3;
-        diffGbc.anchor = GridBagConstraints.WEST;
-        diffGbc.insets = new Insets(4, 8, 4, 8);
-        form.add(diffInSessionCheck, diffGbc);
-        row++;
-
-        // --- md preview in diff ---
-        mdPreviewInDiffCheck = new javax.swing.JCheckBox("Show markdown preview for .md files in diff");
-        GridBagConstraints mdGbc = new GridBagConstraints();
-        mdGbc.gridx = 0; mdGbc.gridy = row;
-        mdGbc.gridwidth = 3;
-        mdGbc.anchor = GridBagConstraints.WEST;
-        mdGbc.insets = new Insets(4, 8, 4, 8);
-        form.add(mdPreviewInDiffCheck, mdGbc);
-        row++;
-
         // --- context-menu session mode ---
         startNewSessionCheck = new javax.swing.JCheckBox("Start new session when opening with Claude");
         GridBagConstraints cmGbc = new GridBagConstraints();
@@ -244,9 +225,51 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
 
         // --- session tab dock position ---
         form.add(new JLabel("Session tab dock position:"), gbc(0, row, false));
-        dockModeCombo = new javax.swing.JComboBox<>(DOCK_MODE_LABELS);
+        dockModeCombo = new javax.swing.JComboBox<>(
+                DockMode.labels(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE));
         dockModeCombo.setToolTipText("Where to dock the Claude Code session tab when opening it");
         form.add(dockModeCombo, gbc(1, row, false));
+        row++;
+
+        // --- diff in session ---
+        diffInSessionCheck = new javax.swing.JCheckBox("Open file diff in a separate tab");
+        GridBagConstraints diffGbc = new GridBagConstraints();
+        diffGbc.gridx = 0; diffGbc.gridy = row;
+        diffGbc.gridwidth = 3;
+        diffGbc.anchor = GridBagConstraints.WEST;
+        diffGbc.insets = new Insets(4, 8, 4, 8);
+        form.add(diffInSessionCheck, diffGbc);
+        diffInSessionCheck.addActionListener(e -> updateFileDiffDockEnabled());
+        row++;
+
+        // --- file diff dock mode (enabled only when diff is in separate tab) ---
+        fileDiffDockModeLabel = new javax.swing.JLabel("File diff tab dock position:");
+        form.add(fileDiffDockModeLabel, gbc(0, row, false));
+        fileDiffDockModeCombo = new javax.swing.JComboBox<>(
+                DockMode.labels(ClaudeCodePreferences.DEFAULT_FILE_DIFF_DOCK_MODE));
+        fileDiffDockModeCombo.setToolTipText(
+                "Where to dock the File Diff tab when opening it in a separate tab");
+        form.add(fileDiffDockModeCombo, gbc(1, row, false));
+        row++;
+
+        // --- md preview in diff ---
+        mdPreviewInDiffCheck = new javax.swing.JCheckBox("Show markdown preview for .md files in diff");
+        GridBagConstraints mdGbc = new GridBagConstraints();
+        mdGbc.gridx = 0; mdGbc.gridy = row;
+        mdGbc.gridwidth = 3;
+        mdGbc.anchor = GridBagConstraints.WEST;
+        mdGbc.insets = new Insets(4, 8, 4, 8);
+        form.add(mdPreviewInDiffCheck, mdGbc);
+        row++;
+
+        // --- markdown preview dock mode ---
+        mdPreviewDockModeLabel = new javax.swing.JLabel("Markdown preview dock position:");
+        form.add(mdPreviewDockModeLabel, gbc(0, row, false));
+        mdPreviewDockModeCombo = new javax.swing.JComboBox<>(
+                DockMode.labels(ClaudeCodePreferences.DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE));
+        mdPreviewDockModeCombo.setToolTipText(
+                "Where to dock the Markdown Preview tab when first opened");
+        form.add(mdPreviewDockModeCombo, gbc(1, row, false));
         row++;
 
         // --- choice menu focus mode ---
@@ -391,9 +414,12 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                 ClaudeCodePreferences.getContextMenuSessionMode()
                         == io.github.nbclaudecodegui.model.SessionMode.NEW);
         sessionListLimitSpinner.setValue(ClaudeCodePreferences.getSessionListLimit());
-        String dockMode = ClaudeCodePreferences.getSessionDockMode();
-        int dockIdx = java.util.Arrays.asList(DOCK_MODE_VALUES).indexOf(dockMode);
-        dockModeCombo.setSelectedIndex(dockIdx >= 0 ? dockIdx : 0);
+        dockModeCombo.setSelectedIndex(ClaudeCodePreferences.getSessionDockMode().ordinal());
+        mdPreviewDockModeCombo.setSelectedIndex(
+                ClaudeCodePreferences.getMarkdownPreviewDockMode().ordinal());
+        fileDiffDockModeCombo.setSelectedIndex(
+                ClaudeCodePreferences.getFileDiffDockMode().ordinal());
+        updateFileDiffDockEnabled();
         String focusMode = ClaudeCodePreferences.getChoiceMenuFocusMode();
         int focusIdx = java.util.Arrays.asList(CHOICE_MENU_FOCUS_VALUES).indexOf(focusMode);
         choiceMenuFocusCombo.setSelectedIndex(focusIdx >= 0 ? focusIdx : 0);
@@ -431,11 +457,9 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         ? io.github.nbclaudecodegui.model.SessionMode.NEW
                         : io.github.nbclaudecodegui.model.SessionMode.CONTINUE_LAST);
         ClaudeCodePreferences.setSessionListLimit((Integer) sessionListLimitSpinner.getValue());
-        int dockSel = dockModeCombo.getSelectedIndex();
-        ClaudeCodePreferences.setSessionDockMode(
-                dockSel >= 0 && dockSel < DOCK_MODE_VALUES.length
-                        ? DOCK_MODE_VALUES[dockSel]
-                        : ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
+        ClaudeCodePreferences.setSessionDockMode(dockModeFromCombo(dockModeCombo));
+        ClaudeCodePreferences.setMarkdownPreviewDockMode(dockModeFromCombo(mdPreviewDockModeCombo));
+        ClaudeCodePreferences.setFileDiffDockMode(dockModeFromCombo(fileDiffDockModeCombo));
         int focusSel = choiceMenuFocusCombo.getSelectedIndex();
         ClaudeCodePreferences.setChoiceMenuFocusMode(
                 focusSel >= 0 && focusSel < CHOICE_MENU_FOCUS_VALUES.length
@@ -476,6 +500,18 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
             if (e.getValue().isSelected()) return e.getKey();
         }
         return ClaudeCodePreferences.DEFAULT_SEND_KEY;
+    }
+
+    private static DockMode dockModeFromCombo(javax.swing.JComboBox<?> combo) {
+        int sel = combo.getSelectedIndex();
+        DockMode[] vals = DockMode.values();
+        return (sel >= 0 && sel < vals.length) ? vals[sel] : DockMode.EDITOR;
+    }
+
+    private void updateFileDiffDockEnabled() {
+        boolean sep = diffInSessionCheck.isSelected();
+        fileDiffDockModeLabel.setEnabled(sep);
+        fileDiffDockModeCombo.setEnabled(sep);
     }
 
     private static GridBagConstraints gbc(int x, int y, boolean fill) {
