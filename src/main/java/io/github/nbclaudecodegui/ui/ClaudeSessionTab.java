@@ -485,7 +485,9 @@ public class ClaudeSessionTab extends TopComponent
                 repaint();
                 controller.writePtyAnswer(answer);
             });
+            LOG.fine(sessionTag + "[onChoiceMenuChanged pre-switch] " + termScrollState());
             switchSouthCard(CARD_CHOICE);
+            LOG.fine(sessionTag + "[onChoiceMenuChanged post-switch] " + termScrollState());
         } else {
             if (CARD_CHOICE.equals(activeCard)) {
                 choiceMenuPanel.dismiss();
@@ -968,19 +970,46 @@ public class ClaudeSessionTab extends TopComponent
                     + " choiceVisible=" + choiceMenuPanel.isVisible()
                     + " choiceBounds=" + choiceMenuPanel.getBounds()
                     + " southCardVisible=" + southCard.isVisible()
-                    + " southCardBounds=" + southCard.getBounds());
+                    + " southCardBounds=" + southCard.getBounds()
+                    + " divLoc=" + splitPane.getDividerLocation()
+                    + " " + termScrollState());
             SwingUtilities.invokeLater(() -> LOG.fine(sessionTag + "[switchSouthCard CHOICE post-EDT]"
                     + " choiceShowing=" + choiceMenuPanel.isShowing()
                     + " choiceBounds=" + choiceMenuPanel.getBounds()
-                    + " componentCount=" + choiceMenuPanel.getComponentCount()));
+                    + " componentCount=" + choiceMenuPanel.getComponentCount()
+                    + " " + termScrollState()));
         }
         southCard.revalidate();
         southCard.repaint();
         // Keep the terminal scrolled to the bottom after layout changes caused by
         // setDividerLocation() — JediTerm resets scroll position to top on resize.
         if (terminalWidget != null) {
-            SwingUtilities.invokeLater(
-                    () -> terminalWidget.getTerminalPanel().scrollToShowAllOutput());
+            SwingUtilities.invokeLater(() -> {
+                LOG.fine(sessionTag + "[scrollTerminalToBottom pre] " + termScrollState());
+                scrollTerminalToBottom();
+                LOG.fine(sessionTag + "[scrollTerminalToBottom post] " + termScrollState());
+                SwingUtilities.invokeLater(() ->
+                    LOG.fine(sessionTag + "[scrollTerminalToBottom post-post] " + termScrollState()));
+            });
+        }
+    }
+
+    /** Scrolls the JediTerm widget to show the latest output (bottom of scrollback). */
+    private void scrollTerminalToBottom() {
+        if (terminalWidget == null) return;
+        scrollBottomOfComponents(terminalWidget);
+    }
+
+    private void scrollBottomOfComponents(java.awt.Container c) {
+        for (java.awt.Component child : c.getComponents()) {
+            if (child instanceof javax.swing.JScrollBar bar
+                    && bar.getOrientation() == javax.swing.JScrollBar.VERTICAL) {
+                bar.setValue(bar.getMaximum() - bar.getVisibleAmount());
+                return;
+            }
+            if (child instanceof java.awt.Container sub) {
+                scrollBottomOfComponents(sub);
+            }
         }
     }
 
@@ -1246,6 +1275,32 @@ public class ClaudeSessionTab extends TopComponent
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /** Collects scroll-related state of the JediTerm terminal widget for diagnostics. */
+    private String termScrollState() {
+        if (terminalWidget == null) return "terminalWidget=null";
+        StringBuilder sb = new StringBuilder();
+        sb.append("termSize=").append(terminalWidget.getSize());
+        sb.append(" termEnabled=").append(terminalWidget.isEnabled());
+        walkScrollComponents(terminalWidget, sb, 0);
+        return sb.toString();
+    }
+
+    private void walkScrollComponents(java.awt.Container c, StringBuilder sb, int depth) {
+        for (java.awt.Component child : c.getComponents()) {
+            if (child instanceof javax.swing.JScrollBar bar) {
+                sb.append(" scrollBar[enabled=").append(bar.isEnabled())
+                  .append(",val=").append(bar.getValue())
+                  .append(",min=").append(bar.getMinimum())
+                  .append(",max=").append(bar.getMaximum())
+                  .append(",vis=").append(bar.getVisibleAmount())
+                  .append("]");
+            }
+            if (child instanceof java.awt.Container sub && depth < 5) {
+                walkScrollComponents(sub, sb, depth + 1);
+            }
+        }
+    }
 
     private List<String> getScreenLines() {
         if (terminalWidget == null) return java.util.Collections.emptyList();

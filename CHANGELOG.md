@@ -1,3 +1,5 @@
+- Fixed terminal scrolling to the beginning and locking when a choice/confirmation menu appears (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
+
 # 0.21.50 (2026-04-19)
 
 - Fixed diff panel appearing at wrong height (nearly invisible) after Reset Windows or on first use
