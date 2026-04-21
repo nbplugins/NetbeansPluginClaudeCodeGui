@@ -201,6 +201,18 @@ public final class ClaudePromptPanel extends JPanel {
         });
     }
 
+    @Override
+    public java.awt.Dimension getMinimumSize() {
+        BorderLayout layout = (BorderLayout) getLayout();
+        java.awt.Component east = layout.getLayoutComponent(BorderLayout.EAST);
+        java.awt.Component west = layout.getLayoutComponent(BorderLayout.WEST);
+        int minH = 0;
+        if (east != null) minH = Math.max(minH, east.getMinimumSize().height);
+        if (west != null) minH = Math.max(minH, west.getMinimumSize().height);
+        java.awt.Insets ins = getInsets();
+        return new java.awt.Dimension(0, minH + ins.top + ins.bottom);
+    }
+
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------

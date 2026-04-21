@@ -701,16 +701,17 @@ public class ClaudeSessionTab extends TopComponent
         southCardLayout = new CardLayout();
         southCard = new JPanel(southCardLayout) {
             /**
-             * Returns (0, 0) so that JSplitPane can collapse the bottom panel
-             * freely when the tab is docked as a narrow side panel.
-             *
-             * Without this override, getMinimumSize() delegates to the visible
-             * child (e.g. promptPanel with a 3-row DecoratedTextArea + buttons),
-             * which reports a tall minimum height (~600 px). JSplitPane enforces
-             * that minimum, causing the divider to bounce back when the user tries
-             * to shrink the tab below that height (issue #19).
+             * Returns (0, 0) for non-prompt cards so that JSplitPane can collapse
+             * the bottom panel freely when the tab is docked as a narrow side panel
+             * (issue #19). For the prompt card, delegates to the visible child's
+             * minimum height so the divider cannot be dragged below the button column.
              */
             @Override public java.awt.Dimension getMinimumSize() {
+                if (CARD_PROMPT.equals(activeCard)) {
+                    for (java.awt.Component c : getComponents()) {
+                        if (c.isVisible()) return new java.awt.Dimension(0, c.getMinimumSize().height);
+                    }
+                }
                 return new java.awt.Dimension(0, 0);
             }
             @Override public java.awt.Dimension getPreferredSize() {
