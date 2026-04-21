@@ -1,3 +1,4 @@
+- Fixed terminal scrolling to the beginning and locking when a choice/confirmation menu appears (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
 - Added a setting to control whether the choice menu grabs keyboard focus (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/20)
 - Added a global setting to choose the default dock position of the Claude Code session tab (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/24)
 

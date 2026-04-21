@@ -1001,12 +1001,31 @@ public class ClaudeSessionTab extends TopComponent
         // setDividerLocation() — JediTerm resets scroll position to top on resize.
         if (terminalWidget != null) {
             SwingUtilities.invokeLater(() -> {
-                LOG.fine(sessionTag + "[scrollToShowAllOutput pre] " + termScrollState());
-                terminalWidget.getTerminalPanel().scrollToShowAllOutput();
-                LOG.fine(sessionTag + "[scrollToShowAllOutput post] " + termScrollState());
+                LOG.fine(sessionTag + "[scrollTerminalToBottom pre] " + termScrollState());
+                scrollTerminalToBottom();
+                LOG.fine(sessionTag + "[scrollTerminalToBottom post] " + termScrollState());
                 SwingUtilities.invokeLater(() ->
-                    LOG.fine(sessionTag + "[scrollToShowAllOutput post-post] " + termScrollState()));
+                    LOG.fine(sessionTag + "[scrollTerminalToBottom post-post] " + termScrollState()));
             });
+        }
+    }
+
+    /** Scrolls the JediTerm widget to show the latest output (bottom of scrollback). */
+    private void scrollTerminalToBottom() {
+        if (terminalWidget == null) return;
+        scrollBottomOfComponents(terminalWidget);
+    }
+
+    private void scrollBottomOfComponents(java.awt.Container c) {
+        for (java.awt.Component child : c.getComponents()) {
+            if (child instanceof javax.swing.JScrollBar bar
+                    && bar.getOrientation() == javax.swing.JScrollBar.VERTICAL) {
+                bar.setValue(bar.getMaximum() - bar.getVisibleAmount());
+                return;
+            }
+            if (child instanceof java.awt.Container sub) {
+                scrollBottomOfComponents(sub);
+            }
         }
     }
 
