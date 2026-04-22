@@ -1,3 +1,4 @@
+- Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
 - Fixed prompt area being collapsible to zero height by dragging the divider
 - Fixed terminal scrolling to the beginning and locking when a choice/confirmation menu appears (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
 - Added a setting to control whether the choice menu grabs keyboard focus (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/20)

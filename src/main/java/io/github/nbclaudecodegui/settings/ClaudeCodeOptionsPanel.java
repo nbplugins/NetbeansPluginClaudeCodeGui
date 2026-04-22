@@ -137,45 +137,28 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         JPanel form = new JPanel(new GridBagLayout());
         int row = 0;
 
-        // --- executable path ---
-        form.add(new JLabel("Claude CLI path:"), gbc(0, row, false));
-        executablePathField = new JTextField(30);
-        executablePathField.setToolTipText("Leave empty to detect 'claude' from PATH");
-        form.add(executablePathField, gbcFill(1, row));
-        JButton browseButton = new JButton("Browse\u2026");
-        browseButton.addActionListener(e -> {
-            JFileChooser chooser = new JFileChooser();
-            chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-                executablePathField.setText(
-                        chooser.getSelectedFile().getAbsolutePath());
-            }
-        });
-        form.add(browseButton, gbc(2, row, false));
+        // --- context-menu session mode ---
+        startNewSessionCheck = new javax.swing.JCheckBox("Start new session when opening with Claude");
+        GridBagConstraints cmGbc = new GridBagConstraints();
+        cmGbc.gridx = 0; cmGbc.gridy = row;
+        cmGbc.gridwidth = 3;
+        cmGbc.anchor = GridBagConstraints.WEST;
+        cmGbc.insets = new Insets(8, 8, 4, 8);
+        form.add(startNewSessionCheck, cmGbc);
         row++;
 
-        // --- MCP port ---
-        form.add(new JLabel("MCP server port:"), gbc(0, row, false));
-        mcpPortSpinner = new JSpinner(new SpinnerNumberModel(
-                ClaudeCodePreferences.DEFAULT_MCP_PORT, 1024, 65535, 1));
-        mcpPortSpinner.setToolTipText("Port for the NetBeans MCP SSE server (restart required)");
-        form.add(mcpPortSpinner, gbc(1, row, false));
-        row++;
-
-        // --- history max depth ---
-        form.add(new JLabel("History max depth:"), gbc(0, row, false));
-        historyMaxDepthSpinner = new JSpinner(new SpinnerNumberModel(
-                ClaudeCodePreferences.DEFAULT_HISTORY_MAX_DEPTH, 1, 2000, 10));
-        historyMaxDepthSpinner.setToolTipText("Maximum number of history entries to keep per project");
-        form.add(historyMaxDepthSpinner, gbc(1, row, false));
-        row++;
-
-        // --- history TTL ---
-        form.add(new JLabel("History TTL (days, 0 = keep forever):"), gbc(0, row, false));
-        historyTtlDaysSpinner = new JSpinner(new SpinnerNumberModel(
-                ClaudeCodePreferences.DEFAULT_HISTORY_TTL_DAYS, 0, 3650, 1));
-        historyTtlDaysSpinner.setToolTipText("Delete history entries older than this many days (0 = keep forever)");
-        form.add(historyTtlDaysSpinner, gbc(1, row, false));
+        // --- session tab dock position ---
+        form.add(new JLabel("Session tab dock position:"), gbc(0, row, false));
+        dockModeCombo = new javax.swing.JComboBox<>(
+                DockMode.labels(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE));
+        dockModeCombo.setToolTipText("Where to dock the Claude Code session tab when opening it");
+        form.add(dockModeCombo, gbc(1, row, false));
+        GridBagConstraints hSpacer = new GridBagConstraints();
+        hSpacer.gridx = 2; hSpacer.gridy = row;
+        hSpacer.weightx = 1.0;
+        hSpacer.fill = GridBagConstraints.HORIZONTAL;
+        hSpacer.insets = new Insets(0, 0, 0, 8);
+        form.add(new JLabel(""), hSpacer);
         row++;
 
         // --- send key ---
@@ -204,32 +187,6 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
             sendRadios.get(val).addActionListener(e -> syncExclusion(val, true));
             newlineRadios.get(val).addActionListener(e -> syncExclusion(val, false));
         }
-
-        // --- context-menu session mode ---
-        startNewSessionCheck = new javax.swing.JCheckBox("Start new session when opening with Claude");
-        GridBagConstraints cmGbc = new GridBagConstraints();
-        cmGbc.gridx = 0; cmGbc.gridy = row;
-        cmGbc.gridwidth = 3;
-        cmGbc.anchor = GridBagConstraints.WEST;
-        cmGbc.insets = new Insets(4, 8, 4, 8);
-        form.add(startNewSessionCheck, cmGbc);
-        row++;
-
-        // --- session list limit ---
-        form.add(new JLabel("Session list limit:"), gbc(0, row, false));
-        sessionListLimitSpinner = new JSpinner(new SpinnerNumberModel(
-                ClaudeCodePreferences.DEFAULT_SESSION_LIST_LIMIT, 1, 500, 5));
-        sessionListLimitSpinner.setToolTipText("Maximum number of sessions shown in the session list");
-        form.add(sessionListLimitSpinner, gbc(1, row, false));
-        row++;
-
-        // --- session tab dock position ---
-        form.add(new JLabel("Session tab dock position:"), gbc(0, row, false));
-        dockModeCombo = new javax.swing.JComboBox<>(
-                DockMode.labels(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE));
-        dockModeCombo.setToolTipText("Where to dock the Claude Code session tab when opening it");
-        form.add(dockModeCombo, gbc(1, row, false));
-        row++;
 
         // --- diff in session ---
         diffInSessionCheck = new javax.swing.JCheckBox("Open file diff in a separate tab");
@@ -298,14 +255,21 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         JPanel form = new JPanel(new GridBagLayout());
         int row = 0;
 
-        // --- debug mode ---
-        debugCheckBox = new javax.swing.JCheckBox("Debug mode (log all claude I/O to NetBeans log and output area)");
-        GridBagConstraints dbgGbc = new GridBagConstraints();
-        dbgGbc.gridx = 0; dbgGbc.gridy = row;
-        dbgGbc.gridwidth = 2;
-        dbgGbc.anchor = GridBagConstraints.WEST;
-        dbgGbc.insets = new Insets(8, 8, 4, 8);
-        form.add(debugCheckBox, dbgGbc);
+        // --- executable path ---
+        form.add(new JLabel("Claude CLI path:"), gbc(0, row, false));
+        executablePathField = new JTextField(30);
+        executablePathField.setToolTipText("Leave empty to detect 'claude' from PATH");
+        form.add(executablePathField, gbcFill(1, row));
+        JButton browseButton = new JButton("Browse\u2026");
+        browseButton.addActionListener(e -> {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+                executablePathField.setText(
+                        chooser.getSelectedFile().getAbsolutePath());
+            }
+        });
+        form.add(browseButton, gbc(2, row, false));
         row++;
 
         // --- hang timeout ---
@@ -316,6 +280,14 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         GridBagConstraints hangSpinnerGbc = gbc(1, row, false);
         hangSpinnerGbc.weightx = 1.0;
         form.add(hangTimeoutSpinner, hangSpinnerGbc);
+        row++;
+
+        // --- MCP port ---
+        form.add(new JLabel("MCP server port:"), gbc(0, row, false));
+        mcpPortSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_MCP_PORT, 1024, 65535, 1));
+        mcpPortSpinner.setToolTipText("Port for the NetBeans MCP SSE server (restart required)");
+        form.add(mcpPortSpinner, gbc(1, row, false));
         row++;
 
         // --- MCP enabled ---
@@ -331,16 +303,52 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         JLabel mcpDesc = new JLabel("<html><small>When disabled, the --mcp-config flag is not passed to claude. Hooks are always configured.</small></html>");
         GridBagConstraints mcpDescGbc = new GridBagConstraints();
         mcpDescGbc.gridx = 0; mcpDescGbc.gridy = row;
-        mcpDescGbc.gridwidth = 2;
+        mcpDescGbc.gridwidth = 3;
+        mcpDescGbc.fill = GridBagConstraints.HORIZONTAL;
+        mcpDescGbc.weightx = 1.0;
         mcpDescGbc.anchor = GridBagConstraints.WEST;
         mcpDescGbc.insets = new Insets(0, 28, 4, 8);
         form.add(mcpDesc, mcpDescGbc);
         row++;
 
+        // --- history max depth ---
+        form.add(new JLabel("History max depth:"), gbc(0, row, false));
+        historyMaxDepthSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_HISTORY_MAX_DEPTH, 1, 2000, 10));
+        historyMaxDepthSpinner.setToolTipText("Maximum number of history entries to keep per project");
+        form.add(historyMaxDepthSpinner, gbc(1, row, false));
+        row++;
+
+        // --- history TTL ---
+        form.add(new JLabel("History TTL (days, 0 = keep forever):"), gbc(0, row, false));
+        historyTtlDaysSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_HISTORY_TTL_DAYS, 0, 3650, 1));
+        historyTtlDaysSpinner.setToolTipText("Delete history entries older than this many days (0 = keep forever)");
+        form.add(historyTtlDaysSpinner, gbc(1, row, false));
+        row++;
+
+        // --- session list limit ---
+        form.add(new JLabel("Session list limit:"), gbc(0, row, false));
+        sessionListLimitSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_SESSION_LIST_LIMIT, 1, 500, 5));
+        sessionListLimitSpinner.setToolTipText("Maximum number of sessions shown in the session list");
+        form.add(sessionListLimitSpinner, gbc(1, row, false));
+        row++;
+
+        // --- debug mode ---
+        debugCheckBox = new javax.swing.JCheckBox("Debug mode (log all claude I/O to NetBeans log and output area)");
+        GridBagConstraints dbgGbc = new GridBagConstraints();
+        dbgGbc.gridx = 0; dbgGbc.gridy = row;
+        dbgGbc.gridwidth = 2;
+        dbgGbc.anchor = GridBagConstraints.WEST;
+        dbgGbc.insets = new Insets(8, 8, 4, 8);
+        form.add(debugCheckBox, dbgGbc);
+        row++;
+
         // spacer
         GridBagConstraints spacer = new GridBagConstraints();
         spacer.gridx = 0; spacer.gridy = row;
-        spacer.gridwidth = 2; spacer.weighty = 1.0;
+        spacer.gridwidth = 3; spacer.weighty = 1.0;
         spacer.fill = GridBagConstraints.VERTICAL;
         form.add(new JPanel(), spacer);
 

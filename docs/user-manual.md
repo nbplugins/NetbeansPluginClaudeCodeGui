@@ -337,15 +337,10 @@ Open **Tools → Options → Claude Code** in NetBeans.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Claude CLI path | (empty) | Absolute path to the `claude` executable. Leave empty to use the system `PATH`. |
-| MCP server port | 28991 | Port for the internal MCP SSE server. Change only if 28991 conflicts. Requires IDE restart. |
-| History max depth | 200 | Maximum number of history entries kept per working directory. |
-| History TTL (days) | 0 | Number of days after which history entries expire. 0 = keep forever. |
+| Start new session when opening with Claude | Off (Continue last) | Checked → always start a **New session** when opening with the project context menu or when NetBeans restores a closed session tab on restart. Unchecked → **Continue last**. |
+| Session tab dock position | Editor area | Where the Claude Code session tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
 | Send prompt key | Ctrl+Enter | Key combination that sends the prompt from the input area. |
 | Insert newline key | Enter | Key combination that inserts a newline in the input area. The send and newline keys are configured independently but cannot be set to the same value. |
-| Start new session when opening with Claude | Off (Continue last) | Checked → always start a **New session** when opening with the project context menu or when NetBeans restores a closed session tab on restart. Unchecked → **Continue last**. |
-| Session list limit | 30 | Maximum number of past sessions shown in the session selector table. |
-| Session tab dock position | Editor area | Where the Claude Code session tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
 | Open file diff in a separate tab | Off | Opens the diff panel in a new IDE tab instead of embedding it in the session tab. |
 | File diff tab dock position | Editor area | Where the File Diff tab is docked when opened as a separate tab. Enabled only when "Open file diff in a separate tab" is checked. |
 | Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
@@ -358,9 +353,14 @@ Open **Tools → Options → Claude Code** in NetBeans.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Debug mode | Off | Enables verbose logging of all Claude I/O to the NetBeans log file and the Output window. |
+| Claude CLI path | (empty) | Absolute path to the `claude` executable. Leave empty to use the system `PATH`. |
 | Hang timeout (seconds) | 60 | Kill the process if no PTY output is received within this many seconds after launch. Set to 0 to disable. |
+| MCP server port | 28991 | Port for the internal MCP SSE server. Change only if 28991 conflicts. Requires IDE restart. |
 | Enable MCP integration | On | When unchecked, the `--mcp-config` flag is not passed to `claude`. Hooks (PreToolUse) are always configured regardless of this setting. Disable only if MCP causes issues. |
+| History max depth | 200 | Maximum number of history entries kept per working directory. |
+| History TTL (days) | 0 | Number of days after which history entries expire. 0 = keep forever. |
+| Session list limit | 30 | Maximum number of past sessions shown in the session selector table. |
+| Debug mode | Off | Enables verbose logging of all Claude I/O to the NetBeans log file and the Output window. |
 
 ### Favorites tab
 
@@ -671,7 +671,7 @@ As you move the cursor or change the selection in any open editor, the plugin au
 
 If Claude says a tool is unavailable (e.g. "I don't have access to `getWorkspaceFolders`"):
 
-1. Check that no other application is using the MCP server port (**Tools → Options → Claude Code → General → MCP server port**, default: 28991). Change the port if needed and restart the IDE.
+1. Check that no other application is using the MCP server port (**Tools → Options → Claude Code → Advanced → MCP server port**, default: 28991). Change the port if needed and restart the IDE.
 2. Enable **Debug mode** (**Tools → Options → Claude Code → Advanced**) and check the log file (`~/.netbeans/<version>/var/log/messages.log`) for `MCP SSE server started on port`.
 
 ---
@@ -691,7 +691,7 @@ For example: `~/.netbeans/28/var/log/messages.log`
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Session tab does not open | `claude` not found on PATH | Set the full path in **Tools → Options → Claude Code → General → Claude CLI path** |
+| Session tab does not open | `claude` not found on PATH | Set the full path in **Tools → Options → Claude Code → Advanced → Claude CLI path** |
 | Diff panel shows but Accept/Decline have no effect | Claude timed out waiting for the hook response (600 s limit) | Respond to the diff panel within ~9 minutes; if this happens regularly, check for blocking processes |
 | Claude asked a question but the Choice Menu panel did not appear | The plugin did not recognise the prompt format | Switch to the terminal area and answer directly by typing |
 | Choice Menu appeared but Claude did not ask anything (false trigger) | The plugin mis-detected a numbered list as a menu | Dismiss the panel with **Esc** or ignore it; Claude will continue on its own |
