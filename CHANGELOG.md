@@ -1,3 +1,5 @@
+- Fixed toolbar button focusing an existing session tab instead of opening a new one when all open tabs have active sessions
+
 # 0.21.54 (2026-04-22)
 
 - Fixed prompt area being collapsible to zero height by dragging the divider
