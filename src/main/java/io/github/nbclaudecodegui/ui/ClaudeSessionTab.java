@@ -604,7 +604,6 @@ public class ClaudeSessionTab extends TopComponent
         selectorPanel.setProfile(profileName);
         selectorPanel.preselectForDirectory(dir);
         selectorPanel.setExtraCliArgs(extraCliArgs);
-        selectorPanel.lock();
         startSession(dir, profileName, extraCliArgs != null ? extraCliArgs : "",
                 mode != null ? mode : SessionMode.NEW, resumeSessionId);
     }
@@ -651,7 +650,6 @@ public class ClaudeSessionTab extends TopComponent
     /** Fired by the selector panel when the user confirms a valid directory. */
     private void onDirectoryOpened(File dir, String profileName, String extraCliArgs,
                                    SessionMode mode, String resumeSessionId) {
-        selectorPanel.lock();
         startSession(dir, profileName, extraCliArgs, mode, resumeSessionId);
     }
 
@@ -661,6 +659,7 @@ public class ClaudeSessionTab extends TopComponent
 
     private void startSession(File dir, String profileName, String extraCliArgs,
                                SessionMode mode, String resumeSessionId) {
+        selectorPanel.lock();
         this.activeResumeSessionId = resumeSessionId;
         Path configDir = null;
         if (!ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
