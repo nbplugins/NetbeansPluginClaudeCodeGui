@@ -1,3 +1,4 @@
+- Fixed toolbar button focusing an existing session tab instead of opening a new one when all open tabs have active sessions
 - Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
 - Fixed prompt area being collapsible to zero height by dragging the divider
 - Fixed terminal scrolling to the beginning and locking when a choice/confirmation menu appears (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
