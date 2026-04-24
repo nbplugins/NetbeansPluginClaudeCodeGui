@@ -5,6 +5,7 @@ import com.jediterm.terminal.ui.JediTermWidget;
 import com.pty4j.PtyProcess;
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
+import io.github.nbclaudecodegui.model.EditMode;
 import io.github.nbclaudecodegui.model.SavedSession;
 import io.github.nbclaudecodegui.model.SessionLifecycle;
 import io.github.nbclaudecodegui.model.SessionMode;
@@ -242,7 +243,7 @@ public final class ClaudeSessionController {
         widget.start();
 
         // Ensure the initial edit mode is registered so the hook can read it
-        String initialMode = model.getEditMode() != null ? model.getEditMode() : "default";
+        EditMode initialMode = model.getEditMode() != null ? model.getEditMode() : EditMode.DEFAULT;
         model.setEditMode(initialMode);
 
         modelDiscoveryAttempts = 0;
@@ -640,26 +641,26 @@ public final class ClaudeSessionController {
      * <p>If the selected mode differs from the current model state, updates the
      * model and triggers a Shift+Tab sequence to switch Claude's built-in mode.
      *
-     * @param newMode the newly selected mode string (one of {@code "plan"},
-     *                {@code "default"}, or {@code "acceptEdits"})
+     * @param newMode the newly selected mode
      */
-    public void onEditModeComboChanged(String newMode) {
+    public void onEditModeComboChanged(EditMode newMode) {
         if (newMode == null) return;
-        if (newMode.equals(model.getEditMode())) return;
+        if (newMode == model.getEditMode()) return;
         model.setEditMode(newMode);
         sendShiftTabsUntilMode(newMode);
     }
 
     /**
      * Sends Shift+Tab (ESC[Z) presses until the terminal screen shows
-     * {@code targetMode}, or until 3 attempts are exhausted.
+     * {@code targetMode}, or until 5 attempts are exhausted.
+     * 5 attempts cover the full 4-mode cycle plus one extra in case of lag.
      *
      * <p>Runs on a daemon thread; sets lifecycle to WORKING at start and
      * READY on completion.
      *
      * @param targetMode the edit mode to reach
      */
-    private void sendShiftTabsUntilMode(String targetMode) {
+    private void sendShiftTabsUntilMode(EditMode targetMode) {
         if (connector == null) return;
         model.setLifecycle(SessionLifecycle.WORKING);
         modeSwitchInProgress = true;
@@ -667,25 +668,25 @@ public final class ClaudeSessionController {
             try {
                 LOG.info("sendShiftTabsUntilMode: target=" + targetMode
                         + " currentModel=" + model.getEditMode());
-                for (int attempt = 0; attempt < 3; attempt++) {
+                for (int attempt = 0; attempt < 5; attempt++) {
                     connector.write(new byte[]{0x1b, '[', 'Z'});
                     Thread.sleep(200);
-                    Optional<String> detected =
+                    Optional<EditMode> detected =
                             screenContentDetector.detectEditMode(screenLines.get());
                     LOG.fine("sendShiftTabsUntilMode: attempt=" + attempt
-                            + " detected=" + detected.orElse("(empty)"));
-                    if (detected.isPresent() && detected.get().equals(targetMode)) {
+                            + " detected=" + detected.map(EditMode::key).orElse("(empty)"));
+                    if (detected.isPresent() && detected.get() == targetMode) {
                         LOG.fine("sendShiftTabsUntilMode: reached target on attempt=" + attempt);
                         return;
                     }
-                    // "default" mode has no idle-screen marker — empty detection means we are in default
-                    if ("default".equals(targetMode) && !detected.isPresent()) {
+                    // DEFAULT mode has no idle-screen marker — empty detection means we are in default
+                    if (targetMode == EditMode.DEFAULT && detected.isEmpty()) {
                         LOG.fine("sendShiftTabsUntilMode: no mode marker → treating as default on attempt=" + attempt);
                         return;
                     }
                 }
                 LOG.warning("sendShiftTabsUntilMode: did not reach " + targetMode
-                        + " after 3 attempts");
+                        + " after 5 attempts");
             } catch (IOException | InterruptedException ex) {
                 LOG.warning("sendShiftTabsUntilMode failed: " + ex.getMessage());
             } finally {
@@ -988,17 +989,18 @@ public final class ClaudeSessionController {
 
         // Continuously sync CC screen mode → model (skip during switches and discovery)
         if (modelComboPopulated && !modeSwitchInProgress && !modelDiscoveryInProgress) {
-            Optional<String> detected = screenContentDetector.detectEditMode(lines);
+            Optional<EditMode> detected = screenContentDetector.detectEditMode(lines);
+            LOG.fine("[pollScreenState] editMode sync: detected=" + detected.orElse(null) + " current=" + model.getEditMode());
             if (detected.isPresent()) {
-                String mode = detected.get();
-                if (!mode.equals(model.getEditMode())) {
+                EditMode mode = detected.get();
+                if (mode != model.getEditMode()) {
                     model.setEditMode(mode);
                 }
             } else if (model.getLifecycle() != SessionLifecycle.WORKING) {
                 // Unknown mode outside WORKING (screen transitioning or idle with no indicator)
                 // → treat as Ask/default. During WORKING: preserve current registry value.
-                if (!"default".equals(model.getEditMode())) {
-                    model.setEditMode("default");
+                if (model.getEditMode() != EditMode.DEFAULT) {
+                    model.setEditMode(EditMode.DEFAULT);
                 }
             }
         }
@@ -1072,7 +1074,13 @@ public final class ClaudeSessionController {
     }
 
     private void detectAndApplyInitialEditMode(List<String> lines) {
-        screenContentDetector.detectEditMode(lines).ifPresent(m -> model.setEditMode(m));
+        Optional<EditMode> detected = screenContentDetector.detectEditMode(lines);
+        List<String> bottom = new java.util.ArrayList<>();
+        for (int i = lines.size() - 1; i >= 0 && bottom.size() < 3; i--) {
+            if (!lines.get(i).isBlank()) bottom.add(lines.get(i));
+        }
+        LOG.fine("[detectAndApplyInitialEditMode] detected=" + detected.orElse(null) + " bottom3=" + bottom);
+        detected.ifPresent(m -> model.setEditMode(m));
     }
 
     /**

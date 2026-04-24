@@ -33,15 +33,16 @@ public final class ClaudeSessionModel {
     // -------------------------------------------------------------------------
 
     /**
-     * Cross-session, thread-safe registry of {@code editMode} keyed by absolute
+     * Cross-session, thread-safe registry of {@link EditMode} keyed by absolute
      * working-directory path.
      *
      * <p>Updated whenever {@link #setEditMode} is called; cleared by
      * {@link #clearEditModeRegistry} when a session stops.
      * Read by {@code NetBeansMCPHandler.getEditModeForCwd()} on servlet threads
-     * to decide whether to auto-allow file edits in "acceptEdits" mode.
+     * to decide whether to auto-allow file edits in {@link EditMode#ACCEPT_EDITS}
+     * or {@link EditMode#BYPASS_PERMISSIONS} mode.
      */
-    public static final ConcurrentHashMap<String, String> EDIT_MODE_REGISTRY =
+    public static final ConcurrentHashMap<String, EditMode> EDIT_MODE_REGISTRY =
             new ConcurrentHashMap<>();
 
     // -------------------------------------------------------------------------
@@ -65,12 +66,11 @@ public final class ClaudeSessionModel {
         default void onLifecycleChanged(SessionLifecycle state) {}
 
         /**
-         * Called when the edit mode changes (e.g. {@code "default"}, {@code "plan"},
-         * {@code "acceptEdits"}).
+         * Called when the edit mode changes.
          *
-         * @param mode the new mode string, or {@code null} if cleared
+         * @param mode the new mode, or {@code null} if cleared
          */
-        default void onEditModeChanged(String mode) {}
+        default void onEditModeChanged(EditMode mode) {}
 
         /**
          * Called when the list of available models or the selected index changes.
@@ -113,10 +113,9 @@ public final class ClaudeSessionModel {
     private volatile File workingDirectory;
 
     /**
-     * Current edit mode: {@code "default"}, {@code "plan"}, or {@code "acceptEdits"}.
-     * Also written to {@link #EDIT_MODE_REGISTRY} when set.
+     * Current edit mode. Also written to {@link #EDIT_MODE_REGISTRY} when set.
      */
-    private volatile String editMode;
+    private volatile EditMode editMode;
 
     /** Name of the selected profile; may be {@code null} for Default. */
     private volatile String selectedProfileName;
@@ -187,11 +186,11 @@ public final class ClaudeSessionModel {
     public File getWorkingDirectory() { return workingDirectory; }
 
     /**
-     * Returns the current edit mode string.
+     * Returns the current edit mode.
      *
      * @return edit mode, or {@code null} if not yet set
      */
-    public String getEditMode() { return editMode; }
+    public EditMode getEditMode() { return editMode; }
 
     /**
      * Returns the selected profile name.
@@ -260,9 +259,9 @@ public final class ClaudeSessionModel {
      *
      * <p>Safe to call from any thread.
      *
-     * @param mode the new edit mode string, or {@code null} to clear
+     * @param mode the new edit mode, or {@code null} to clear
      */
-    public void setEditMode(String mode) {
+    public void setEditMode(EditMode mode) {
         editMode = mode;
         if (workingDirectory != null) {
             if (mode != null) {

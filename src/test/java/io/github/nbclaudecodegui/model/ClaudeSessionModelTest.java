@@ -74,41 +74,41 @@ class ClaudeSessionModelTest {
 
     @Test
     void setEditModeFiresListener() {
-        AtomicReference<String> captured = new AtomicReference<>();
+        AtomicReference<EditMode> captured = new AtomicReference<>();
         model.addListener(new NoOpListener() {
-            @Override public void onEditModeChanged(String mode) {
+            @Override public void onEditModeChanged(EditMode mode) {
                 captured.set(mode);
             }
         });
 
-        model.setEditMode("acceptEdits");
+        model.setEditMode(EditMode.ACCEPT_EDITS);
 
-        assertEquals("acceptEdits", model.getEditMode());
-        assertEquals("acceptEdits", captured.get());
+        assertEquals(EditMode.ACCEPT_EDITS, model.getEditMode());
+        assertEquals(EditMode.ACCEPT_EDITS, captured.get());
     }
 
     @Test
     void setEditModeWritesRegistryWhenDirectorySet() {
         File dir = new File("/tmp/test-dir");
         model.setWorkingDirectory(dir);
-        model.setEditMode("plan");
+        model.setEditMode(EditMode.PLAN);
 
-        assertEquals("plan", ClaudeSessionModel.EDIT_MODE_REGISTRY.get(dir.getAbsolutePath()));
+        assertEquals(EditMode.PLAN, ClaudeSessionModel.EDIT_MODE_REGISTRY.get(dir.getAbsolutePath()));
     }
 
     @Test
     void setEditModeWithNullDirectoryDoesNotCrash() {
         // directory is null → registry update skipped silently
         assertNull(model.getWorkingDirectory());
-        assertDoesNotThrow(() -> model.setEditMode("acceptEdits"));
-        assertEquals("acceptEdits", model.getEditMode());
+        assertDoesNotThrow(() -> model.setEditMode(EditMode.ACCEPT_EDITS));
+        assertEquals(EditMode.ACCEPT_EDITS, model.getEditMode());
     }
 
     @Test
     void setEditModeNullRemovesRegistryEntry() {
         File dir = new File("/tmp/test-dir");
         model.setWorkingDirectory(dir);
-        model.setEditMode("plan");
+        model.setEditMode(EditMode.PLAN);
         assertNotNull(ClaudeSessionModel.EDIT_MODE_REGISTRY.get(dir.getAbsolutePath()));
 
         model.setEditMode(null);
@@ -256,7 +256,7 @@ class ClaudeSessionModelTest {
     void clearEditModeRegistryCleansEntry() {
         File dir = new File("/tmp/test-project");
         model.setWorkingDirectory(dir);
-        model.setEditMode("acceptEdits");
+        model.setEditMode(EditMode.ACCEPT_EDITS);
         assertNotNull(ClaudeSessionModel.EDIT_MODE_REGISTRY.get(dir.getAbsolutePath()));
 
         model.clearEditModeRegistry();
@@ -276,7 +276,7 @@ class ClaudeSessionModelTest {
     private static class NoOpListener
             implements ClaudeSessionModel.ClaudeSessionModelListener {
         @Override public void onLifecycleChanged(SessionLifecycle state) {}
-        @Override public void onEditModeChanged(String mode) {}
+        @Override public void onEditModeChanged(io.github.nbclaudecodegui.model.EditMode mode) {}
         @Override public void onModelListChanged(List<String> models, int selectedIdx) {}
         @Override public void onChoiceMenuChanged(ChoiceMenuModel menu) {}
         @Override public void onWorkingDirectoryChanged(File dir) {}

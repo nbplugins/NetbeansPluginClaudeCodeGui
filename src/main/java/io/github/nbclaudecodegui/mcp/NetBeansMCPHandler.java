@@ -3,6 +3,7 @@
 package io.github.nbclaudecodegui.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.nbclaudecodegui.model.EditMode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -501,15 +502,17 @@ public class NetBeansMCPHandler {
 
             // cwd from hook JSON == confirmedDirectory of the session that launched Claude
             String cwd = hook.has("cwd") ? hook.get("cwd").asText() : null;
-            String editMode = getEditModeForCwd(cwd);
+            EditMode editMode = getEditModeForCwd(cwd);
             LOGGER.info("handlePreToolUse: editMode=" + editMode + " cwd=" + cwd);
 
             String filePath = getFilePath(toolInput);
 
+            // bypassPermissions: auto-allow everything regardless of location
             // acceptEdits: auto-allow only if file is inside the session's confirmed directory
-            if ("acceptEdits".equals(editMode)
-                    && io.github.nbclaudecodegui.ui.FileDiffOpener.isFileUnderDirectory(filePath, cwd)) {
-                LOGGER.info("acceptEdits mode — file inside project, auto-allowing: " + filePath);
+            if (editMode == EditMode.BYPASS_PERMISSIONS
+                    || (editMode == EditMode.ACCEPT_EDITS
+                        && io.github.nbclaudecodegui.ui.FileDiffOpener.isFileUnderDirectory(filePath, cwd))) {
+                LOGGER.info(editMode.key() + " mode — auto-allowing: " + filePath);
                 return CompletableFuture.completedFuture(hookAllowJson());
             }
             // plan / ask / acceptEdits-outside: fall through to show diff dialog
@@ -681,16 +684,16 @@ public class NetBeansMCPHandler {
     }
 
     /**
-     * Returns the edit mode of the session whose working directory is {@code cwd},
-     * or {@code "default"} if the session cannot be found.
+     * Returns the {@link EditMode} of the session whose working directory is {@code cwd},
+     * or {@link EditMode#DEFAULT} if the session cannot be found.
      *
      * <p>Safe to call from any thread — uses the thread-safe registry in
      * {@link io.github.nbclaudecodegui.model.ClaudeSessionModel#EDIT_MODE_REGISTRY}.
      */
-    private static String getEditModeForCwd(String cwd) {
-        if (cwd == null) return "default";
-        String mode = io.github.nbclaudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.get(cwd);
-        return mode != null ? mode : "default";
+    private static EditMode getEditModeForCwd(String cwd) {
+        if (cwd == null) return EditMode.DEFAULT;
+        EditMode mode = io.github.nbclaudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.get(cwd);
+        return mode != null ? mode : EditMode.DEFAULT;
     }
 
     /**

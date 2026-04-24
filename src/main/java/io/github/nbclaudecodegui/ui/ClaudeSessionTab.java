@@ -6,6 +6,7 @@ import io.github.nbclaudecodegui.controller.ClaudeSessionController;
 import io.github.nbclaudecodegui.ui.common.BasicTextContextMenu;
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
+import io.github.nbclaudecodegui.model.EditMode;
 import io.github.nbclaudecodegui.model.SavedSession;
 import io.github.nbclaudecodegui.model.SessionLifecycle;
 import io.github.nbclaudecodegui.model.SessionMode;
@@ -104,8 +105,13 @@ public class ClaudeSessionTab extends TopComponent
     // Edit mode constants
     // -------------------------------------------------------------------------
 
-    static final String[] EDIT_MODE_LABELS = {"Plan Mode", "Ask on Edit", "Accept on Edit"};
-    static final String[] EDIT_MODE_VALUES = {"plan",      "default",     "acceptEdits"};
+    /** Base edit modes always shown in the combo (indices 0–2). */
+    static final String[]   EDIT_MODE_LABELS = {"Plan Mode", "Ask on Edit", "Accept on Edit"};
+    static final EditMode[] EDIT_MODE_VALUES = {EditMode.PLAN, EditMode.DEFAULT, EditMode.ACCEPT_EDITS};
+
+    /** Label / value for the 4th entry added dynamically when bypass-permissions is detected. */
+    private static final String   BYPASS_LABEL = "Bypass Permissions";
+    private static final EditMode BYPASS_VALUE = EditMode.BYPASS_PERMISSIONS;
 
     // -------------------------------------------------------------------------
     // South card constants
@@ -189,6 +195,11 @@ public class ClaudeSessionTab extends TopComponent
 
     /** Cached lifecycle so {@link #onModelListChanged} can correctly enable the combo. */
     private volatile SessionLifecycle currentLifecycle;
+
+    /** True once BYPASS_PERMISSIONS mode was detected; keeps the 4th combo entry visible. */
+    private boolean bypassPermissionsAvailable = false;
+    /** Guards programmatic combo updates to prevent feedback through the action listener. */
+    private boolean updatingCombo = false;
 
     // -------------------------------------------------------------------------
     // Constructors
@@ -471,6 +482,15 @@ public class ClaudeSessionTab extends TopComponent
             case READY    -> "Ready";
             case WORKING  -> "Working";
         });
+        if (s == SessionLifecycle.STARTING && bypassPermissionsAvailable) {
+            updatingCombo = true;
+            try {
+                editModeCombo.removeItem(BYPASS_LABEL);
+            } finally {
+                updatingCombo = false;
+            }
+            bypassPermissionsAvailable = false;
+        }
         boolean ready = s == SessionLifecycle.READY;
         modelCombo.setEnabled(ready && modelCombo.getItemCount() > 0);
         promptPanel.setReadyState(ready);
@@ -508,16 +528,38 @@ public class ClaudeSessionTab extends TopComponent
         }
     }
 
-    /** Syncs the edit-mode combo without re-triggering the action listener. */
+    /**
+     * Syncs the edit-mode combo without re-triggering the action listener.
+     *
+     * <p>If {@code mode} is {@link EditMode#BYPASS_PERMISSIONS} and the combo does
+     * not yet have a 4th entry, it is added dynamically. When any other mode is
+     * detected the 4th entry is removed — bypass-permissions is only available
+     * while Claude itself is in that state.
+     */
     @Override
-    public void onEditModeChanged(String mode) {
+    public void onEditModeChanged(EditMode mode) {
+        LOG.fine("[onEditModeChanged] mode=" + mode + " comboItems=" + editModeCombo.getItemCount());
         if (mode == null) return;
-        int idx = editModeIndexOf(mode);
-        if (idx >= 0 && editModeCombo.getSelectedIndex() != idx) {
-            editModeCombo.removeActionListener(editModeCombo.getActionListeners()[0]);
-            editModeCombo.setSelectedIndex(idx);
-            editModeCombo.addActionListener(ae -> onEditModeComboChanged());
+        if (mode == BYPASS_VALUE) bypassPermissionsAvailable = true;
+        updatingCombo = true;
+        try {
+            if (bypassPermissionsAvailable && !hasBypassItem()) {
+                editModeCombo.addItem(BYPASS_LABEL);
+            }
+            int idx = editModeIndexOf(mode);
+            if (idx >= 0 && editModeCombo.getSelectedIndex() != idx) {
+                editModeCombo.setSelectedIndex(idx);
+            }
+        } finally {
+            updatingCombo = false;
         }
+    }
+
+    private boolean hasBypassItem() {
+        for (int i = 0; i < editModeCombo.getItemCount(); i++) {
+            if (BYPASS_LABEL.equals(editModeCombo.getItemAt(i))) return true;
+        }
+        return false;
     }
 
     /** Repopulates the model combo. */
@@ -562,17 +604,20 @@ public class ClaudeSessionTab extends TopComponent
     }
 
     /**
-     * Programmatically sets the session edit mode (e.g. {@code "acceptEdits"}).
+     * Programmatically sets the session edit mode.
      * No-op if the value is not a known mode or is already selected.
      *
-     * @param value the edit mode value (one of {@code EDIT_MODE_VALUES})
+     * @param value the edit mode (one of {@link EditMode} values)
      */
-    public void setEditMode(String value) {
+    public void setEditMode(EditMode value) {
         int idx = editModeIndexOf(value);
         if (idx >= 0 && editModeCombo.getSelectedIndex() != idx) {
-            editModeCombo.removeActionListener(editModeCombo.getActionListeners()[0]);
-            editModeCombo.setSelectedIndex(idx);
-            editModeCombo.addActionListener(ae -> onEditModeComboChanged());
+            updatingCombo = true;
+            try {
+                editModeCombo.setSelectedIndex(idx);
+            } finally {
+                updatingCombo = false;
+            }
             controller.onEditModeComboChanged(value);
         }
     }
@@ -636,11 +681,11 @@ public class ClaudeSessionTab extends TopComponent
     }
 
     /**
-     * Returns the current edit mode string.
+     * Returns the current edit mode, or {@code null} if not yet set.
      *
-     * @return edit mode string, or {@code null} if not set
+     * @return edit mode or {@code null}
      */
-    public String getEditMode() {
+    public EditMode getEditMode() {
         return model.getEditMode();
     }
 
@@ -1243,9 +1288,10 @@ public class ClaudeSessionTab extends TopComponent
     // -------------------------------------------------------------------------
 
     private void onEditModeComboChanged() {
+        if (updatingCombo) return;
         int idx = editModeCombo.getSelectedIndex();
-        if (idx < 0 || idx >= EDIT_MODE_VALUES.length) return;
-        controller.onEditModeComboChanged(EDIT_MODE_VALUES[idx]);
+        EditMode mode = editModeAt(idx);
+        if (mode != null) controller.onEditModeComboChanged(mode);
     }
 
     private void onModelComboChanged() {
@@ -1254,12 +1300,28 @@ public class ClaudeSessionTab extends TopComponent
         controller.switchModel(idx);
     }
 
-    private int editModeIndexOf(String value) {
+    /** Returns the {@link EditMode} for combo index {@code idx}, or {@code null} if out of range. */
+    private EditMode editModeAt(int idx) {
+        if (idx < 0) return null;
+        if (idx < EDIT_MODE_VALUES.length) return EDIT_MODE_VALUES[idx];
+        if (idx == EDIT_MODE_VALUES.length && editModeCombo.getItemCount() > EDIT_MODE_VALUES.length) {
+            return BYPASS_VALUE;
+        }
+        return null;
+    }
+
+    private int editModeIndexOf(EditMode value) {
+        if (value == BYPASS_VALUE) {
+            return editModeCombo.getItemCount() > EDIT_MODE_VALUES.length ? EDIT_MODE_VALUES.length : -1;
+        }
         for (int i = 0; i < EDIT_MODE_VALUES.length; i++) {
-            if (EDIT_MODE_VALUES[i].equals(value)) return i;
+            if (EDIT_MODE_VALUES[i] == value) return i;
         }
         return -1;
     }
+
+    /** Package-private for testing only. */
+    int editModeItemCount() { return editModeCombo.getItemCount(); }
 
     private static JPanel makeSep() {
         JPanel sep = new JPanel();

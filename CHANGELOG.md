@@ -1,3 +1,4 @@
+- Added "Bypass Permissions" edit mode: automatically detected when Claude is launched with `--dangerously-skip-permissions`; auto-allows all file edits without showing a diff dialog
 - Fixed PreToolUse and Stop hook HTTP 502 errors (regression in claude-code 2.1.118)
 - Fixed toolbar button focusing an existing session tab instead of opening a new one when all open tabs have active sessions
 - Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
