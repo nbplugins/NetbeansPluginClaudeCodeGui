@@ -1,6 +1,7 @@
 package io.github.nbclaudecodegui.process;
 
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
+import io.github.nbclaudecodegui.model.EditMode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -126,7 +127,7 @@ class ScreenContentDetectorTest {
     void detectEditModeEmptyWhenNoIndicatorNoEscPattern() {
         // "esc to interrupt" without leading spaces → no mode indicator → Optional.empty()
         List<String> lines = List.of("Normal output", "esc to interrupt");
-        java.util.Optional<String> result = detector.detectEditMode(lines);
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
         assertTrue(result.isEmpty(), "Expected empty Optional when no mode indicator and no leading-space esc pattern");
     }
 
@@ -136,9 +137,9 @@ class ScreenContentDetectorTest {
                 "Some output",
                 "plan mode  |  esc to interrupt"
         );
-        java.util.Optional<String> result = detector.detectEditMode(lines);
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
         assertTrue(result.isPresent());
-        assertEquals("plan", result.get());
+        assertEquals(EditMode.PLAN, result.get());
     }
 
     @org.junit.jupiter.api.Test
@@ -149,9 +150,9 @@ class ScreenContentDetectorTest {
                 "\u23F8 plan mode on  |  esc to interrupt"
         ));
         for (int i = 0; i < 15; i++) lines.add("");
-        java.util.Optional<String> result = detector.detectEditMode(lines);
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
         assertTrue(result.isPresent());
-        assertEquals("plan", result.get());
+        assertEquals(EditMode.PLAN, result.get());
     }
 
     @org.junit.jupiter.api.Test
@@ -161,9 +162,30 @@ class ScreenContentDetectorTest {
                 "\u23F5\u23F5 accept edits on  |  esc to interrupt"
         ));
         for (int i = 0; i < 10; i++) lines.add("");
-        java.util.Optional<String> result = detector.detectEditMode(lines);
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
         assertTrue(result.isPresent());
-        assertEquals("acceptEdits", result.get());
+        assertEquals(EditMode.ACCEPT_EDITS, result.get());
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeBypassPermissions() {
+        // Screen text captured from Claude launched with --dangerously-skip-permissions
+        List<String> lines = new ArrayList<>(List.of(
+                "Some output",
+                "\u23F5\u23F5 bypass permissions on (shift+tab to cycle)"
+        ));
+        for (int i = 0; i < 10; i++) lines.add("");
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent());
+        assertEquals(EditMode.BYPASS_PERMISSIONS, result.get());
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeBypassPermissionsCaseInsensitive() {
+        List<String> lines = List.of("Some output", "Bypass Permissions on | esc to interrupt");
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent());
+        assertEquals(EditMode.BYPASS_PERMISSIONS, result.get());
     }
 
     @org.junit.jupiter.api.Test
@@ -174,7 +196,7 @@ class ScreenContentDetectorTest {
                 "esc to interrupt"
         ));
         for (int i = 0; i < 15; i++) lines.add("");
-        java.util.Optional<String> result = detector.detectEditMode(lines);
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
         assertTrue(result.isEmpty(), "Expected empty Optional when esc line has no leading spaces");
     }
 
@@ -186,9 +208,9 @@ class ScreenContentDetectorTest {
                 "  esc to interrupt"
         ));
         for (int i = 0; i < 15; i++) lines.add("");
-        java.util.Optional<String> result = detector.detectEditMode(lines);
-        assertTrue(result.isPresent(), "Expected Optional.of(\"default\") for leading-space esc pattern");
-        assertEquals("default", result.get());
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent(), "Expected Optional.of(DEFAULT) for leading-space esc pattern");
+        assertEquals(EditMode.DEFAULT, result.get());
     }
 
     @org.junit.jupiter.api.Test

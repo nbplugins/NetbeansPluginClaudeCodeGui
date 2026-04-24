@@ -1,5 +1,6 @@
 package io.github.nbclaudecodegui.ui;
 
+import io.github.nbclaudecodegui.model.EditMode;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import java.io.File;
 import java.io.IOException;
@@ -179,7 +180,7 @@ public final class FileDiffOpener {
                     activateSessionForFile(filePath);
                 },
                 sessionTab == null ? null : () -> {
-                    sessionTab.setEditMode("acceptEdits");
+                    sessionTab.setEditMode(EditMode.ACCEPT_EDITS);
                     decided.set(true);
                     onAccept.run();
                     closeDiffRef[0].run();

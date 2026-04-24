@@ -1,6 +1,7 @@
 package io.github.nbclaudecodegui.process;
 
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
+import io.github.nbclaudecodegui.model.EditMode;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 
 import java.util.ArrayList;
@@ -438,30 +439,43 @@ public final class ScreenContentDetector {
     /**
      * Detect the Claude CLI edit mode from the rendered screen footer.
      *
-     * <p>Returns {@code "plan"} if "plan mode" is visible in the bottom 3 lines,
-     * or {@code "default"} otherwise. {@code "acceptEdits"} is our own overlay and
-     * cannot be detected from the screen; it is never returned here.
+     * <p>Possible return values:
+     * <ul>
+     *   <li>{@link EditMode#PLAN} — bottom line contains {@code "plan mode"} or
+     *       {@code "plan-mode"}</li>
+     *   <li>{@link EditMode#ACCEPT_EDITS} — bottom line contains
+     *       {@code "accept edits"}</li>
+     *   <li>{@link EditMode#BYPASS_PERMISSIONS} — bottom line contains
+     *       {@code "bypass permissions"}; present when Claude was launched with
+     *       {@code --dangerously-skip-permissions}</li>
+     *   <li>{@link EditMode#DEFAULT} — bottom line starts with
+     *       {@code "  esc to interrupt"} (two leading spaces)</li>
+     *   <li>{@link Optional#empty()} — screen is blank or transitioning</li>
+     * </ul>
      *
      * @param lines rendered screen lines
-     * @return {@code Optional} of {@code "plan"} or {@code "default"}
+     * @return detected {@link EditMode}, or empty if unknown
      */
-    public Optional<String> detectEditMode(List<String> lines) {
+    public Optional<EditMode> detectEditMode(List<String> lines) {
         if (lines == null || lines.isEmpty()) return Optional.empty();
         List<String> bottom = bottomNonBlankLines(lines, 3);
         if (bottom.isEmpty()) return Optional.empty();
         for (String line : bottom) {
             String lower = line.toLowerCase();
             if (lower.contains("plan mode") || lower.contains("plan-mode")) {
-                return Optional.of("plan");
+                return Optional.of(EditMode.PLAN);
             }
             if (lower.contains("accept edits")) {
-                return Optional.of("acceptEdits");
+                return Optional.of(EditMode.ACCEPT_EDITS);
+            }
+            if (lower.contains("bypass permissions")) {
+                return Optional.of(EditMode.BYPASS_PERMISSIONS);
             }
         }
         // "  esc to interrupt" with two leading spaces is the reliable Ask/default-mode signal.
         // Without leading spaces the screen is in an unknown / transitioning state.
         if (bottom.get(0).startsWith("  esc to interrupt")) {
-            return Optional.of("default");
+            return Optional.of(EditMode.DEFAULT);
         }
         return Optional.empty();
     }
