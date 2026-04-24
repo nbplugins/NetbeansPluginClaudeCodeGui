@@ -443,13 +443,17 @@ public final class ClaudeProcess {
                 }
             }
 
-            // Add fresh entry for this port
+            // Add fresh entry for this port.
+            // Use 127.0.0.1, NOT localhost: on systems where localhost resolves to ::1 (IPv6)
+            // first, claude-code's HTTP client (Bun) connects to ::1:PORT, but Jetty's
+            // ServerConnector binds to 0.0.0.0 (IPv4 only) and refuses the connection.
+            // 127.0.0.1 is always IPv4 and requires no DNS resolution.
             ObjectNode ourEntry = MAPPER.createObjectNode();
             ourEntry.put("matcher", OUR_HOOK_MATCHER);
             ArrayNode hooksArr = MAPPER.createArrayNode();
             ObjectNode httpHook = MAPPER.createObjectNode();
             httpHook.put("type", "http");
-            httpHook.put("url", "http://localhost:" + port + "/hook");
+            httpHook.put("url", "http://127.0.0.1:" + port + "/hook");
             hooksArr.add(httpHook);
             ourEntry.set("hooks", hooksArr);
             filtered.add(ourEntry);
@@ -462,7 +466,7 @@ public final class ClaudeProcess {
             ArrayNode stopHooksArr = MAPPER.createArrayNode();
             ObjectNode stopHook = MAPPER.createObjectNode();
             stopHook.put("type", "http");
-            stopHook.put("url", "http://localhost:" + port + "/stop");
+            stopHook.put("url", "http://127.0.0.1:" + port + "/stop");
             stopHooksArr.add(stopHook);
             stopEntry.set("hooks", stopHooksArr);
             ArrayNode stopArr = MAPPER.createArrayNode();
@@ -475,7 +479,7 @@ public final class ClaudeProcess {
             ArrayNode permHooksArr = MAPPER.createArrayNode();
             ObjectNode permHook = MAPPER.createObjectNode();
             permHook.put("type", "http");
-            permHook.put("url", "http://localhost:" + port + "/permission-request");
+            permHook.put("url", "http://127.0.0.1:" + port + "/permission-request");
             permHooksArr.add(permHook);
             permEntry.set("hooks", permHooksArr);
             ArrayNode permArr = MAPPER.createArrayNode();
@@ -730,7 +734,7 @@ public final class ClaudeProcess {
      * Builds the JSON string to pass as {@code --mcp-config} to the Claude CLI.
      */
     static String buildMcpConfigJson(int port) {
-        return "{\"mcpServers\":{\"" + OUR_MCP_KEY + "\":{\"type\":\"sse\",\"url\":\"http://localhost:" + port + "/sse\"}}}";
+        return "{\"mcpServers\":{\"" + OUR_MCP_KEY + "\":{\"type\":\"sse\",\"url\":\"http://127.0.0.1:" + port + "/sse\"}}}";
     }
 
     /**
@@ -762,18 +766,19 @@ public final class ClaudeProcess {
         return result;
     }
 
+    // 127.0.0.1 is used instead of localhost — see comment in mergeSettingsJson.
     private static String buildSettingsLocalJson(int port) {
         return "{"
                 + "\"hooks\":{"
                 + "\"PreToolUse\":["
                 + "{\"matcher\":\"Edit|Write|MultiEdit\","
-                + "\"hooks\":[{\"type\":\"http\",\"url\":\"http://localhost:" + port + "/hook\"}]}],"
+                + "\"hooks\":[{\"type\":\"http\",\"url\":\"http://127.0.0.1:" + port + "/hook\"}]}],"
                 + "\"Stop\":["
                 + "{\"matcher\":\".*\","
-                + "\"hooks\":[{\"type\":\"http\",\"url\":\"http://localhost:" + port + "/stop\"}]}],"
+                + "\"hooks\":[{\"type\":\"http\",\"url\":\"http://127.0.0.1:" + port + "/stop\"}]}],"
                 + "\"PermissionRequest\":["
                 + "{\"matcher\":\".*\","
-                + "\"hooks\":[{\"type\":\"http\",\"url\":\"http://localhost:" + port + "/permission-request\"}]}]"
+                + "\"hooks\":[{\"type\":\"http\",\"url\":\"http://127.0.0.1:" + port + "/permission-request\"}]}]"
                 + "}}";
     }
 }
