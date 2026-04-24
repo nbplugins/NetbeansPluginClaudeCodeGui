@@ -9,8 +9,13 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
@@ -203,8 +208,162 @@ public class MCPSseServerPerSessionTest {
     }
 
     // -----------------------------------------------------------------------
+    // TC-5: HookServlet async — Jetty thread not blocked while future is pending
+    // -----------------------------------------------------------------------
+
+    /**
+     * A POST to {@code /hook} must return (HTTP connection must be completed)
+     * only AFTER the CompletableFuture is resolved, but the Jetty worker thread
+     * must NOT be held during the wait.
+     *
+     * <p>The test verifies async behaviour indirectly: a second concurrent request
+     * to a different endpoint ({@code /stop}) must be served while the hook future
+     * is still pending.  If the servlet were synchronous, the single Jetty thread
+     * handling the hook would be blocked and the /stop request would time out.
+     */
+    @Test
+    void testHookServletAsyncDoesNotBlockThread() throws Exception {
+        CompletableFuture<String> pendingFuture = new CompletableFuture<>();
+        MCPSseServer hookServer = startWithHandler(new NetBeansMCPHandler() {
+            @Override
+            public CompletableFuture<String> handlePreToolUse(String hookJson) {
+                return pendingFuture;
+            }
+        });
+        try {
+            int hookPort = hookServer.getPort();
+
+            // Fire the hook request — it should NOT block the Jetty thread
+            CountDownLatch hookDone = new CountDownLatch(1);
+            AtomicInteger hookStatus = new AtomicInteger(-1);
+            new Thread(() -> {
+                try {
+                    hookStatus.set(postToHook(hookPort, "{}"));
+                } catch (Exception e) { /* ignore */ }
+                hookDone.countDown();
+            }).start();
+
+            // While hook is pending, /stop must still be served within 2 seconds
+            int stopStatus = postToStop(hookPort, "{}");
+            assertEquals(200, stopStatus, "/stop must return 200 while hook is pending");
+
+            // Now resolve the future and verify hook response is delivered
+            pendingFuture.complete("{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}");
+            assertTrue(hookDone.await(5, TimeUnit.SECONDS), "hook response not delivered after future resolved");
+            assertEquals(200, hookStatus.get(), "/hook must return 200 after future resolved");
+        } finally {
+            hookServer.stop();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TC-6: N concurrent hook requests — all served without 502
+    // -----------------------------------------------------------------------
+
+    /**
+     * Sends N concurrent {@code /hook} requests (each backed by a pending
+     * {@link CompletableFuture}) and verifies that ALL return HTTP 200 after
+     * their futures are resolved.  This is the regression test for thread-pool
+     * exhaustion: the synchronous implementation would have blocked N Jetty
+     * threads; if N exceeded the pool size some requests would have returned 502.
+     */
+    @Test
+    void testConcurrentHookRequestsAllServed() throws Exception {
+        int n = 10;
+        List<CompletableFuture<String>> futures = new ArrayList<>();
+        MCPSseServer hookServer = startWithHandler(new NetBeansMCPHandler() {
+            @Override
+            public CompletableFuture<String> handlePreToolUse(String hookJson) {
+                CompletableFuture<String> f = new CompletableFuture<>();
+                synchronized (futures) { futures.add(f); }
+                return f;
+            }
+        });
+        String allowJson = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}";
+        try {
+            int hookPort = hookServer.getPort();
+            ExecutorService pool = Executors.newFixedThreadPool(n);
+            List<Future<Integer>> results = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                results.add(pool.submit(() -> postToHook(hookPort, "{}")));
+            }
+            pool.shutdown();
+
+            // Wait until all N futures are registered
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                synchronized (futures) { if (futures.size() == n) break; }
+                Thread.sleep(50);
+            }
+            synchronized (futures) {
+                assertEquals(n, futures.size(), n + " futures must be registered");
+                futures.forEach(f -> f.complete(allowJson));
+            }
+
+            // All N responses must be 200
+            AtomicInteger failures = new AtomicInteger(0);
+            for (Future<Integer> r : results) {
+                int status = r.get(10, TimeUnit.SECONDS);
+                if (status != 200) failures.incrementAndGet();
+            }
+            assertEquals(0, failures.get(), "all " + n + " hook requests must return 200");
+        } finally {
+            hookServer.stop();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TC-7: POST /stop returns 200 with {} body
+    // -----------------------------------------------------------------------
+
+    /**
+     * A well-formed {@code POST /stop} must return {@code 200 OK} with body
+     * {@code {}}.  Regression guard for a missing {@code flush()} call.
+     */
+    @Test
+    void testStopHookReturns200() throws Exception {
+        String payload = "{\"hook_event_name\":\"Stop\",\"cwd\":\"/tmp\",\"session_id\":\"abc\"}";
+        int status = postToStop(port, payload);
+        assertEquals(200, status, "/stop must return 200");
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /** Starts a fresh MCPSseServer on a free port backed by the given handler. */
+    private MCPSseServer startWithHandler(NetBeansMCPHandler handler) throws Exception {
+        int p = findFreePort();
+        MCPSseServer s = new MCPSseServer(handler);
+        assertTrue(s.start(p), "server with custom handler must start");
+        return s;
+    }
+
+    private int postToHook(int hookPort, String json) throws Exception {
+        URL url = new URL("http://localhost:" + hookPort + "/hook");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(3000);
+        conn.setReadTimeout(15000);
+        byte[] body = json.getBytes(StandardCharsets.UTF_8);
+        try (OutputStream out = conn.getOutputStream()) { out.write(body); }
+        return conn.getResponseCode();
+    }
+
+    private int postToStop(int stopPort, String json) throws Exception {
+        URL url = new URL("http://localhost:" + stopPort + "/stop");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(3000);
+        conn.setReadTimeout(5000);
+        byte[] body = json.getBytes(StandardCharsets.UTF_8);
+        try (OutputStream out = conn.getOutputStream()) { out.write(body); }
+        return conn.getResponseCode();
+    }
 
     private void postMessage(String messagesUrl, String json) throws Exception {
         URL url = new URL(messagesUrl);

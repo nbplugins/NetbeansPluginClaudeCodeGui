@@ -658,18 +658,14 @@ public class NetBeansMCPHandler {
             findSessionByCwd(cwd).ifPresent(ClaudeSessionTab::triggerPromptScan));
     }
 
-    private static String extractCwdFromPayload(String payload) {
+    private String extractCwdFromPayload(String payload) {
         if (payload == null) return null;
-        // Simple extraction without full JSON parse
-        int idx = payload.indexOf("\"cwd\"");
-        if (idx < 0) return null;
-        int colon = payload.indexOf(':', idx);
-        if (colon < 0) return null;
-        int q1 = payload.indexOf('"', colon + 1);
-        if (q1 < 0) return null;
-        int q2 = payload.indexOf('"', q1 + 1);
-        if (q2 < 0) return null;
-        return payload.substring(q1 + 1, q2);
+        try {
+            JsonNode node = objectMapper.readTree(payload);
+            return node.has("cwd") ? node.get("cwd").asText(null) : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static java.util.Optional<ClaudeSessionTab> findSessionByCwd(String cwd) {
