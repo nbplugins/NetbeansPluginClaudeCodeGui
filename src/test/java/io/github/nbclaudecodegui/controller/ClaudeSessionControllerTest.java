@@ -1,6 +1,7 @@
 package io.github.nbclaudecodegui.controller;
 
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
+import io.github.nbclaudecodegui.model.EditMode;
 import io.github.nbclaudecodegui.model.SessionLifecycle;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -67,23 +68,23 @@ class ClaudeSessionControllerTest {
     void onEditModeComboChangedUpdatesModel() {
         // Set up directory so registry write works
         model.setWorkingDirectory(new java.io.File("/tmp/test"));
-        controller.onEditModeComboChanged("acceptEdits");
-        assertEquals("acceptEdits", model.getEditMode());
+        controller.onEditModeComboChanged(EditMode.ACCEPT_EDITS);
+        assertEquals(EditMode.ACCEPT_EDITS, model.getEditMode());
     }
 
     @Test
     void onEditModeComboChangedNoOpWhenSameMode() {
         model.setWorkingDirectory(new java.io.File("/tmp/test"));
-        model.setEditMode("default");
+        model.setEditMode(EditMode.DEFAULT);
 
-        AtomicReference<String> captured = new AtomicReference<>(null);
+        AtomicReference<EditMode> captured = new AtomicReference<>(null);
         model.addListener(new NoOpListener() {
-            @Override public void onEditModeChanged(String mode) {
+            @Override public void onEditModeChanged(io.github.nbclaudecodegui.model.EditMode mode) {
                 captured.set(mode);
             }
         });
 
-        controller.onEditModeComboChanged("default");  // same as current
+        controller.onEditModeComboChanged(EditMode.DEFAULT);  // same as current
         // Listener must NOT have been called (no change)
         assertNull(captured.get(), "No notification expected when mode is unchanged");
     }
@@ -140,7 +141,7 @@ class ClaudeSessionControllerTest {
         ClaudeSessionController c2 = new ClaudeSessionController(m2, () -> workingScreen);
 
         m2.setWorkingDirectory(new java.io.File("/tmp/test2"));
-        m2.setEditMode("acceptEdits");
+        m2.setEditMode(EditMode.ACCEPT_EDITS);
         m2.setLifecycle(SessionLifecycle.WORKING);
 
         // Simulate modelComboPopulated = true so the sync branch is reached
@@ -151,9 +152,9 @@ class ClaudeSessionControllerTest {
 
         c2.pollScreenState();
 
-        assertEquals("acceptEdits", m2.getEditMode(),
+        assertEquals(EditMode.ACCEPT_EDITS, m2.getEditMode(),
                 "acceptEdits must not be overwritten by screen poll while WORKING");
-        assertEquals("acceptEdits",
+        assertEquals(EditMode.ACCEPT_EDITS,
                 io.github.nbclaudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY
                         .get("/tmp/test2"),
                 "Registry must still hold acceptEdits");
@@ -176,7 +177,7 @@ class ClaudeSessionControllerTest {
         ClaudeSessionController c3 = new ClaudeSessionController(m3, () -> planScreen);
 
         m3.setWorkingDirectory(new java.io.File("/tmp/test3"));
-        m3.setEditMode("default");
+        m3.setEditMode(EditMode.DEFAULT);
         m3.setLifecycle(SessionLifecycle.WORKING);
 
         java.lang.reflect.Field f =
@@ -186,7 +187,7 @@ class ClaudeSessionControllerTest {
 
         c3.pollScreenState();
 
-        assertEquals("plan", m3.getEditMode(),
+        assertEquals(EditMode.PLAN, m3.getEditMode(),
                 "plan mode must be detected even during WORKING when text is visible");
     }
 
@@ -544,7 +545,7 @@ class ClaudeSessionControllerTest {
                 "\u276F Ask anything...",
                 "────────────────────────────────────────"
         );
-        java.util.Optional<String> result = detector.detectEditMode(idleDefaultScreen);
+        java.util.Optional<io.github.nbclaudecodegui.model.EditMode> result = detector.detectEditMode(idleDefaultScreen);
         // detectEditMode returns empty for idle default screen (no "plan mode" / "accept edits" /
         // "  esc to interrupt" present).  sendShiftTabsUntilMode must treat this as "default".
         assertTrue(result.isEmpty(),
@@ -624,7 +625,7 @@ class ClaudeSessionControllerTest {
     private static class NoOpListener
             implements ClaudeSessionModel.ClaudeSessionModelListener {
         @Override public void onLifecycleChanged(SessionLifecycle state) {}
-        @Override public void onEditModeChanged(String mode) {}
+        @Override public void onEditModeChanged(io.github.nbclaudecodegui.model.EditMode mode) {}
         @Override public void onModelListChanged(List<String> models, int selectedIdx) {}
         @Override public void onChoiceMenuChanged(io.github.nbclaudecodegui.model.ChoiceMenuModel menu) {}
         @Override public void onWorkingDirectoryChanged(java.io.File dir) {}
