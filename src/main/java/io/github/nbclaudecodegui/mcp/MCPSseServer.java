@@ -98,11 +98,17 @@ public class MCPSseServer {
             ctx.setContextPath("/");
             ctx.addServlet(new ServletHolder(new SseServlet()), "/sse");
             ctx.addServlet(new ServletHolder(new MessagesServlet()), "/messages");
-            ctx.addServlet(new ServletHolder(new HookServlet()), "/hook");
+            ServletHolder hookHolder = new ServletHolder(new HookServlet());
+            hookHolder.getRegistration().setAsyncSupported(true);
+            ctx.addServlet(hookHolder, "/hook");
             ctx.addServlet(new ServletHolder(new StopServlet()), "/stop");
             ctx.addServlet(new ServletHolder(new PermissionRequestServlet()), "/permission-request");
 
             server.setHandler(ctx);
+            server.setRequestLog((request, response) ->
+                LOGGER.log(Level.FINE, "Jetty: {0} {1} → {2}",
+                    new Object[]{request.getMethod(), request.getRequestURI(),
+                                 response.getCommittedMetaData().getStatus()}));
             server.start();
 
             mcpHandler.setBroadcaster(this::broadcast);
@@ -163,13 +169,24 @@ public class MCPSseServer {
     // -------------------------------------------------------------------------
 
     /**
-     * Receives PreToolUse hook calls from Claude Code CLI.
+     * Receives PreToolUse hook calls from Claude Code CLI using Jetty async dispatch.
      *
-     * <p>Blocks until {@link NetBeansMCPHandler#handlePreToolUse} resolves the
-     * {@link CompletableFuture} (user clicks Allow/Deny in the diff view), then
-     * writes the hook decision JSON back to Claude.  The hook timeout is 600 s
-     * (Claude's default); if the future times out we return {@code "ask"} so
-     * Claude falls back to its built-in PTY dialog instead of hanging.
+     * <p>The Jetty thread is released immediately after reading the request body.
+     * {@link jakarta.servlet.AsyncContext} is used to hold the HTTP connection open
+     * while the user decides in the diff-view tab (which may take up to 590 s).
+     * The response is written by {@code future.whenComplete()} on whichever thread
+     * resolves the {@link CompletableFuture} — typically the EDT when the user
+     * clicks Accept/Reject/Cancel in {@code FileDiffTab}.
+     *
+     * <p>This prevents Jetty thread-pool exhaustion: previously each pending diff
+     * dialog blocked one Jetty thread for up to 590 s.  With many concurrent Write
+     * hooks (e.g. claude writing multiple files at once) and a Stop hook firing
+     * after every response, the thread pool could be saturated, causing HTTP 502.
+     *
+     * <p>Async support is enabled on the {@link ServletHolder} in {@link #start}.
+     * The async timeout is set to 590 000 ms (just under Claude's 600 s hook
+     * timeout); on expiry the servlet container calls {@code onTimeout} and we
+     * return {@code "ask"} so Claude falls back to its built-in PTY dialog.
      */
     private class HookServlet extends HttpServlet {
 
@@ -184,25 +201,50 @@ public class MCPSseServer {
             String body = new String(bodyBytes, StandardCharsets.UTF_8);
             LOGGER.log(Level.INFO, "PreToolUse hook received: {0}", body);
 
-            String responseJson;
+            jakarta.servlet.AsyncContext asyncCtx = req.startAsync(req, resp);
+            asyncCtx.setTimeout(590_000L);
+
+            CompletableFuture<String> future;
             try {
-                CompletableFuture<String> future = mcpHandler.handlePreToolUse(body);
-                // Wait up to 590 s — just under Claude's 600 s hook timeout
-                responseJson = future.get(590, TimeUnit.SECONDS);
-            } catch (java.util.concurrent.TimeoutException e) {
-                LOGGER.warning("PreToolUse hook timed out; returning 'ask'");
-                responseJson = ASK_JSON;
+                future = mcpHandler.handlePreToolUse(body);
             } catch (Exception e) {
-                LOGGER.log(Level.SEVERE, "Error handling PreToolUse hook", e);
-                responseJson = ASK_JSON;
+                LOGGER.log(Level.SEVERE, "Error starting PreToolUse hook handler", e);
+                asyncCtx.complete();
+                return;
             }
 
-            byte[] responseBytes = responseJson.getBytes(StandardCharsets.UTF_8);
+            // Timeout: resolve with ASK_JSON so Claude falls back to its PTY dialog
+            asyncCtx.addListener(new jakarta.servlet.AsyncListener() {
+                @Override public void onTimeout(jakarta.servlet.AsyncEvent ev) {
+                    LOGGER.warning("PreToolUse hook async timeout; returning 'ask'");
+                    future.complete(ASK_JSON);
+                }
+                @Override public void onError(jakarta.servlet.AsyncEvent ev) {
+                    future.complete(ASK_JSON);
+                }
+                @Override public void onComplete(jakarta.servlet.AsyncEvent ev) {}
+                @Override public void onStartAsync(jakarta.servlet.AsyncEvent ev) {}
+            });
 
-            resp.setStatus(HttpServletResponse.SC_OK);
-            resp.setContentType("application/json");
-            resp.setContentLength(responseBytes.length);
-            resp.getOutputStream().write(responseBytes);
+            future.whenComplete((responseJson, ex) -> {
+                if (ex != null || responseJson == null) {
+                    responseJson = ASK_JSON;
+                }
+                try {
+                    HttpServletResponse r = (HttpServletResponse) asyncCtx.getResponse();
+                    byte[] bytes = responseJson.getBytes(StandardCharsets.UTF_8);
+                    r.setStatus(HttpServletResponse.SC_OK);
+                    r.setContentType("application/json");
+                    r.setContentLength(bytes.length);
+                    r.getOutputStream().write(bytes);
+                    r.getOutputStream().flush();
+                } catch (IOException e) {
+                    LOGGER.log(Level.WARNING, "Error writing async hook response", e);
+                } finally {
+                    asyncCtx.complete();
+                }
+            });
+            // Jetty thread is released here — no blocking
         }
 
     }
@@ -226,6 +268,7 @@ public class MCPSseServer {
             resp.setStatus(HttpServletResponse.SC_OK);
             resp.setContentType("application/json");
             resp.getOutputStream().write("{}".getBytes(StandardCharsets.UTF_8));
+            resp.getOutputStream().flush();
         }
     }
 
@@ -245,6 +288,7 @@ public class MCPSseServer {
             resp.setStatus(HttpServletResponse.SC_OK);
             resp.setContentType("application/json");
             resp.getOutputStream().write("{}".getBytes(StandardCharsets.UTF_8));
+            resp.getOutputStream().flush();
         }
     }
 
