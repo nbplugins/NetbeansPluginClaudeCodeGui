@@ -21,12 +21,15 @@ public final class ChoiceMenuModel {
      * below the label — present when Claude renders a description line under the option.
      * {@code checked} is set when the option has a checked checkbox marker ({@code [x]}).
      * {@code hasCheckbox} is set when the option has any checkbox marker ({@code [ ]} or {@code [x]}).
+     * {@code hasTextInput} is set when the option requires free-text entry, detected by a
+     * {@code "shift+tab to approve with this feedback"} hint line below the option.
      *
-     * @param display     user-facing label shown in the menu
-     * @param response    string sent back to Claude when this option is selected
-     * @param description optional subtitle shown below the label; may be {@code null}
-     * @param checked     whether the checkbox is pre-checked
-     * @param hasCheckbox whether the option has a checkbox marker at all
+     * @param display      user-facing label shown in the menu
+     * @param response     string sent back to Claude when this option is selected
+     * @param description  optional subtitle shown below the label; may be {@code null}
+     * @param checked      whether the checkbox is pre-checked
+     * @param hasCheckbox  whether the option has a checkbox marker at all
+     * @param hasTextInput whether the option expects free-text input (submitted with \r)
      */
     public record Option(
             @JsonProperty("display") String display,
@@ -36,7 +39,9 @@ public final class ChoiceMenuModel {
             @JsonInclude(JsonInclude.Include.NON_DEFAULT)
             @JsonProperty("checked") boolean checked,
             @JsonInclude(JsonInclude.Include.NON_DEFAULT)
-            @JsonProperty("hasCheckbox") boolean hasCheckbox) {
+            @JsonProperty("hasCheckbox") boolean hasCheckbox,
+            @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+            @JsonProperty("hasTextInput") boolean hasTextInput) {
 
         /** Jackson deserialization constructor. */
         @JsonCreator
@@ -44,28 +49,28 @@ public final class ChoiceMenuModel {
         }
 
         /**
-         * Convenience constructor without description, checked or hasCheckbox state.
+         * Convenience constructor without description, checked, hasCheckbox, or hasTextInput.
          *
          * @param display  user-facing label
          * @param response string sent back to Claude
          */
         public Option(String display, String response) {
-            this(display, response, null, false, false);
+            this(display, response, null, false, false, false);
         }
 
         /**
-         * Convenience constructor without checked or hasCheckbox state.
+         * Convenience constructor without checked, hasCheckbox, or hasTextInput.
          *
          * @param display     user-facing label
          * @param response    string sent back to Claude
          * @param description optional subtitle; may be {@code null}
          */
         public Option(String display, String response, String description) {
-            this(display, response, description, false, false);
+            this(display, response, description, false, false, false);
         }
 
         /**
-         * Convenience constructor without hasCheckbox state.
+         * Convenience constructor without hasCheckbox or hasTextInput.
          *
          * @param display     user-facing label
          * @param response    string sent back to Claude
@@ -73,7 +78,21 @@ public final class ChoiceMenuModel {
          * @param checked     whether the checkbox is pre-checked
          */
         public Option(String display, String response, String description, boolean checked) {
-            this(display, response, description, checked, false);
+            this(display, response, description, checked, false, false);
+        }
+
+        /**
+         * Convenience constructor without hasTextInput.
+         *
+         * @param display     user-facing label
+         * @param response    string sent back to Claude
+         * @param description optional subtitle; may be {@code null}
+         * @param checked     whether the checkbox is pre-checked
+         * @param hasCheckbox whether the option has a checkbox marker
+         */
+        public Option(String display, String response, String description, boolean checked,
+                      boolean hasCheckbox) {
+            this(display, response, description, checked, hasCheckbox, false);
         }
     }
 

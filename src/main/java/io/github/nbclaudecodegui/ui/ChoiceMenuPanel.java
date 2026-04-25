@@ -581,7 +581,7 @@ public final class ChoiceMenuPanel extends JPanel {
      * (display text starts with "type", case-insensitive).
      */
     private static boolean isTypeInputOption(ChoiceMenuModel.Option opt) {
-        return opt.display().trim().toLowerCase().startsWith("type");
+        return opt.display().trim().toLowerCase().startsWith("type") || opt.hasTextInput();
     }
 
     /** Shows {@code hint} as greyed-out placeholder text; clears on focus, restores on blur if empty. */
