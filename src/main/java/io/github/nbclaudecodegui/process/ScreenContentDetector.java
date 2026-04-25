@@ -175,8 +175,17 @@ public final class ScreenContentDetector {
                 String line = raw.trim();
                 if (line.isBlank()) break;
                 if (OPTION_LINE.matcher(line).matches()) break;
-                // Skip keyboard-hint lines
-                if (isHintLine(line)) break;
+                // Skip keyboard-hint lines; "shift+tab to approve" also marks the option
+                // as requiring free-text input (hasTextInput=true).
+                if (isHintLine(line)) {
+                    if (line.toLowerCase().startsWith("shift+tab")) {
+                        ChoiceMenuModel.Option prev = options.get(oi);
+                        options.set(oi, new ChoiceMenuModel.Option(
+                                prev.display(), prev.response(), prev.description(),
+                                prev.checked(), prev.hasCheckbox(), true));
+                    }
+                    break;
+                }
                 // Skip separator lines
                 if (isSeparatorLine(line)) break;
                 // Description must be indented (at least 1 leading space) and not too deeply
@@ -741,7 +750,8 @@ public final class ScreenContentDetector {
         // or start with typical shortcut keywords.
         if (trimmed.contains("\u00B7")) return true; // ·
         String lower = trimmed.toLowerCase();
-        return lower.startsWith("esc ") || lower.startsWith("enter to") || lower.startsWith("tab to");
+        return lower.startsWith("esc ") || lower.startsWith("enter to") || lower.startsWith("tab to")
+                || lower.startsWith("shift+tab");
     }
 
     /**
