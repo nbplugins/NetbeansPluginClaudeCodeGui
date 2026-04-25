@@ -1,0 +1,10 @@
+{
+  "text": "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+  "options": [
+    {"display": "Yes, auto-accept edits", "response": "1"},
+    {"display": "Yes, manually approve edits", "response": "2"},
+    {"display": "No, refine with Ultraplan on Claude Code on the web", "response": "3"},
+    {"display": "Tell Claude what to change", "response": "4", "hasTextInput": true}
+  ],
+  "defaultOptionIndex": 0
+}
