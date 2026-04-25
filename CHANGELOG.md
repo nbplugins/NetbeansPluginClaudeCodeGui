@@ -1,4 +1,4 @@
-# 0.21
+# 0.21.62 (2026-04-25)
 
 - Removed Claude indicator from the NetBeans status bar (duplicated the stop button in the session tab)
 - Fixed diff dialog appearing as a detached tab with disabled Cancel/Accept-All buttons when Claude edits a file outside its current working directory (e.g. after cd into a subdirectory)
