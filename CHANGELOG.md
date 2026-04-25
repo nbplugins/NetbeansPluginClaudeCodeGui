@@ -1,3 +1,4 @@
+- Fixed diff dialog appearing as a detached tab with disabled Cancel/Accept-All buttons when Claude edits a file outside its current working directory (e.g. after cd into a subdirectory)
 - Fixed choice menu not recognizing the Ultraplan "Tell Claude what to change" option as a text input field
 - Added "Bypass Permissions" edit mode: automatically detected when Claude is launched with `--dangerously-skip-permissions`; auto-allows all file edits without showing a diff dialog
 - Fixed PreToolUse and Stop hook HTTP 502 errors (regression in claude-code 2.1.118)
