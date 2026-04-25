@@ -182,6 +182,77 @@ class FileDiffOpenerTest {
         assertEquals(200, split.getDividerLocation());
     }
 
+    // --- session tab lookup for hook case ---
+    // The lookup condition is: isFileUnderDirectory(hookCwd, tabWorkingDir)
+    // i.e. hookCwd starts with tabWorkingDir — tab's dir is ancestor of hookCwd.
+
+    @Test
+    void sessionTabMatchWhenHookCwdEqualsTabDir() {
+        // hookCwd == tabWorkingDir: should match (equals is ancestor-or-equal)
+        String tabDir  = "/home/user/project";
+        String hookCwd = "/home/user/project";
+        assertTrue(FileDiffOpener.isFileUnderDirectory(hookCwd, tabDir),
+                "Tab dir equals hookCwd — must match");
+    }
+
+    @Test
+    void sessionTabMatchWhenHookCwdIsSubdirOfTabDir() {
+        // Bug case: Claude cd'd into a subdir; tab was opened at project root
+        String tabDir  = "/home/user/project";
+        String hookCwd = "/home/user/project/claude-launch-tests";
+        assertTrue(FileDiffOpener.isFileUnderDirectory(hookCwd, tabDir),
+                "hookCwd is a subdir of tabDir — must match");
+    }
+
+    @Test
+    void sessionTabNoMatchWhenHookCwdUnrelated() {
+        String tabDir  = "/home/user/project";
+        String hookCwd = "/home/user/other";
+        assertFalse(FileDiffOpener.isFileUnderDirectory(hookCwd, tabDir),
+                "hookCwd is unrelated to tabDir — must not match");
+    }
+
+    @Test
+    void sessionTabNoMatchWhenHookCwdIsParentOfTabDir() {
+        // tabDir must be an ancestor of hookCwd, not the other way around
+        String tabDir  = "/home/user/project/subdir";
+        String hookCwd = "/home/user/project";
+        assertFalse(FileDiffOpener.isFileUnderDirectory(hookCwd, tabDir),
+                "tabDir is a child of hookCwd — must not match");
+    }
+
+    // --- outsideProject calculation after fix ---
+    // After fix: outsideProject uses tabWorkingDir (not hookCwd) as project root.
+
+    @Test
+    void fileInsideTabDirNotOutsideProject() {
+        // file is under tabWorkingDir → not outside project
+        String tabDir  = "/home/user/project";
+        String filePath = "/home/user/project/src/Foo.java";
+        assertFalse(!FileDiffOpener.isFileUnderDirectory(filePath, tabDir));
+    }
+
+    @Test
+    void fileInsideTabDirButOutsideHookCwd() {
+        // Bug case: file under tabDir but not under hookCwd (subdir).
+        // After fix we check against tabDir, so no warning.
+        String tabDir   = "/home/user/project";
+        String hookCwd  = "/home/user/project/claude-launch-tests";
+        String filePath = "/home/user/project/src/Foo.java";
+        boolean outsideHookCwd  = !FileDiffOpener.isFileUnderDirectory(filePath, hookCwd);
+        boolean outsideTabDir   = !FileDiffOpener.isFileUnderDirectory(filePath, tabDir);
+        assertTrue(outsideHookCwd,  "file IS outside hookCwd (subdir) — old logic would warn");
+        assertFalse(outsideTabDir,  "file is NOT outside tabDir (project root) — new logic: no warn");
+    }
+
+    @Test
+    void fileTrulyOutsideProject() {
+        String tabDir  = "/home/user/project";
+        String filePath = "/home/other/file.java";
+        assertTrue(!FileDiffOpener.isFileUnderDirectory(filePath, tabDir),
+                "file outside project root — should warn");
+    }
+
     // --- helpers ---
 
     private static JPopupMenu menuWithCopy() {
