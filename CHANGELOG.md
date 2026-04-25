@@ -1,3 +1,5 @@
+# 0.21
+
 - Removed Claude indicator from the NetBeans status bar (duplicated the stop button in the session tab)
 - Fixed diff dialog appearing as a detached tab with disabled Cancel/Accept-All buttons when Claude edits a file outside its current working directory (e.g. after cd into a subdirectory)
 - Fixed choice menu not recognizing the Ultraplan "Tell Claude what to change" option as a text input field
