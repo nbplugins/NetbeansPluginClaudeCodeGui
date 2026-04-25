@@ -523,7 +523,6 @@ public class NetBeansMCPHandler {
             String tabName = resolveUniqueHookTabName("Diff: " + new File(filePath).getName());
             CompletableFuture<String> future = DiffTabTracker.registerHookFuture(tabName);
 
-            // Pass cwd as confirmedDir so FileDiffTab can warn if file is outside this project
             FileDiffOpener.open(filePath, before, after, tabName, cwd,
             () -> DiffTabTracker.resolveHook(tabName, hookAllowJson()),
             reason -> DiffTabTracker.resolveHook(tabName, hookDenyJson(reason)),

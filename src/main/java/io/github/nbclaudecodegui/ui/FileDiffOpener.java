@@ -69,10 +69,11 @@ public final class FileDiffOpener {
      * @param filePath     path of the file being changed (used for tab title and session lookup)
      * @param before       file content before the change
      * @param after        file content after the change
-     * @param tabName      display name of the diff tab
-     * @param confirmedDir if non-null, the session's working directory (hook case); the warning
-     *                     is shown when the file is outside this directory. If null (MCP case),
-     *                     the warning is shown when the file is outside all open sessions.
+     * @param tabName  display name of the diff tab
+     * @param hookCwd  if non-null, Claude's current working directory at hook time (hook case).
+     *                 Used to locate the session tab (whose startup dir may be a parent of hookCwd)
+     *                 and to warn when the file lies outside the session's project root.
+     *                 If null (MCP case), the warning is shown when the file is outside all open sessions.
      * @param onAccept     called when the user clicks Accept
      * @param onDecline    called with the (possibly empty) reason when the user clicks Decline
      * @param onCancel     called when the user clicks Cancel (caller should also send Ctrl+C)
@@ -80,20 +81,41 @@ public final class FileDiffOpener {
      */
     public static void open(
             String filePath, String before, String after, String tabName,
-            String confirmedDir,
+            String hookCwd,
             Runnable onAccept,
             Consumer<String> onDecline,
             Runnable onCancel,
             Runnable onClose) {
 
         SwingUtilities.invokeLater(() -> {
+            // Look up the session tab first so its startup dir can be used as the project root.
+            // hookCwd != null (hook case): match tab whose startup dir is an ancestor of hookCwd.
+            //   Claude may have cd'd into a subdirectory; the tab was opened at the project root.
+            // hookCwd == null (MCP case): match tab whose startup dir contains filePath.
+            final ClaudeSessionTab sessionTab = WindowManager.getDefault().getRegistry().getOpened().stream()
+                    .map(tc -> {
+                        if (!(tc instanceof ClaudeSessionTab s)) return null;
+                        File dir = s.getWorkingDirectory();
+                        if (dir == null) return null;
+                        String abs = dir.getAbsolutePath();
+                        return (hookCwd != null ? isFileUnderDirectory(hookCwd, abs)
+                                : isFileUnderDirectory(filePath, abs)) ? s : null;
+                    })
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+
             // Determine if the file is outside the relevant project directory.
-            // confirmedDir != null (hook): check against that specific directory.
-            // confirmedDir == null (MCP): check against all open sessions.
+            // hookCwd != null (hook): use the session tab's startup dir as the project root
+            //   (falls back to hookCwd if no tab found).
+            // hookCwd == null (MCP): check against all open sessions.
             final boolean outsideProject;
             final String outsideWarning;
-            if (confirmedDir != null) {
-                outsideProject = !isFileUnderDirectory(filePath, confirmedDir);
+            if (hookCwd != null) {
+                String projectRoot = (sessionTab != null && sessionTab.getWorkingDirectory() != null)
+                        ? sessionTab.getWorkingDirectory().getAbsolutePath()
+                        : hookCwd;
+                outsideProject = !isFileUnderDirectory(filePath, projectRoot);
                 outsideWarning = "⚠ This file is outside the current project";
             } else {
                 boolean insideAny = false;
@@ -142,22 +164,6 @@ public final class FileDiffOpener {
             // Flag set to true once a button is clicked — prevents onClose from
             // firing again when the diff is closed.
             AtomicBoolean decided = new AtomicBoolean(false);
-
-            // Look up the session whose working directory matches the file being edited.
-            // confirmedDir != null (hook case): use exact directory match.
-            // confirmedDir == null (MCP case): fall back to isFileUnderDirectory.
-            final ClaudeSessionTab sessionTab = WindowManager.getDefault().getRegistry().getOpened().stream()
-                    .map(tc -> {
-                        if (!(tc instanceof ClaudeSessionTab s)) return null;
-                        File dir = s.getWorkingDirectory();
-                        if (dir == null) return null;
-                        String abs = dir.getAbsolutePath();
-                        return (confirmedDir != null ? abs.equals(confirmedDir)
-                                : isFileUnderDirectory(filePath, abs)) ? s : null;
-                    })
-                    .filter(Objects::nonNull)
-                    .findFirst()
-                    .orElse(null);
 
             String workingDir = sessionTab != null && sessionTab.getWorkingDirectory() != null
                     ? sessionTab.getWorkingDirectory().getAbsolutePath()
