@@ -1,18 +1,25 @@
+- Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
+- Added a setting to control whether the choice menu grabs keyboard focus (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/20)
+- Added a global setting to choose the default dock position of the Claude Code session tab (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/24)
+
+# 0.21.62 (2026-04-25)
+
 - Removed Claude indicator from the NetBeans status bar (duplicated the stop button in the session tab)
 - Fixed diff dialog appearing as a detached tab with disabled Cancel/Accept-All buttons when Claude edits a file outside its current working directory (e.g. after cd into a subdirectory)
 - Fixed choice menu not recognizing the Ultraplan "Tell Claude what to change" option as a text input field
 - Added "Bypass Permissions" edit mode: automatically detected when Claude is launched with `--dangerously-skip-permissions`; auto-allows all file edits without showing a diff dialog
 - Fixed PreToolUse and Stop hook HTTP 502 errors (regression in claude-code 2.1.118)
 - Fixed toolbar button focusing an existing session tab instead of opening a new one when all open tabs have active sessions
-- Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
+
+# 0.21.54 (2026-04-22)
+
 - Fixed prompt area being collapsible to zero height by dragging the divider
 - Fixed terminal scrolling to the beginning and locking when a choice/confirmation menu appears (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/22)
-- Added a setting to control whether the choice menu grabs keyboard focus (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/20)
-- Added a global setting to choose the default dock position of the Claude Code session tab (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/24)
 
 # 0.21.50 (2026-04-19)
 
 - Fixed diff panel appearing at wrong height (nearly invisible) after Reset Windows or on first use
+- Fixed second diff in the same Claude session being invisible (stale card accumulation)
 - Fixed terminal scrolling to the beginning when a choice menu or diff panel appears (regression since 0.20.20)
 
 # 0.21.46 (2026-04-17)
