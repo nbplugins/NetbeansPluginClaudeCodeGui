@@ -1,3 +1,4 @@
+- Added terminal font and font size settings (Tools → Options → Claude Code → General); defaults to auto-detection preferring Adwaita Mono for full Unicode coverage of Claude Code TUI symbols (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/18)
 - Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
 - Added a setting to control whether the choice menu grabs keyboard focus (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/20)
 - Added a global setting to choose the default dock position of the Claude Code session tab (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/24)

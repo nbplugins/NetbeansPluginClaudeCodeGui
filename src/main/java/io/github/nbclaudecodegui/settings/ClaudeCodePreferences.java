@@ -1,6 +1,7 @@
 package io.github.nbclaudecodegui.settings;
 
 import io.github.nbclaudecodegui.model.SessionMode;
+import java.awt.Font;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -648,6 +649,99 @@ public final class ClaudeCodePreferences {
                 .put(KEY_FILE_DIFF_DOCK_MODE,
                         mode != null ? mode.getModeName()
                                      : DEFAULT_FILE_DIFF_DOCK_MODE.getModeName());
+    }
+
+    // -------------------------------------------------------------------------
+    // terminalFontName / terminalFontSize
+    // -------------------------------------------------------------------------
+
+    /** Preference key: terminal font family name. */
+    public static final String KEY_TERMINAL_FONT_NAME = "terminalFontName";
+    /**
+     * Default: empty string — auto-detect the best available font.
+     * When empty, {@code NetBeansSettingsProvider} walks a priority list
+     * (Adwaita Mono → Consolas → Menlo → DejaVu Sans Mono → Monospaced)
+     * and returns the first installed font.
+     */
+    public static final String DEFAULT_TERMINAL_FONT_NAME = "";
+
+    /** Preference key: terminal font size in points. */
+    public static final String KEY_TERMINAL_FONT_SIZE = "terminalFontSize";
+    /** Default terminal font size (14 pt, matching JediTerm's hardcoded default). */
+    public static final int DEFAULT_TERMINAL_FONT_SIZE = 14;
+
+    /**
+     * Returns the configured terminal font family name.
+     *
+     * @return font name, or {@link #DEFAULT_TERMINAL_FONT_NAME} (empty) for auto-detection
+     */
+    public static String getTerminalFontName() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_TERMINAL_FONT_NAME, DEFAULT_TERMINAL_FONT_NAME);
+    }
+
+    /**
+     * Persists the terminal font family name.
+     *
+     * @param v font name; {@code null} or blank stores {@link #DEFAULT_TERMINAL_FONT_NAME}
+     *          which triggers auto-detection
+     */
+    public static void setTerminalFontName(String v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_TERMINAL_FONT_NAME, v == null ? "" : v.trim());
+    }
+
+    /**
+     * Returns the configured terminal font size in points.
+     *
+     * @return font size in the range [8, 72]
+     */
+    public static int getTerminalFontSize() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_FONT_SIZE);
+    }
+
+    /**
+     * Persists the terminal font size.
+     *
+     * @param v font size in points; clamped to [8, 72]
+     */
+    public static void setTerminalFontSize(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_TERMINAL_FONT_SIZE, Math.max(8, Math.min(72, v)));
+    }
+
+    /**
+     * Font candidates tried in order when the terminal font preference is empty (auto-detect).
+     * The first font whose AWT family does not fall back to {@code "Dialog"} is used.
+     */
+    public static final String[] TERMINAL_FONT_CANDIDATES = {
+        "Adwaita Mono",     // best Unicode coverage for Claude Code TUI symbols
+        "Consolas",         // Windows default
+        "Menlo",            // macOS default
+        "DejaVu Sans Mono",
+        "Monospaced"        // AWT logical font — always available
+    };
+
+    /**
+     * Returns the terminal font family name that will actually be used.
+     * When the user preference is empty (auto-detect), walks {@link #TERMINAL_FONT_CANDIDATES}
+     * and returns the first installed font name.
+     *
+     * @return resolved font family name; never empty
+     */
+    public static String resolveTerminalFontName() {
+        String name = getTerminalFontName();
+        if (!name.isEmpty()) {
+            return name;
+        }
+        for (String candidate : TERMINAL_FONT_CANDIDATES) {
+            Font f = new Font(candidate, Font.PLAIN, 12);
+            if (!f.getFamily().equals("Dialog")) {
+                return candidate;
+            }
+        }
+        return "Monospaced";
     }
 
     // -------------------------------------------------------------------------

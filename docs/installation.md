@@ -10,6 +10,8 @@
 
 > **Note:** The plugin has been tested with Claude Code CLI 2.1.78 and newer. Older versions may not work correctly.
 
+> **Terminal font (recommended):** The plugin auto-selects the best available monospace font. For full Unicode coverage of Claude Code TUI symbols (spinner ◐, prompt marker ⏵, box-drawing characters), install **Adwaita Mono**. On Linux it is typically pre-installed as part of the GNOME desktop. On macOS and Windows, download it from the [GNOME GitLab release page](https://gitlab.gnome.org/GNOME/adwaita-fonts/-/releases). The active font can be changed in **Tools → Options → Claude Code → General**.
+
 The `claude` executable must be on your system `PATH` **or** its absolute path must be configured in **Tools → Options → Claude Code → General → Claude CLI path** after installing the plugin.
 
 ---

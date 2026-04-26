@@ -346,6 +346,18 @@ Open **Tools → Options → Claude Code** in NetBeans.
 | Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
 | Markdown preview dock position | Right side | Where the Markdown Preview tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
 | Choice menu focus | Grab focus | Controls whether the choice menu panel grabs keyboard focus when it appears. Choices: Grab focus, Show without grabbing focus, Hide menu. |
+| Terminal font | Auto | Font used in the embedded terminal. Click **Choose…** to open the font picker. The label shows the resolved font name (e.g. `Adwaita Mono, 14 (Auto)` when auto-detection is active, or `Monospaced, 14` when set explicitly). |
+
+#### Terminal font picker
+
+The **Choose…** button opens a font picker dialog:
+
+- **Font list** — all installed font families. The first item, **Auto (detect best available)**, lets the plugin choose automatically.
+- **Show monospaced only** checkbox — filters the list to monospace fonts (checked by default).
+- **Size spinner** — font size, 8–72 pt.
+- **Preview** — renders `AaBbCc 0O1Il → ⏵ ◐` in the selected font and size, so you can verify that Claude Code TUI symbols (spinner, prompt marker) are covered.
+
+When **Auto** is selected, the plugin picks the first installed font from this priority list: **Adwaita Mono**, Consolas, Menlo, DejaVu Sans Mono, Monospaced. Adwaita Mono has the broadest Unicode coverage for Claude Code TUI symbols; on Linux GNOME desktops it is usually pre-installed.
 
 ### Advanced tab
 

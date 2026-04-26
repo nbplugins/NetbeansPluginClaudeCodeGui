@@ -4,14 +4,35 @@ import com.jediterm.terminal.TerminalColor;
 import com.jediterm.terminal.TextStyle;
 import com.jediterm.terminal.emulator.ColorPaletteImpl;
 import com.jediterm.terminal.ui.settings.DefaultSettingsProvider;
+import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import java.awt.Color;
+import java.awt.Font;
 import javax.swing.UIManager;
 
 /**
- * JediTerm settings provider that adapts the terminal foreground/background
- * and selection colors to the current NetBeans IDE Look &amp; Feel theme.
+ * JediTerm settings provider that adapts the terminal colors and font to the
+ * current NetBeans IDE Look &amp; Feel theme and user preferences.
+ *
+ * <p><b>Font selection:</b> JediTerm uses a single {@link Font} with no
+ * per-glyph fallback, so the chosen font must cover all Unicode characters
+ * used by the Claude Code TUI (U+23F5 prompt marker, U+25D0 spinner,
+ * box-drawing, dingbats). Font resolution is delegated to
+ * {@link io.github.nbclaudecodegui.settings.ClaudeCodePreferences#resolveTerminalFontName()},
+ * which prefers Adwaita Mono — the only widely-available FOSS monospace font
+ * with full coverage of those characters, pre-installed on most Linux GNOME desktops.
  */
 final class NetBeansSettingsProvider extends DefaultSettingsProvider {
+
+    @Override
+    public float getTerminalFontSize() {
+        return ClaudeCodePreferences.getTerminalFontSize();
+    }
+
+    @Override
+    public Font getTerminalFont() {
+        return new Font(ClaudeCodePreferences.resolveTerminalFontName(),
+                Font.PLAIN, (int) getTerminalFontSize());
+    }
 
     @Override
     public TerminalColor getDefaultForeground() {

@@ -23,6 +23,7 @@ import javax.swing.JSpinner;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.SpinnerNumberModel;
+import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
 
 /**
@@ -89,6 +90,14 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private javax.swing.JLabel fileDiffDockModeLabel;
     /** Dropdown for the choice menu focus behavior. */
     private javax.swing.JComboBox<String> choiceMenuFocusCombo;
+    /** Label showing the currently selected terminal font (e.g. "Adwaita Mono, 14"). */
+    private JLabel terminalFontLabel;
+    /** Button that opens {@link TerminalFontChooserDialog}. */
+    private JButton terminalFontButton;
+    /** Pending terminal font name (not yet saved to preferences); "" = Auto. */
+    private String pendingFontName = ClaudeCodePreferences.DEFAULT_TERMINAL_FONT_NAME;
+    /** Pending terminal font size (not yet saved to preferences). */
+    private int pendingFontSize = ClaudeCodePreferences.DEFAULT_TERMINAL_FONT_SIZE;
     /** Spinner for the hang-detection timeout in seconds (0 = disabled). */
     private JSpinner hangTimeoutSpinner;
     /** Checkbox to enable MCP integration (pass --mcp-config flag). */
@@ -234,6 +243,24 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         choiceMenuFocusCombo = new javax.swing.JComboBox<>(CHOICE_MENU_FOCUS_LABELS);
         choiceMenuFocusCombo.setToolTipText("Controls whether the choice menu grabs keyboard focus when it appears");
         form.add(choiceMenuFocusCombo, gbc(1, row, false));
+        row++;
+
+        // --- terminal font ---
+        form.add(new JLabel("Terminal font:"), gbc(0, row, false));
+        terminalFontLabel = new JLabel();
+        form.add(terminalFontLabel, gbc(1, row, false));
+        terminalFontButton = new JButton("Choose…");
+        terminalFontButton.addActionListener(e -> {
+            TerminalFontChooserDialog dlg = new TerminalFontChooserDialog(
+                    SwingUtilities.getWindowAncestor(this),
+                    pendingFontName,
+                    pendingFontSize);
+            dlg.setVisible(true);
+            if (dlg.isConfirmed()) {
+                updateTerminalFontLabel(dlg.getFontName(), dlg.getFontSize());
+            }
+        });
+        form.add(terminalFontButton, gbc(2, row, false));
         row++;
 
         // spacer
@@ -444,6 +471,9 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         syncExclusion(sendVal, true);
         syncExclusion(newlineVal, false);
 
+        updateTerminalFontLabel(ClaudeCodePreferences.getTerminalFontName(),
+                ClaudeCodePreferences.getTerminalFontSize());
+
         profilesPanel.load();
     }
 
@@ -477,6 +507,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         ClaudeCodePreferences.setMcpEnabled(mcpEnabledCheckBox.isSelected());
         ClaudeCodePreferences.setSendKey(selectedValue(sendRadios));
         ClaudeCodePreferences.setNewlineKey(selectedValue(newlineRadios));
+        ClaudeCodePreferences.setTerminalFontName(pendingFontName);
+        ClaudeCodePreferences.setTerminalFontSize(pendingFontSize);
 
         profilesPanel.store();
     }
@@ -493,6 +525,16 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     // -------------------------------------------------------------------------
     // helpers
     // -------------------------------------------------------------------------
+
+    private void updateTerminalFontLabel(String name, int size) {
+        pendingFontName = name == null ? "" : name;
+        pendingFontSize = size;
+        if (pendingFontName.isEmpty()) {
+            terminalFontLabel.setText(ClaudeCodePreferences.resolveTerminalFontName() + ", " + size + " (Auto)");
+        } else {
+            terminalFontLabel.setText(pendingFontName + ", " + size);
+        }
+    }
 
     private static void selectRadio(Map<String, JRadioButton> radios,
             ButtonGroup group, String value) {

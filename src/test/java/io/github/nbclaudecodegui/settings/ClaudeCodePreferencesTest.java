@@ -21,6 +21,8 @@ class ClaudeCodePreferencesTest {
         ClaudeCodePreferences.setSessionDockMode(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
         ClaudeCodePreferences.setMarkdownPreviewDockMode(ClaudeCodePreferences.DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE);
         ClaudeCodePreferences.setFileDiffDockMode(ClaudeCodePreferences.DEFAULT_FILE_DIFF_DOCK_MODE);
+        ClaudeCodePreferences.setTerminalFontName(ClaudeCodePreferences.DEFAULT_TERMINAL_FONT_NAME);
+        ClaudeCodePreferences.setTerminalFontSize(ClaudeCodePreferences.DEFAULT_TERMINAL_FONT_SIZE);
     }
 
     @Test
@@ -154,5 +156,47 @@ class ClaudeCodePreferencesTest {
     void fileDiffDockModeNullFallsBackToDefault() {
         ClaudeCodePreferences.setFileDiffDockMode(null);
         assertEquals(DockMode.EDITOR, ClaudeCodePreferences.getFileDiffDockMode());
+    }
+
+    @Test
+    void terminalFontNameDefaultIsEmpty() {
+        assertEquals("", ClaudeCodePreferences.DEFAULT_TERMINAL_FONT_NAME);
+        assertEquals("", ClaudeCodePreferences.getTerminalFontName());
+    }
+
+    @Test
+    void terminalFontNameRoundTrip() {
+        ClaudeCodePreferences.setTerminalFontName("Adwaita Mono");
+        assertEquals("Adwaita Mono", ClaudeCodePreferences.getTerminalFontName());
+    }
+
+    @Test
+    void terminalFontNameNullStoredAsEmpty() {
+        ClaudeCodePreferences.setTerminalFontName(null);
+        assertEquals("", ClaudeCodePreferences.getTerminalFontName());
+    }
+
+    @Test
+    void terminalFontSizeDefaultIs14() {
+        assertEquals(14, ClaudeCodePreferences.DEFAULT_TERMINAL_FONT_SIZE);
+        assertEquals(14, ClaudeCodePreferences.getTerminalFontSize());
+    }
+
+    @Test
+    void terminalFontSizeRoundTrip() {
+        ClaudeCodePreferences.setTerminalFontSize(20);
+        assertEquals(20, ClaudeCodePreferences.getTerminalFontSize());
+    }
+
+    @Test
+    void terminalFontSizeClampedToMin() {
+        ClaudeCodePreferences.setTerminalFontSize(5);
+        assertEquals(8, ClaudeCodePreferences.getTerminalFontSize());
+    }
+
+    @Test
+    void terminalFontSizeClampedToMax() {
+        ClaudeCodePreferences.setTerminalFontSize(100);
+        assertEquals(72, ClaudeCodePreferences.getTerminalFontSize());
     }
 }
