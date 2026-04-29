@@ -619,6 +619,49 @@ class ClaudeSessionControllerTest {
     }
 
     // -------------------------------------------------------------------------
+    // discoverModels deferred when blocking dialog is visible at READY
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression: when Claude starts with --continue/--resume, it may show a
+     * "Resuming session" dialog before the input prompt.  If discoverModels() is
+     * triggered while this dialog is visible, it sends /model but Claude cannot
+     * process it yet (blocked by the dialog).  Discovery times out, the combo
+     * stays unpopulated, and MAX_MODEL_DISCOVERY_ATTEMPTS prevents any retry.
+     *
+     * Fix: pollScreenState must skip discoverModels() while any choice menu is
+     * visible on screen or already shown to the user.
+     */
+    @Test
+    void pollScreenState_doesNotStartDiscoveryWhenBlockingMenuIsPresent() {
+        List<String> blockingMenuScreen = Arrays.asList(
+                "Resuming the full session will consume a substantial portion of your usage limits.",
+                "❯ 1. Resume from full history",
+                "  2. Resume from summary",
+                "Enter to confirm · Esc to cancel"
+        );
+
+        java.util.concurrent.atomic.AtomicInteger discoveryCallCount =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, () -> blockingMenuScreen) {
+            @Override
+            void discoverModels() {
+                discoveryCallCount.incrementAndGet();
+            }
+        };
+
+        m.setLifecycle(SessionLifecycle.READY);
+        c.pollScreenState();
+
+        assertEquals(0, discoveryCallCount.get(),
+                "discoverModels must not be called while a blocking dialog is visible on screen");
+        assertNotNull(m.getActiveChoiceMenu(),
+                "Blocking dialog must be shown to the user while discovery is deferred");
+    }
+
+    // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------
 

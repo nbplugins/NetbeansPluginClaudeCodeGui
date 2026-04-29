@@ -48,7 +48,7 @@ import javax.swing.SwingUtilities;
  *       direct widget references after {@link #startProcess} returns.</li>
  * </ul>
  */
-public final class ClaudeSessionController {
+public class ClaudeSessionController {
 
     // -------------------------------------------------------------------------
     // Fields
@@ -763,7 +763,7 @@ public final class ClaudeSessionController {
      * Retries up to {@value #MAX_MODEL_DISCOVERY_ATTEMPTS} times if the screen
      * returns no models.
      */
-    private void discoverModels() {
+    void discoverModels() {
         if (connector == null || modelComboPopulated || modelDiscoveryInProgress) return;
         if (modelDiscoveryAttempts >= MAX_MODEL_DISCOVERY_ATTEMPTS) return;
         modelComboPopulated = true;
@@ -923,9 +923,16 @@ public final class ClaudeSessionController {
             model.setLifecycle(SessionLifecycle.READY);
         }
 
-        // On first READY: discover models and detect initial edit mode
+        // On first READY: discover models and detect initial edit mode.
+        // Defer discovery while any blocking dialog is visible — e.g. the
+        // "Resuming session" prompt shown on --continue/--resume startup.
+        // Sending /model while Claude is blocked by such a dialog causes the
+        // model menu to appear only after the dialog is dismissed, by which
+        // time discovery has already timed out and given up.
         if (model.getLifecycle() == SessionLifecycle.READY
-                && !modelComboPopulated && !modelDiscoveryInProgress) {
+                && !modelComboPopulated && !modelDiscoveryInProgress
+                && model.getActiveChoiceMenu() == null
+                && screenContentDetector.detectChoiceMenu(lines).isEmpty()) {
             discoverModels();
             detectAndApplyInitialEditMode(lines);
         }

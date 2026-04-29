@@ -1,3 +1,4 @@
+- Fixed model combo not becoming active when a session starts with a blocking dialog (e.g. "Resuming session" prompt on --continue/--resume startup)
 - Improved keyboard navigation in choice menus: arrow keys, Tab, Shift+Tab
 - Added terminal font and font size settings (Tools → Options → Claude Code → General); defaults to auto-detection preferring Adwaita Mono for full Unicode coverage of Claude Code TUI symbols (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/18)
 - Reorganized General and Advanced settings tabs: moved technical settings (hang timeout, MCP port, Enable MCP integration, session list limit, debug mode) to Advanced
