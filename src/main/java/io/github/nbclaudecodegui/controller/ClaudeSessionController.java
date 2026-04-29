@@ -808,7 +808,7 @@ public class ClaudeSessionController {
                 // Scan the rolling PTY line buffer for the /model hint line, which is
                 // shorter and never truncated (e.g. "/model  … (currently anthropic/claude-sonnet-4.6)").
                 String hintCurrentModel = null;
-                Pattern hintPat = Pattern.compile("\\(currently\\s+([\\w/.-]+)\\)");
+                Pattern hintPat = Pattern.compile("\\(currently\\s+([^)]+?)\\s*\\)");
                 synchronized (recentPtyLines) {
                     for (String ptyLine : recentPtyLines) {
                         Matcher hm = hintPat.matcher(ptyLine);
@@ -820,8 +820,8 @@ public class ClaudeSessionController {
                 int selIdx;
                 if (menuOpt.isPresent() && !menuOpt.get().options().isEmpty()) {
                     List<ChoiceMenuModel.Option> opts = menuOpt.get().options();
-                    Pattern descPat = Pattern.compile("(?:\u2714\\s+|\\s{3,})(.+?)(?:\\s*[·\u00b7].*)?$");
-                    Pattern currentlyPat = Pattern.compile("\\(currently\\s+([\\w/.-]+)\\)");
+                    Pattern descPat = Pattern.compile("(?:\u2714\\s+|\\s{2,})(.+?)(?:\\s*[·\u00b7].*)?$");
+                    Pattern currentlyPat = Pattern.compile("\\(currently\\s+([^)]+?)\\s*\\)");
                     models = new ArrayList<>();
                     selIdx = -1;
                     for (int i = 0; i < opts.size(); i++) {

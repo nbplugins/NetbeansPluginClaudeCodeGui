@@ -39,13 +39,13 @@ public class ModelMenuParser {
      */
     public record ModelDiscovery(List<String> models, int currentIndex) {}
 
-    /** Extracts the description part after ✔ or 3+ spaces. */
+    /** Extracts the description part after ✔ or 2+ spaces. */
     private static final Pattern DESC_PAT =
-            Pattern.compile("(?:\u2714\\s+|\\s{3,})(.+)$");
+            Pattern.compile("(?:\u2714\\s+|\\s{2,})(.+)$");
 
     /** Extracts the model id from "(currently X)" in description. */
     private static final Pattern CURRENTLY_PAT =
-            Pattern.compile("\\(currently\\s+([\\w/.-]+)\\)");
+            Pattern.compile("\\(currently\\s+([^)]+?)\\s*\\)");
 
     /** Fallback: "Title Case Word N.M" at the tail of the left part. */
     private static final Pattern VERSION_TAIL_PAT =

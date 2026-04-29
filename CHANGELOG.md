@@ -1,3 +1,4 @@
+- Fixed model name detection for new Claude CLI format where the default item has a long label ("Default (recommended)") with only 2-space alignment, and for model names that include a space (e.g. "Sonnet 4")
 - Fixed model combo not becoming active when a session starts with a blocking dialog (e.g. "Resuming session" prompt on --continue/--resume startup)
 - Improved keyboard navigation in choice menus: arrow keys, Tab, Shift+Tab
 - Added terminal font and font size settings (Tools → Options → Claude Code → General); defaults to auto-detection preferring Adwaita Mono for full Unicode coverage of Claude Code TUI symbols (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/18)

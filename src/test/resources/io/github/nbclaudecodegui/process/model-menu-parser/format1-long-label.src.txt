@@ -1,0 +1,3 @@
+    1. Default (recommended)  Opus 4.7 with 1M context · Most capable for complex work
+    2. Sonnet                 Sonnet 4.6 · Best for everyday tasks
+  ❯ 3. Haiku ✔                Haiku 4.5 · Fastest for quick answers
