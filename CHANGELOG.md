@@ -1,3 +1,5 @@
+- Fixed model discovery failing when Enter was absorbed as a newline in the prompt instead of submitting the /model command (race condition under load)
+
 # 0.22.24 (2026-04-29)
 
 - Fixed model name detection for new Claude CLI format where the default item has a long label ("Default (recommended)") with only 2-space alignment, and for model names that include a space (e.g. "Sonnet 4")

@@ -59,6 +59,9 @@ public class ClaudeSessionController {
     /** ESC byte sent to the PTY (dismiss autocomplete, close menus). */
     private static final byte[] PTY_ESC = {0x1b};
 
+    /** DEL character (0x7F) — acts as BackSpace in xterm-256color terminals. */
+    private static final byte[] PTY_BACKSPACE = {0x7f};
+
     private static final int MAX_MODEL_DISCOVERY_ATTEMPTS = 1;
 
     private final ClaudeSessionModel model;
@@ -803,6 +806,14 @@ public class ClaudeSessionController {
                         LOG.fine("[discoverModels] ModelMenuParser found models on poll " + (poll + 1));
                         break;
                     }
+                    // If ❯ /model is still in the prompt with a blank line below it, CR was
+                    // absorbed as a newline — retry: BackSpace to remove the blank line, then CR.
+                    if (poll < 12 && isModelCommandPendingWithBlankLine(lines)) {
+                        LOG.fine("[discoverModels] /model pending with blank line on poll " + (poll + 1) + ", retrying CR");
+                        connector.write(PTY_BACKSPACE);
+                        Thread.sleep(200);
+                        connector.write("\r");
+                    }
                 }
 
                 // Scan the rolling PTY line buffer for the /model hint line, which is
@@ -1259,6 +1270,30 @@ public class ClaudeSessionController {
     private void startStatusPollTimer() {
         statusTimer = new javax.swing.Timer(500, e -> pollScreenState());
         statusTimer.start();
+    }
+
+    /**
+     * Returns {@code true} when the screen shows {@code ❯ /model} followed by a blank line
+     * and then a separator — meaning CR was absorbed as a newline instead of submitting the
+     * command. Only the active input area (cursor line) is checked to avoid false positives
+     * when "/model" appears in Claude's output history.
+     */
+    boolean isModelCommandPendingWithBlankLine(List<String> lines) {
+        for (int i = 0; i < lines.size() - 2; i++) {
+            String trimmed = lines.get(i).trim();
+            if ((trimmed.startsWith("❯") || trimmed.startsWith(">")) && trimmed.contains("/model")) {
+                if (lines.get(i + 1).isBlank() && isSeparatorLine(lines.get(i + 2))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isSeparatorLine(String line) {
+        String t = line.trim();
+        return t.length() >= 4 && t.chars().allMatch(c ->
+                c == '─' || c == '━' || c == '—' || c == '-' || c == '=');
     }
 
     /**

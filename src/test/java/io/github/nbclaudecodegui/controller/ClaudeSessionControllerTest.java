@@ -662,6 +662,47 @@ class ClaudeSessionControllerTest {
     }
 
     // -------------------------------------------------------------------------
+    // isModelCommandPendingWithBlankLine
+    // -------------------------------------------------------------------------
+
+    @Test
+    void isModelCommandPendingWithBlankLine_detectsNewlineInsertedByEnter() {
+        List<String> lines = List.of(
+                "   ● Built successfully. Install target/nbm/foo.nbm and test.",
+                "",
+                "  ─────────────────────────────────────────────────────────────",
+                "  ──────── fix-kotlin-extensions-nosuchmethoderror ──",
+                "  ❯ /model",
+                "",
+                "  ─────────────────────────────────────────────────────────────",
+                "  ─────────────────────────────────────────────────────────────",
+                "  ─────────────────────────────────",
+                "    ⏵⏵ bypass permissions on (shift+tab to cycle)"
+        );
+        assertTrue(controller.isModelCommandPendingWithBlankLine(lines));
+    }
+
+    @Test
+    void isModelCommandPendingWithBlankLine_falseWhenNoBlankAfterModel() {
+        List<String> lines = List.of(
+                "  ❯ /model",
+                "  ─────────────────────────────────────────────────────────────"
+        );
+        assertFalse(controller.isModelCommandPendingWithBlankLine(lines));
+    }
+
+    @Test
+    void isModelCommandPendingWithBlankLine_falseWhenModelInHistory() {
+        List<String> lines = List.of(
+                "  You used /model earlier",
+                "",
+                "  ─────────────────────────────────────────────────────────────",
+                "  ❯ "
+        );
+        assertFalse(controller.isModelCommandPendingWithBlankLine(lines));
+    }
+
+    // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------
 
