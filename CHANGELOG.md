@@ -1,3 +1,4 @@
+- Fixed session tab showing the old project display name after IDE restart (tab now refreshes its name once all open projects finish loading)
 - Fixed model discovery failing when Enter was absorbed as a newline in the prompt instead of submitting the /model command (race condition under load)
 
 # 0.22.24 (2026-04-29)

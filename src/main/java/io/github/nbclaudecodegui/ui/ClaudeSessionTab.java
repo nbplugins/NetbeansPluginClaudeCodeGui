@@ -44,7 +44,16 @@ import javax.swing.JTextField;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.beans.PropertyChangeListener;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.netbeans.api.options.OptionsDisplayer;
+import org.netbeans.api.project.Project;
+import org.netbeans.api.project.ProjectInformation;
+import org.netbeans.api.project.ui.OpenProjects;
+import org.openide.filesystems.FileUtil;
+import org.openide.util.RequestProcessor;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
@@ -200,6 +209,15 @@ public class ClaudeSessionTab extends TopComponent
     private boolean bypassPermissionsAvailable = false;
     /** Guards programmatic combo updates to prevent feedback through the action listener. */
     private boolean updatingCombo = false;
+
+    /** Set to true when the tab is closed, to suppress deferred display-name updates. */
+    private volatile boolean tabClosed = false;
+
+    /** Direct ProjectInformation (not proxy) for the current session dir; used to listen for name changes. */
+    private ProjectInformation trackedProjectInfo;
+    private PropertyChangeListener projectNameListener;
+    /** Counter to cancel superseded polling rounds when updateDisplayName is called again. */
+    private final AtomicInteger displayNameGeneration = new AtomicInteger(0);
 
     // -------------------------------------------------------------------------
     // Constructors
@@ -403,6 +421,13 @@ public class ClaudeSessionTab extends TopComponent
         if (pendingDiffOnClose != null) {
             try { pendingDiffOnClose.run(); } catch (Exception ex) { /* ignore */ }
             pendingDiffOnClose = null;
+        }
+        tabClosed = true;
+        displayNameGeneration.incrementAndGet(); // cancel pending polls
+        if (trackedProjectInfo != null && projectNameListener != null) {
+            trackedProjectInfo.removePropertyChangeListener(projectNameListener);
+            trackedProjectInfo = null;
+            projectNameListener = null;
         }
         stopProcess();
     }
@@ -1386,9 +1411,69 @@ public class ClaudeSessionTab extends TopComponent
         }
     }
 
+    private static final RequestProcessor DISPLAY_NAME_RP =
+            new RequestProcessor("ClaudeSessionTab-displayName", 1, true);
+
     private void updateDisplayName(File dir) {
+        // Cancel any previous generation of polling / listeners.
+        int gen = displayNameGeneration.incrementAndGet();
+        if (trackedProjectInfo != null && projectNameListener != null) {
+            trackedProjectInfo.removePropertyChangeListener(projectNameListener);
+            trackedProjectInfo = null;
+            projectNameListener = null;
+        }
+
         String name = ClaudeSessionSelectorPanel.resolveTabLabel(dir);
         setDisplayName(name);
         setToolTipText(dir != null ? dir.getAbsolutePath() : "New Claude Code session");
+
+        if (dir == null) return;
+
+        // Subscribe directly to the ProjectInformation from the project's own Lookup
+        // (bypassing the proxy returned by ProjectUtils.getInformation) so we hear
+        // PROP_DISPLAY_NAME when NbMavenProject reloads the pom.xml from disk.
+        for (Project p : OpenProjects.getDefault().getOpenProjects()) {
+            File projDir = FileUtil.toFile(p.getProjectDirectory());
+            if (dir.equals(projDir)) {
+                ProjectInformation pi = p.getLookup().lookup(ProjectInformation.class);
+                if (pi != null) {
+                    trackedProjectInfo = pi;
+                    projectNameListener = evt -> {
+                        if (ProjectInformation.PROP_DISPLAY_NAME.equals(evt.getPropertyName())
+                                && !tabClosed) {
+                            SwingUtilities.invokeLater(() -> {
+                                if (!tabClosed) {
+                                    String fresh = ClaudeSessionSelectorPanel.resolveTabLabel(dir);
+                                    if (!fresh.equals(getDisplayName())) {
+                                        setDisplayName(fresh);
+                                    }
+                                }
+                            });
+                        }
+                    };
+                    pi.addPropertyChangeListener(projectNameListener);
+                }
+                break;
+            }
+        }
+
+        // Fallback: poll periodically (no time limit) in case PROP_DISPLAY_NAME is never fired.
+        // Maven projects load from cache initially; the real name may arrive minutes later.
+        schedulePoll(dir, gen);
+    }
+
+    private void schedulePoll(File dir, int gen) {
+        DISPLAY_NAME_RP.schedule(() -> {
+            if (tabClosed || displayNameGeneration.get() != gen) return;
+            SwingUtilities.invokeLater(() -> {
+                if (tabClosed || displayNameGeneration.get() != gen) return;
+                String fresh = ClaudeSessionSelectorPanel.resolveTabLabel(dir);
+                if (!fresh.equals(getDisplayName())) {
+                    setDisplayName(fresh);
+                    LOG.fine("Tab name updated by poll: " + fresh);
+                }
+            });
+            schedulePoll(dir, gen);
+        }, 15, TimeUnit.SECONDS);
     }
 }
