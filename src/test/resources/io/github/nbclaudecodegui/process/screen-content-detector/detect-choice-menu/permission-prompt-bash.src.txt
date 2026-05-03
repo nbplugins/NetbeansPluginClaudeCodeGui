@@ -1,0 +1,12 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   javap -classpath lib/intellij-core-1.0-PATCHED.jar -c com.intellij.util.containers.ContainerUtil 2>&1 | grep -A 10 "createConcurrentWeakMap"
+   Run shell command
+
+ Do you want to proceed?
+ ❯ 1. Yes, and tell Claude what to do next
+   2. Yes, and don't ask again for: javap -classpath lib/intellij-core-1.0-PATCHED.jar -c com.intellij.util.containers.ContainerUtil 2>&1 | grep -A 10 "createConcurrentWeakMap"
+   3. No
+
+ Esc to cancel · ctrl+e to explain

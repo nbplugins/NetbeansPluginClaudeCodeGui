@@ -1,0 +1,9 @@
+{
+  "text": "Do you want to proceed?",
+  "options": [
+    {"display": "Yes", "response": "1", "description": "and tell Claude what to do next", "hasTextInput": true},
+    {"display": "Yes, and don't ask again for: javap -classpath lib/intellij-core-1.0-PATCHED.jar -c com.intellij.util.containers.ContainerUtil 2>&1 | grep -A 10 \"createConcurrentWeakMap\"", "response": "2"},
+    {"display": "No", "response": "3"}
+  ],
+  "defaultOptionIndex": 0
+}

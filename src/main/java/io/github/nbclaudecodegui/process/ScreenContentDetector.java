@@ -71,6 +71,15 @@ public final class ScreenContentDetector {
     private static final Pattern PLAN_NAME_DASHES_PATTERN =
             Pattern.compile("\u2500{2,}\\s+([\\w][\\w\\-]*)\\s+\u2500+");
 
+    /**
+     * Matches permission-prompt options that embed a text-input hint after a comma:
+     * "Yes, and tell Claude what to do next" \u2192 group 1 = "Yes", group 2 = "and tell Claude what to do next".
+     * The phrase "tell Claude" is the key discriminator: it indicates the user must supply text,
+     * unlike "Yes, and don't ask again for: ..." which is a normal boolean option.
+     */
+    private static final Pattern AND_TELL_CLAUDE_PATTERN =
+            Pattern.compile("^(.*?),\\s+(and tell Claude\\b.*)$", Pattern.CASE_INSENSITIVE);
+
     // -------------------------------------------------------------------------
     // Session state
     // -------------------------------------------------------------------------
@@ -735,6 +744,13 @@ public final class ScreenContentDetector {
             hasCheckbox = true;
             checked = true;
             afterDot = afterDot.substring(3).stripLeading();
+        }
+        // "Yes, and tell Claude what to do next" → label + text-input hint
+        Matcher tellMatcher = AND_TELL_CLAUDE_PATTERN.matcher(afterDot);
+        if (tellMatcher.matches()) {
+            return new ChoiceMenuModel.Option(
+                    tellMatcher.group(1).strip(), String.valueOf(num),
+                    tellMatcher.group(2).strip(), checked, hasCheckbox, true);
         }
         return new ChoiceMenuModel.Option(afterDot.strip(), String.valueOf(num), null, checked, hasCheckbox);
     }

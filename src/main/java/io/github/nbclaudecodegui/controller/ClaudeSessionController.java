@@ -515,14 +515,36 @@ public class ClaudeSessionController {
                 int sep = answer.indexOf(':', 5);
                 String digit = answer.substring(5, sep);
                 String text = answer.substring(sep + 1);
-                LOG.fine("[PTY write] type-input digit=" + digit + " text=" + text);
+                ChoiceMenuModel current = model.getActiveChoiceMenu();
+                int targetIdx = Integer.parseInt(digit) - 1;
+                // Scan for the text-input option index (same logic as plain-digit branch)
+                int typeIdx = findTextInputIdx(current);
+                final int currentIdx = typeIdx >= 0 ? typeIdx : targetIdx;
+                boolean currentHasTextInput = typeIdx >= 0;
+                LOG.fine("[PTY write] type-input digit=" + digit + " text=" + text
+                        + " currentHasTextInput=" + currentHasTextInput);
                 Thread t = new Thread(() -> {
                     try {
-                        connector.write(digit);
-                        Thread.sleep(200);
-                        connector.write(text);
-                        Thread.sleep(200);
-                        connector.write("\r");
+                        if (currentHasTextInput) {
+                            int delta = targetIdx - currentIdx;
+                            if (delta != 0) {
+                                byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                                for (int i = 0; i < Math.abs(delta); i++) {
+                                    connector.write(arrow);
+                                    Thread.sleep(80);
+                                }
+                                Thread.sleep(100);
+                            }
+                            connector.write(text);
+                            Thread.sleep(200);
+                            connector.write("\r");
+                        } else {
+                            connector.write(digit);
+                            Thread.sleep(200);
+                            connector.write(text);
+                            Thread.sleep(200);
+                            connector.write("\r");
+                        }
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
@@ -560,11 +582,47 @@ public class ClaudeSessionController {
                     t.start();
                 }
             } else {
-                boolean isMenuDigit = answer.matches("[0-9]");
-                String toWrite = isMenuDigit ? answer : answer + "\r";
-                LOG.fine("[PTY write] " + toWrite.replace("\r", "\\r").replace("\n", "\\n"));
-                connector.write(toWrite);
-                model.clearChoiceMenu();
+                ChoiceMenuModel current = model.getActiveChoiceMenu();
+                // Find the text-input option index (if any). Claude Code routes ALL digit input
+                // to the text field regardless of which option the ❯ cursor is on, so we must
+                // check the whole option list, not just defaultOptionIndex.
+                int textInputIdx = findTextInputIdx(current);
+                boolean currentHasTextInput = textInputIdx >= 0;
+                LOG.fine("[PTY write] else-branch answer=" + answer + " textInputIdx=" + textInputIdx);
+                if (currentHasTextInput && answer.matches("[0-9]")) {
+                    // Claude Code routes digits to the text-input field — navigate with arrow keys instead
+                    int targetIdx = answer.charAt(0) - '1';
+                    int currentIdx = textInputIdx;  // assume cursor is at the text-input option
+                    int delta = targetIdx - currentIdx;
+                    LOG.fine("[PTY write] ARROW-digit targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
+                    model.clearChoiceMenu();
+                    if (delta == 0) {
+                        connector.write("\r");
+                    } else {
+                        byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                        Thread t = new Thread(() -> {
+                            try {
+                                for (int i = 0; i < Math.abs(delta); i++) {
+                                    connector.write(arrow);
+                                    Thread.sleep(80);
+                                }
+                                connector.write("\r");
+                            } catch (IOException ex) {
+                                LOG.warning("writePtyAnswer ARROW-digit write failed: " + ex.getMessage());
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }, "pty-arrow-digit");
+                        t.setDaemon(true);
+                        t.start();
+                    }
+                } else {
+                    boolean isMenuDigit = answer.matches("[0-9]");
+                    String toWrite = isMenuDigit ? answer : answer + "\r";
+                    LOG.fine("[PTY write] " + toWrite.replace("\r", "\\r").replace("\n", "\\n"));
+                    connector.write(toWrite);
+                    model.clearChoiceMenu();
+                }
             }
         } catch (IOException ex) {
             LOG.warning("writePtyAnswer failed: " + ex.getMessage());
@@ -1198,6 +1256,20 @@ public class ClaudeSessionController {
      *
      * <p>For numbered menus, full {@link java.util.Objects#equals} semantics apply.
      */
+    private static boolean isTextInputOption(ChoiceMenuModel.Option opt) {
+        return opt.hasTextInput() || opt.display().trim().toLowerCase().startsWith("type");
+    }
+
+    /** Returns the 0-based index of the first text-input option in the menu, or -1 if none. */
+    private static int findTextInputIdx(ChoiceMenuModel menu) {
+        if (menu == null) return -1;
+        List<ChoiceMenuModel.Option> opts = menu.options();
+        for (int i = 0; i < opts.size(); i++) {
+            if (isTextInputOption(opts.get(i))) return i;
+        }
+        return -1;
+    }
+
     private static boolean optionsEqual(List<ChoiceMenuModel.Option> a, List<ChoiceMenuModel.Option> b) {
         if (a.size() != b.size()) return false;
         if (!a.isEmpty() && a.get(0).response().startsWith("ARROW:")) {
