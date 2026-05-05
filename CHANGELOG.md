@@ -1,3 +1,5 @@
+# 0.22
+
 - Fixed digits going into the "Type something." text field instead of selecting the intended numbered option in planning and permission-prompt choice menus
 - Fixed "Yes, and tell Claude what to do next" option in bash permission prompts: now shows radio label "Yes" with input hint in the text field (not as a subtitle), and allows sending with empty text
 - Fixed session tab showing the old project display name after IDE restart (tab now refreshes its name once all open projects finish loading)

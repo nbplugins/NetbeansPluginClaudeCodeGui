@@ -33,7 +33,14 @@ A release has an explicit **start** and **finish**:
 **During development** — add user-visible changes to `CHANGELOG.md` (see rules below).
 
 **Finishing a release** (only this, nothing else):
-- Update `CHANGELOG.md` heading to `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` (matching current `pom.xml`) → CI sees this as the release signal, creates release tag `MAJOR.MINOR.N`, and publishes a GitHub Release. If the date is omitted, CI inserts today's date automatically.
+- Add `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` heading at the top of `CHANGELOG.md` (above the unreleased bullets). Commit with message `"Requested release MAJOR.MINOR"`.
+- This commit must reach `main` via a PR — never push directly to upstream. Create a dedicated branch `req/MAJOR.MINOR` based on `upstream/main`:
+  ```bash
+  git fetch upstream
+  git checkout -b req/MAJOR.MINOR upstream/main
+  ```
+  Then make the change, commit, push to `origin`, and open a PR into `upstream/main`.
+- Once the PR is merged, CI detects the heading, creates release tag `MAJOR.MINOR.N`, and publishes a GitHub Release. If the date is omitted, CI inserts today's date automatically.
 
 **After a published release** — CI auto-edits `CHANGELOG.md`: the release heading `# MAJOR.MINOR (date)` is replaced with `# MAJOR.MINOR.N (date)`. Development can continue immediately; patch versions increment from the last released N.
 
