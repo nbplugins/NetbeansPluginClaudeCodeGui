@@ -199,6 +199,7 @@ public final class SessionModePanel extends JPanel {
         });
 
         refreshTable();
+        updateHistoryRadiosEnabled();
     }
 
     // -------------------------------------------------------------------------
@@ -235,6 +236,10 @@ public final class SessionModePanel extends JPanel {
     /**
      * Programmatically sets the selected mode.
      *
+     * <p>If the target radio is disabled (no sessions available),
+     * {@link SessionMode#CONTINUE_LAST} and {@link SessionMode#RESUME_SPECIFIC}
+     * fall back to {@link SessionMode#NEW}.
+     *
      * @param mode mode to select
      */
     public void setMode(SessionMode mode) {
@@ -242,8 +247,14 @@ public final class SessionModePanel extends JPanel {
             case CLOSE_ONLY        -> closeOnlyRadio.setSelected(true);
             case RESTART_ADVANCED  -> restartAdvancedRadio.setSelected(true);
             case NEW               -> newRadio.setSelected(true);
-            case CONTINUE_LAST     -> continueRadio.setSelected(true);
-            case RESUME_SPECIFIC   -> resumeRadio.setSelected(true);
+            case CONTINUE_LAST     -> {
+                if (continueRadio.isEnabled()) continueRadio.setSelected(true);
+                else newRadio.setSelected(true);
+            }
+            case RESUME_SPECIFIC   -> {
+                if (resumeRadio.isEnabled()) resumeRadio.setSelected(true);
+                else newRadio.setSelected(true);
+            }
         }
         onRadioChanged();
     }
@@ -259,7 +270,10 @@ public final class SessionModePanel extends JPanel {
     }
 
     /**
-     * Reloads the session list for a new directory / profile combination.
+     * Reloads the session list for a new directory / profile combination and
+     * updates the enabled state of "Continue last" and "Resume specific" radios.
+     * If no sessions exist, those radios are disabled and the selection falls
+     * back to "New session".
      *
      * @param newWorkingDir      new working directory
      * @param newClaudeConfigDir new config dir (null → ~/.claude)
@@ -270,6 +284,7 @@ public final class SessionModePanel extends JPanel {
         this.claudeConfigDir = newClaudeConfigDir;
         this.excludeSession  = newExcludeSession;
         refreshTable();
+        updateHistoryRadiosEnabled();
     }
 
     /**
@@ -289,9 +304,34 @@ public final class SessionModePanel extends JPanel {
         return renameButton.isVisible();
     }
 
+    boolean isContinueRadioEnabled() {
+        return continueRadio.isEnabled();
+    }
+
+    boolean isResumeRadioEnabled() {
+        return resumeRadio.isEnabled();
+    }
+
     // -------------------------------------------------------------------------
     // Internal
     // -------------------------------------------------------------------------
+
+    /**
+     * Enables or disables "Continue last" and "Resume specific" based on whether
+     * any sessions exist for the current directory/profile. If neither is available
+     * and one is currently selected, switches the selection to "New session" to
+     * avoid a misleading {@code --continue} or {@code --resume} launch.
+     */
+    private void updateHistoryRadiosEnabled() {
+        boolean hasSessions = workingDir != null
+                && ClaudeSessionStore.hasAnySessions(workingDir, claudeConfigDir);
+        continueRadio.setEnabled(hasSessions);
+        resumeRadio.setEnabled(hasSessions);
+        if (!hasSessions && (continueRadio.isSelected() || resumeRadio.isSelected())) {
+            newRadio.setSelected(true);
+            onRadioChanged();
+        }
+    }
 
     private JPanel row(JRadioButton radio) {
         JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
