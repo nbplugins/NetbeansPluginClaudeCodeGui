@@ -299,31 +299,9 @@ public final class MarkdownRenderer {
                 continue;
             }
 
-            // --- Unordered list ---
-            if (isUnordered(line)) {
-                html.append("<ul>");
-                while (i < lines.length && isUnordered(lines[i])) {
-                    html.append("<li>")
-                            .append(inlineToHtml(lines[i]
-                                    .replaceFirst("^\\s*[-*]\\s+", "")))
-                            .append("</li>");
-                    i++;
-                }
-                html.append("</ul>");
-                continue;
-            }
-
-            // --- Ordered list ---
-            if (isOrdered(line)) {
-                html.append("<ol>");
-                while (i < lines.length && isOrdered(lines[i])) {
-                    html.append("<li>")
-                            .append(inlineToHtml(lines[i]
-                                    .replaceFirst("^\\s*\\d+\\.\\s+", "")))
-                            .append("</li>");
-                    i++;
-                }
-                html.append("</ol>");
+            // --- List (nested ordered/unordered) ---
+            if (isUnordered(line) || isOrdered(line)) {
+                i = renderNestedList(lines, i, html);
                 continue;
             }
 
@@ -529,6 +507,70 @@ public final class MarkdownRenderer {
         } catch (Exception ex) {
             // Should not happen under normal usage
         }
+    }
+
+    private static int renderNestedList(String[] lines, int start, StringBuilder html) {
+        List<Integer> indentStack = new ArrayList<>();
+        List<Boolean> typeStack = new ArrayList<>();
+
+        int i = start;
+        while (i < lines.length) {
+            String line = lines[i];
+
+            if (line.isBlank()) {
+                int j = i + 1;
+                while (j < lines.length && lines[j].isBlank()) j++;
+                if (j < lines.length && (isOrdered(lines[j]) || isUnordered(lines[j]))) {
+                    i = j;
+                    continue;
+                }
+                break;
+            }
+
+            if (!isOrdered(line) && !isUnordered(line)) break;
+
+            int indent = leadingSpaces(line);
+            boolean ordered = isOrdered(line);
+
+            if (indentStack.isEmpty()) {
+                html.append(ordered ? "<ol>" : "<ul>");
+                indentStack.add(indent);
+                typeStack.add(ordered);
+            } else {
+                int topIndent = indentStack.get(indentStack.size() - 1);
+                if (indent > topIndent) {
+                    html.append(ordered ? "<ol>" : "<ul>");
+                    indentStack.add(indent);
+                    typeStack.add(ordered);
+                } else if (indent < topIndent) {
+                    while (indentStack.size() > 1 && indentStack.get(indentStack.size() - 1) > indent) {
+                        html.append(typeStack.get(typeStack.size() - 1) ? "</ol>" : "</ul>");
+                        indentStack.remove(indentStack.size() - 1);
+                        typeStack.remove(typeStack.size() - 1);
+                    }
+                }
+                if (!typeStack.isEmpty() && typeStack.get(typeStack.size() - 1) != ordered) {
+                    html.append(typeStack.get(typeStack.size() - 1) ? "</ol>" : "</ul>");
+                    typeStack.set(typeStack.size() - 1, ordered);
+                    html.append(ordered ? "<ol>" : "<ul>");
+                }
+            }
+
+            String content = line.replaceFirst("^\\s*(?:\\d+\\.|[-*])\\s+", "");
+            html.append("<li>").append(inlineToHtml(content)).append("</li>");
+            i++;
+        }
+
+        for (int k = typeStack.size() - 1; k >= 0; k--) {
+            html.append(typeStack.get(k) ? "</ol>" : "</ul>");
+        }
+        return i;
+    }
+
+    private static int leadingSpaces(String line) {
+        int n = 0;
+        while (n < line.length() && line.charAt(n) == ' ') n++;
+        return n;
     }
 
     private MarkdownRenderer() {}

@@ -267,6 +267,49 @@ class MarkdownRendererTest {
     }
 
     // -------------------------------------------------------------------------
+    // toHtml() — nested lists
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testNestedOrderedList() {
+        String md = "1. first\n    1. sub-first\n    2. sub-second\n2. second";
+        String html = MarkdownRenderer.toHtml(md);
+        // outer ol must contain an inner ol
+        int outerOl = html.indexOf("<ol>");
+        int innerOl = html.indexOf("<ol>", outerOl + 1);
+        assertTrue(innerOl > outerOl, "inner <ol> must exist inside outer <ol>");
+        assertTrue(html.contains("<li>first</li>") || html.contains("<li>first"),
+                "outer first item");
+        assertTrue(html.contains("sub-first"), "sub-first item");
+        assertTrue(html.contains("sub-second"), "sub-second item");
+        assertTrue(html.contains("second"), "outer second item");
+        // must have at least 2 </ol> closing tags
+        long closeCount = html.chars().filter(c -> c == '<').count();
+        assertTrue(html.indexOf("</ol>", html.indexOf("</ol>") + 1) > 0,
+                "at least 2 </ol> tags expected");
+    }
+
+    @Test
+    void testNestedUnorderedList() {
+        String md = "- alpha\n    - sub-alpha\n    - sub-beta\n- beta";
+        String html = MarkdownRenderer.toHtml(md);
+        int outerUl = html.indexOf("<ul>");
+        int innerUl = html.indexOf("<ul>", outerUl + 1);
+        assertTrue(innerUl > outerUl, "inner <ul> must exist inside outer <ul>");
+        assertTrue(html.contains("alpha"), "outer alpha");
+        assertTrue(html.contains("sub-alpha"), "sub-alpha");
+    }
+
+    @Test
+    void testMixedNestedList() {
+        String md = "1. item\n    - nested-ul\n2. item2";
+        String html = MarkdownRenderer.toHtml(md);
+        assertTrue(html.contains("<ol>"), "outer ol");
+        assertTrue(html.contains("<ul>"), "inner ul");
+        assertTrue(html.contains("nested-ul"), "nested item text");
+    }
+
+    // -------------------------------------------------------------------------
     // resolveImagePaths()
     // -------------------------------------------------------------------------
 
