@@ -887,7 +887,14 @@ public class ClaudeSessionController {
 
                 List<String> models;
                 int selIdx;
-                if (menuOpt.isPresent() && !menuOpt.get().options().isEmpty()) {
+                // Always prefer ModelMenuParser — it is fixture-tested and handles all known
+                // formats including 1M-context variants. The ChoiceMenuModel path is kept as
+                // a fallback for formats that ModelMenuParser does not recognise.
+                ModelMenuParser.ModelDiscovery discovery = new ModelMenuParser().parse(lines);
+                if (!discovery.models().isEmpty()) {
+                    models = discovery.models();
+                    selIdx = discovery.currentIndex();
+                } else if (menuOpt.isPresent() && !menuOpt.get().options().isEmpty()) {
                     List<ChoiceMenuModel.Option> opts = menuOpt.get().options();
                     Pattern descPat = Pattern.compile("(?:\u2714\\s+|\\s{2,})(.+?)(?:\\s*[·\u00b7].*)?$");
                     Pattern currentlyPat = Pattern.compile("\\(currently\\s+([^)]+?)\\s*\\)");
@@ -909,9 +916,8 @@ public class ClaudeSessionController {
                         if (display.contains("\u2714")) selIdx = i;
                     }
                 } else {
-                    ModelMenuParser.ModelDiscovery discovery = new ModelMenuParser().parse(lines);
-                    models = discovery.models();
-                    selIdx = discovery.currentIndex();
+                    models = List.of();
+                    selIdx = -1;
                 }
 
                 connector.write(new byte[]{0x1b});  // Esc — dismiss model menu

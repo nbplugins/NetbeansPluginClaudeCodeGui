@@ -1,3 +1,5 @@
+- Fixed model list showing garbled names (e.g. "Mtoket 4.6 with 1M context") when the /model menu includes 1M-context variants and cost annotations
+
 # 0.22.30 (2026-05-05)
 
 - Fixed digits going into the "Type something." text field instead of selecting the intended numbered option in planning and permission-prompt choice menus

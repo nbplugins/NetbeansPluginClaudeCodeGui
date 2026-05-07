@@ -1,0 +1,20 @@
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Select model
+  Switch between Claude models. Applies to this session and future Claude Code sessions. For other/previous
+  model names, specify with --model.
+
+  ❯ 1. Default (recommended) ✔  Sonnet 4.6 · Best for everyday tasks
+    2. Sonnet (1M context)      Sonnet 4.6 with 1M context · Billed as extra usage · $3/$15 per Mtok
+    3. Opus                     Opus 4.7 · Most capable for complex work · ~2× usage vs Sonnet
+    4. Opus 4.7 (1M context)    Opus 4.7 with 1M context · ~2× usage vs Sonnet · Billed as extra usage ·
+                                $5/$25 per Mtok
+    5. Haiku                    Haiku 4.5 · Fastest for quick answers
+
+  ○ Low effort ← → to adjust
+
+  Use /fast to turn on Fast mode (Opus 4.6 only).
+
+  Enter to confirm · Esc to exit
+
+
