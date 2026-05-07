@@ -403,6 +403,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
                     resolveDir() != null ? resolveDir().toPath() : null,
                     resolveClaudeConfigDir(),
                     null);
+            sessionModePanel.setMode(ClaudeCodePreferences.getContextMenuSessionMode());
         }
     }
 
