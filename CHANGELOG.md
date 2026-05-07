@@ -1,3 +1,5 @@
+# 0.22
+
 - Fixed markdown preview not rendering nested list structure (multi-level indented lists now display with proper nesting)
 - Fixed "Continue last" and "Resume specific" staying enabled (and selected) when a directory or profile with no sessions is chosen in the session selector
 - Fixed model list showing garbled names (e.g. "Mtoket 4.6 with 1M context") when the /model menu includes 1M-context variants and cost annotations
