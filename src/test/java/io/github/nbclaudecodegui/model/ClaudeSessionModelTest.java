@@ -120,6 +120,23 @@ class ClaudeSessionModelTest {
     // -------------------------------------------------------------------------
 
     @Test
+    void setWorkingDirectoryAfterEditModeSyncsRegistry() {
+        // Reproduces the bug: editMode set before workingDirectory (as in startProcess)
+        // → registry must still be populated once workingDirectory is set
+        model.setEditMode(EditMode.BYPASS_PERMISSIONS);
+        assertNull(model.getWorkingDirectory());
+        assertTrue(ClaudeSessionModel.EDIT_MODE_REGISTRY.isEmpty(),
+                "Registry must be empty while workingDirectory is null");
+
+        File dir = new File("/tmp/bypass-test");
+        model.setWorkingDirectory(dir);
+
+        assertEquals(EditMode.BYPASS_PERMISSIONS,
+                ClaudeSessionModel.EDIT_MODE_REGISTRY.get(dir.getAbsolutePath()),
+                "Registry must reflect editMode set before workingDirectory was assigned");
+    }
+
+    @Test
     void setWorkingDirectoryFiresListener() {
         AtomicReference<File> captured = new AtomicReference<>();
         model.addListener(new NoOpListener() {

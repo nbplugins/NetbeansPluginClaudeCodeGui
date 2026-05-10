@@ -283,6 +283,9 @@ public final class ClaudeSessionModel {
      */
     public void setWorkingDirectory(File dir) {
         workingDirectory = dir;
+        if (dir != null && editMode != null) {
+            EDIT_MODE_REGISTRY.put(dir.getAbsolutePath(), editMode);
+        }
         fireOnEdt(() -> listeners.forEach(l -> l.onWorkingDirectoryChanged(dir)));
     }
 

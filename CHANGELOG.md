@@ -1,3 +1,5 @@
+- Fixed Bypass Permissions edit mode not suppressing the file diff dialog: the edit mode was lost from the registry because it was set before the working directory was assigned at session start
+
 # 0.22.35 (2026-05-07)
 
 - Fixed markdown preview not rendering nested list structure (multi-level indented lists now display with proper nesting)
