@@ -28,9 +28,9 @@ import org.openide.util.actions.Presenter;
 @ActionID(category = "File", id = "io.github.nbclaudecodegui.actions.PreviewMarkdownAction")
 @ActionRegistration(displayName = "#CTL_PreviewMarkdownAction", lazy = false)
 @ActionReferences({
-    @ActionReference(path = "Loaders/text/x-markdown-nb/Actions", position = 300),
-    @ActionReference(path = "Loaders/text/plain/Actions",          position = 300),
-    @ActionReference(path = "Loaders/content/unknown/Actions",     position = 300)
+    @ActionReference(path = "Loaders/text/text/x-markdown-nb/Actions", position = 150),
+    @ActionReference(path = "Loaders/text/plain/Actions",               position = 300),
+    @ActionReference(path = "Loaders/content/unknown/Actions",          position = 300)
 })
 @Messages("CTL_PreviewMarkdownAction=Preview Markdown")
 public final class PreviewMarkdownAction extends AbstractAction

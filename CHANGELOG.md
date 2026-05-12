@@ -1,3 +1,4 @@
+- Fixed .md files in the Files panel losing all standard context menu items (Open, Cut, Copy, Delete, etc.) after installing the plugin — only "Preview Markdown" was shown
 - Fixed Bypass Permissions edit mode not suppressing the file diff dialog: the edit mode was lost from the registry because it was set before the working directory was assigned at session start
 
 # 0.22.35 (2026-05-07)
