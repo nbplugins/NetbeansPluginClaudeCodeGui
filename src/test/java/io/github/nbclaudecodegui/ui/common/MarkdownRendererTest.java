@@ -89,7 +89,7 @@ class MarkdownRendererTest {
     @Test
     void testOrderedList() {
         String html = MarkdownRenderer.toHtml("1. first\n2. second");
-        assertTrue(html.contains("<ol>"),  "ol open");
+        assertTrue(html.contains("<ol start=\"1\">"),  "ol open");
         assertTrue(html.contains("<li>first</li>"),  "item first");
         assertTrue(html.contains("<li>second</li>"), "item second");
     }
@@ -275,8 +275,8 @@ class MarkdownRendererTest {
         String md = "1. first\n    1. sub-first\n    2. sub-second\n2. second";
         String html = MarkdownRenderer.toHtml(md);
         // outer ol must contain an inner ol
-        int outerOl = html.indexOf("<ol>");
-        int innerOl = html.indexOf("<ol>", outerOl + 1);
+        int outerOl = html.indexOf("<ol start=");
+        int innerOl = html.indexOf("<ol start=", outerOl + 1);
         assertTrue(innerOl > outerOl, "inner <ol> must exist inside outer <ol>");
         assertTrue(html.contains("<li>first</li>") || html.contains("<li>first"),
                 "outer first item");
@@ -304,7 +304,7 @@ class MarkdownRendererTest {
     void testMixedNestedList() {
         String md = "1. item\n    - nested-ul\n2. item2";
         String html = MarkdownRenderer.toHtml(md);
-        assertTrue(html.contains("<ol>"), "outer ol");
+        assertTrue(html.contains("<ol start=\"1\">"), "outer ol");
         assertTrue(html.contains("<ul>"), "inner ul");
         assertTrue(html.contains("nested-ul"), "nested item text");
     }
@@ -353,5 +353,74 @@ class MarkdownRendererTest {
         String html = "<img src=\"img.png\" alt=\"\">";
         String result = MarkdownRenderer.resolveImagePaths(html, "C:\\docs\\project");
         assertEquals("<img src=\"file://C:/docs/project/img.png\" alt=\"\">", result);
+    }
+
+    // -------------------------------------------------------------------------
+    // Ordered list numbering after code blocks
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testOrderedListExplicitStartAttribute() {
+        // A list starting at 3 must emit <ol start="3">
+        String html = MarkdownRenderer.toHtml("3. Third\n4. Fourth\n");
+        assertTrue(html.contains("<ol start=\"3\">"),
+                "Expected <ol start=\"3\"> but got: " + html);
+    }
+
+    @Test
+    void testIndentedCodeBlockDoesNotResetNumbering() {
+        // Code block indented inside a list item — both items must be in ONE <ol start="1">
+        String md = "1. Item one\n\n    ```bash\n    code\n    ```\n\n2. Item two\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // Only one <ol> should exist; items continue in the same list
+        int firstOl = html.indexOf("<ol ");
+        int secondOl = html.indexOf("<ol ", firstOl + 1);
+        assertEquals(-1, secondOl,
+                "Indented code block must not start a new <ol>; got: " + html);
+        assertTrue(html.contains("Item one") && html.contains("Item two"),
+                "Both items must be present: " + html);
+    }
+
+    @Test
+    void testIndentedCodeBlockInsideLi() {
+        // <pre> must be inside <li>, not between two separate <ol> elements
+        String md = "1. Item one\n\n    ```bash\n    code here\n    ```\n\n2. Item two\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // </li> must not appear before <pre>
+        int liClose = html.indexOf("</li>");
+        int preOpen = html.indexOf("<pre>");
+        assertTrue(preOpen > 0, "Expected <pre> in: " + html);
+        assertTrue(preOpen < liClose,
+                "<pre> must appear before the first </li>; got: " + html);
+    }
+
+    @Test
+    void testTopLevelCodeBlockResetsNumbering() {
+        // Top-level code block between two lists — second list starts at 1
+        String md = "1. Item A\n\n```\ntop level\n```\n\n1. New list\n";
+        String html = MarkdownRenderer.toHtml(md);
+        long count = html.chars().filter(c -> c == '1')
+                .count(); // rough: just assert no <ol start="2"> for the second list
+        assertFalse(html.contains("<ol start=\"2\">"),
+                "Top-level code block should reset numbering; must not have <ol start=\"2\"> but got: " + html);
+    }
+
+    // -------------------------------------------------------------------------
+    // Indented code block — no leading spaces in <pre>
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testIndentedFencedCodeBlockNoLeadingSpaces() {
+        String md = "1. Item\n\n    ```bash\n    mkdir foo\n    ```\n\n2. Done\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // Extract <pre> content and verify no leading spaces
+        int preStart = html.indexOf("<pre>") + "<pre>".length();
+        int preEnd = html.indexOf("</pre>");
+        assertTrue(preStart > 0 && preEnd > preStart, "Expected <pre> block in: " + html);
+        String preContent = html.substring(preStart, preEnd);
+        assertFalse(preContent.startsWith(" "),
+                "Code block content must not start with spaces but got: [" + preContent + "]");
+        assertTrue(preContent.contains("mkdir foo"),
+                "Code block must contain the command: " + preContent);
     }
 }
