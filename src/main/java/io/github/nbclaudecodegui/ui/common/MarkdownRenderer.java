@@ -228,6 +228,7 @@ public final class MarkdownRenderer {
         StringBuilder html = new StringBuilder();
         // Split on fenced code blocks; odd-indexed segments are code content.
         String[] parts = markdown.split("```[^\\n]*\\n", -1);
+        boolean continueList = false;
         for (int i = 0; i < parts.length; i++) {
             if (i % 2 == 0) {
                 // regular text segment
@@ -236,18 +237,45 @@ public final class MarkdownRenderer {
                 if (i > 0 && seg.startsWith("```")) {
                     seg = seg.substring(3);
                 }
-                html.append(convertSegment(seg));
+                String converted = convertSegment(seg);
+                if (continueList) {
+                    // strip the new <ol start="N">...</ol> wrapper and continue inside the open list
+                    converted = converted.replaceFirst("^<ol start=\"\\d+\">", "")
+                                         .replaceFirst("</ol>$", "");
+                    continueList = false;
+                    html.append(converted).append("</ol>");
+                } else {
+                    html.append(converted);
+                }
             } else {
-                // code block content (strip trailing ```)
+                // code block content
                 String code = parts[i];
                 if (code.endsWith("```")) {
                     code = code.substring(0, code.length() - 3);
                 }
-                if (code.endsWith("\n")) {
-                    code = code.substring(0, code.length() - 1);
+                code = code.stripTrailing();
+                code = dedent(code);
+                String preHtml = "<pre>" + esc(code) + "</pre>";
+                // An indented fence (spaces before ```) means the code block belongs to a list item
+                boolean indented = i > 0 && parts[i - 1].matches("(?s).*[ \t]+$");
+                if (indented) {
+                    // Remove the list closure emitted by the previous segment, then
+                    // embed the code block inside the last <li> before re-closing it.
+                    if (html.toString().endsWith("</ol>")) {
+                        html.delete(html.length() - 5, html.length());
+                    }
+                    if (html.toString().endsWith("</li>")) {
+                        html.delete(html.length() - 5, html.length());
+                    }
+                    html.append(preHtml).append("</li>");
+                    continueList = true;
+                } else {
+                    html.append(preHtml);
                 }
-                html.append("<pre>").append(esc(code)).append("</pre>");
             }
+        }
+        if (continueList) {
+            html.append("</ol>");
         }
         return html.toString();
     }
@@ -533,13 +561,13 @@ public final class MarkdownRenderer {
             boolean ordered = isOrdered(line);
 
             if (indentStack.isEmpty()) {
-                html.append(ordered ? "<ol>" : "<ul>");
+                html.append(ordered ? "<ol start=\"" + orderedListNumber(line) + "\">" : "<ul>");
                 indentStack.add(indent);
                 typeStack.add(ordered);
             } else {
                 int topIndent = indentStack.get(indentStack.size() - 1);
                 if (indent > topIndent) {
-                    html.append(ordered ? "<ol>" : "<ul>");
+                    html.append(ordered ? "<ol start=\"" + orderedListNumber(line) + "\">" : "<ul>");
                     indentStack.add(indent);
                     typeStack.add(ordered);
                 } else if (indent < topIndent) {
@@ -552,7 +580,7 @@ public final class MarkdownRenderer {
                 if (!typeStack.isEmpty() && typeStack.get(typeStack.size() - 1) != ordered) {
                     html.append(typeStack.get(typeStack.size() - 1) ? "</ol>" : "</ul>");
                     typeStack.set(typeStack.size() - 1, ordered);
-                    html.append(ordered ? "<ol>" : "<ul>");
+                    html.append(ordered ? "<ol start=\"" + orderedListNumber(line) + "\">" : "<ul>");
                 }
             }
 
@@ -571,6 +599,32 @@ public final class MarkdownRenderer {
         int n = 0;
         while (n < line.length() && line.charAt(n) == ' ') n++;
         return n;
+    }
+
+    private static int orderedListNumber(String line) {
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("^\\s*(\\d+)\\.\\s+").matcher(line);
+        return m.find() ? Integer.parseInt(m.group(1)) : 1;
+    }
+
+    private static String dedent(String code) {
+        String[] lines = code.split("\n", -1);
+        int min = Integer.MAX_VALUE;
+        for (String l : lines) {
+            if (!l.isBlank()) {
+                int sp = 0;
+                while (sp < l.length() && l.charAt(sp) == ' ') sp++;
+                min = Math.min(min, sp);
+            }
+        }
+        if (min == 0 || min == Integer.MAX_VALUE) return code;
+        StringBuilder sb = new StringBuilder();
+        for (int k = 0; k < lines.length; k++) {
+            String l = lines[k];
+            sb.append(l.length() >= min ? l.substring(min) : l);
+            if (k < lines.length - 1) sb.append('\n');
+        }
+        return sb.toString();
     }
 
     private MarkdownRenderer() {}
