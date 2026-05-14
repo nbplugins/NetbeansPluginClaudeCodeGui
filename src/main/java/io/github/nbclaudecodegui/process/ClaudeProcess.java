@@ -634,14 +634,19 @@ public final class ClaudeProcess {
                             filteredAllow.add(n);
                         }
                     }
-                    if (filteredAllow.isEmpty() && !permissions.has("deny")) {
-                        root.remove("permissions");
-                    } else if (filteredAllow.isEmpty()) {
+                    if (filteredAllow.isEmpty()) {
                         permissions.remove("allow");
-                        if (permissions.isEmpty()) root.remove("permissions");
                     } else {
                         permissions.set("allow", filteredAllow);
                     }
+                }
+                // Remove empty deny array that we added during merge
+                JsonNode deny = permissions.get("deny");
+                if (deny != null && deny.isArray() && deny.isEmpty()) {
+                    permissions.remove("deny");
+                }
+                if (permissions.isEmpty()) {
+                    root.remove("permissions");
                 }
             }
 
