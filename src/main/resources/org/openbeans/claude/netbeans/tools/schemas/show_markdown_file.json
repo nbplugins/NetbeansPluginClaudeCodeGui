@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "filePath": {
+      "type": "string",
+      "description": "Absolute path to the .md file to preview"
+    },
+    "title": {
+      "type": "string",
+      "description": "Tab title (optional, default: filename)"
+    }
+  },
+  "required": ["filePath"]
+}
