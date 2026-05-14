@@ -57,6 +57,8 @@ import io.github.nbclaudecodegui.mcp.tools.GetOpenEditors;
 import io.github.nbclaudecodegui.mcp.tools.OpenDiff;
 import io.github.nbclaudecodegui.mcp.tools.OpenFile;
 import io.github.nbclaudecodegui.mcp.tools.PermissionPromptTool;
+import io.github.nbclaudecodegui.mcp.tools.ShowMarkdown;
+import io.github.nbclaudecodegui.mcp.tools.ShowMarkdownFile;
 import org.netbeans.api.project.ui.OpenProjects;
 import org.openide.util.Lookup;
 import org.openbeans.claude.netbeans.tools.AsyncHandler;
@@ -99,6 +101,8 @@ public class NetBeansMCPHandler {
     private final OpenFile openFileTool;
     private final PermissionPromptTool permissionPromptTool;
     private final SaveDocument saveDocument;
+    private final ShowMarkdown showMarkdownTool;
+    private final ShowMarkdownFile showMarkdownFileTool;
 
     /** Creates a new handler and initializes all MCP tool instances. */
     public NetBeansMCPHandler() {
@@ -114,6 +118,8 @@ public class NetBeansMCPHandler {
         this.openFileTool = new OpenFile();
         this.permissionPromptTool = new PermissionPromptTool();
         this.saveDocument = new SaveDocument();
+        this.showMarkdownTool = new ShowMarkdown();
+        this.showMarkdownFileTool = new ShowMarkdownFile();
     }
 
     /**
@@ -250,6 +256,14 @@ public class NetBeansMCPHandler {
         tools.add(createToolDefinition("permission_prompt",
                 "Shows proposed file changes as a diff and asks the user to allow or deny the operation.",
                 "permission_prompt"));
+        tools.add(createToolDefinition("show_markdown",
+                "Display markdown content in the IDE Markdown Preview tab. "
+              + "Call this to show plans, summaries, or structured output with rich formatting.",
+                "show_markdown"));
+        tools.add(createToolDefinition("show_markdown_file",
+                "Open a live-updating Markdown Preview tab for a .md file. "
+              + "The tab refreshes automatically when the file changes on disk.",
+                "show_markdown_file"));
 
         ObjectNode result = responseBuilder.objectNode();
         result.set("tools", tools);
@@ -316,6 +330,16 @@ public class NetBeansMCPHandler {
                 case "permission_prompt":
                     result = this.permissionPromptTool.run(
                             this.permissionPromptTool.parseArguments(arguments));
+                    break;
+
+                case "show_markdown":
+                    result = this.showMarkdownTool.run(
+                            this.showMarkdownTool.parseArguments(arguments));
+                    break;
+
+                case "show_markdown_file":
+                    result = this.showMarkdownFileTool.run(
+                            this.showMarkdownFileTool.parseArguments(arguments));
                     break;
 
                 default:

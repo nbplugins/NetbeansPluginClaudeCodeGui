@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "markdown": {
+      "type": "string",
+      "description": "Markdown text to display"
+    },
+    "title": {
+      "type": "string",
+      "description": "Tab title (optional, default: Plan)"
+    }
+  },
+  "required": ["markdown"]
+}

@@ -60,6 +60,12 @@ public final class ClaudeProcess {
     /** Key the plugin registers under {@code mcpServers}. */
     static final String OUR_MCP_KEY = "netbeans";
 
+    /** MCP tools the plugin adds to {@code permissions.allow}. */
+    static final List<String> OUR_ALLOWED_TOOLS = List.of(
+            "mcp__netbeans__show_markdown",
+            "mcp__netbeans__show_markdown_file"
+    );
+
     /** Creates a new, idle {@code ClaudeProcess} instance. */
     public ClaudeProcess() {}
 
@@ -488,6 +494,26 @@ public final class ClaudeProcess {
 
             root.set("hooks", hooks);
 
+            // --- permissions.allow ---
+            ObjectNode permissions = root.has("permissions")
+                    ? (ObjectNode) root.get("permissions")
+                    : MAPPER.createObjectNode();
+            ArrayNode allow = permissions.has("allow")
+                    ? (ArrayNode) permissions.get("allow")
+                    : MAPPER.createArrayNode();
+            for (String tool : OUR_ALLOWED_TOOLS) {
+                boolean found = false;
+                for (JsonNode n : allow) {
+                    if (tool.equals(n.asText())) { found = true; break; }
+                }
+                if (!found) allow.add(tool);
+            }
+            permissions.set("allow", allow);
+            if (!permissions.has("deny")) {
+                permissions.set("deny", MAPPER.createArrayNode());
+            }
+            root.set("permissions", permissions);
+
             // apiKeyHelper for CLAUDE_API (only apiKey set, no baseUrl)
             if (profile != null && !profile.getApiKey().isBlank()
                     && profile.getBaseUrl().isBlank()) {
@@ -596,6 +622,28 @@ public final class ClaudeProcess {
             }
 
             root.remove("apiKeyHelper");
+
+            // Remove our tools from permissions.allow
+            if (root.has("permissions")) {
+                ObjectNode permissions = (ObjectNode) root.get("permissions");
+                if (permissions.has("allow")) {
+                    ArrayNode allow = (ArrayNode) permissions.get("allow");
+                    ArrayNode filteredAllow = MAPPER.createArrayNode();
+                    for (JsonNode n : allow) {
+                        if (!OUR_ALLOWED_TOOLS.contains(n.asText())) {
+                            filteredAllow.add(n);
+                        }
+                    }
+                    if (filteredAllow.isEmpty() && !permissions.has("deny")) {
+                        root.remove("permissions");
+                    } else if (filteredAllow.isEmpty()) {
+                        permissions.remove("allow");
+                        if (permissions.isEmpty()) root.remove("permissions");
+                    } else {
+                        permissions.set("allow", filteredAllow);
+                    }
+                }
+            }
 
             return root.isEmpty() ? null : MAPPER.writeValueAsString(root);
 

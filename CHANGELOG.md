@@ -1,3 +1,6 @@
+- Added `show_markdown` MCP tool: displays markdown text in a NetBeans Markdown Preview tab
+- Added `show_markdown_file` MCP tool: opens a live-updating Markdown Preview tab for a .md file on disk
+
 # 0.22.40 (2026-05-12)
 
 - Fixed markdown preview rendering fenced code blocks indented inside list items outside the list instead of nested within their list item
