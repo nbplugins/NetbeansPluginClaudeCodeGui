@@ -380,31 +380,78 @@ public final class ClaudeCodePreferences {
     }
 
     // -------------------------------------------------------------------------
-    // mdPreviewInDiff
+    // mdPreviewInDiffMode
     // -------------------------------------------------------------------------
 
-    /** Preference key: show markdown preview for .md files in diff. */
-    public static final String KEY_MD_PREVIEW_IN_DIFF = "mdPreviewInDiff";
-    /** Default: markdown preview enabled. */
-    public static final boolean DEFAULT_MD_PREVIEW_IN_DIFF = true;
+    /** Preference key: when to show markdown preview for .md files in diff. */
+    public static final String KEY_MD_PREVIEW_IN_DIFF_MODE = "mdPreviewInDiffMode";
+    /** Default: always show the inline preview. */
+    public static final MdPreviewInDiffMode DEFAULT_MD_PREVIEW_IN_DIFF_MODE =
+            MdPreviewInDiffMode.ALWAYS;
 
     /**
-     * Returns whether the markdown preview is shown for .md files in diffs.
+     * Returns the current mode for showing the inline Markdown preview in the diff panel.
      *
-     * @return {@code true} if the preview is enabled
+     * @return the {@link MdPreviewInDiffMode}, never {@code null}
      */
-    public static boolean isMdPreviewInDiff() {
-        return NbPreferences.forModule(ClaudeCodePreferences.class)
-                .getBoolean(KEY_MD_PREVIEW_IN_DIFF, DEFAULT_MD_PREVIEW_IN_DIFF);
+    public static MdPreviewInDiffMode getMdPreviewInDiffMode() {
+        String raw = NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_MD_PREVIEW_IN_DIFF_MODE, DEFAULT_MD_PREVIEW_IN_DIFF_MODE.name());
+        try {
+            return MdPreviewInDiffMode.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            return DEFAULT_MD_PREVIEW_IN_DIFF_MODE;
+        }
     }
 
     /**
-     * Persists the markdown-preview-in-diff setting.
+     * Persists the markdown-preview-in-diff mode setting.
      *
-     * @param v {@code true} to enable the preview
+     * @param v the mode to store, must not be {@code null}
      */
-    public static void setMdPreviewInDiff(boolean v) {
-        NbPreferences.forModule(ClaudeCodePreferences.class).putBoolean(KEY_MD_PREVIEW_IN_DIFF, v);
+    public static void setMdPreviewInDiffMode(MdPreviewInDiffMode v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_MD_PREVIEW_IN_DIFF_MODE, v.name());
+    }
+
+    /**
+     * Returns {@code true} if the inline Markdown preview is enabled in any form.
+     *
+     * @deprecated Use {@link #getMdPreviewInDiffMode()} for full control.
+     */
+    @Deprecated
+    public static boolean isMdPreviewInDiff() {
+        return getMdPreviewInDiffMode() != MdPreviewInDiffMode.NEVER;
+    }
+
+    // -------------------------------------------------------------------------
+    // autoPlanPreview
+    // -------------------------------------------------------------------------
+
+    /** Preference key: automatically open Markdown Preview when Claude writes a plan file. */
+    public static final String KEY_AUTO_PLAN_PREVIEW = "autoPlanPreview";
+    /** Default: auto plan preview enabled. */
+    public static final boolean DEFAULT_AUTO_PLAN_PREVIEW = true;
+
+    /**
+     * Returns {@code true} if the plugin should automatically open a live Markdown
+     * Preview tab when Claude writes a plan file to any {@code plans/} directory.
+     *
+     * @return {@code true} if auto plan preview is enabled
+     */
+    public static boolean isAutoPlanPreview() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getBoolean(KEY_AUTO_PLAN_PREVIEW, DEFAULT_AUTO_PLAN_PREVIEW);
+    }
+
+    /**
+     * Persists the auto-plan-preview setting.
+     *
+     * @param v {@code true} to enable automatic plan preview
+     */
+    public static void setAutoPlanPreview(boolean v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putBoolean(KEY_AUTO_PLAN_PREVIEW, v);
     }
 
     // -------------------------------------------------------------------------

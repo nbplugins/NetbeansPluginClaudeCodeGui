@@ -50,7 +50,9 @@ import java.beans.PropertyChangeListener;
 import javax.swing.SwingUtilities;
 import org.openide.windows.WindowManager;
 import io.github.nbclaudecodegui.ui.ClaudeSessionTab;
+import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.ui.FileDiffOpener;
+import io.github.nbclaudecodegui.ui.MarkdownPreviewTab;
 import io.github.nbclaudecodegui.mcp.tools.DiffTabTracker;
 import io.github.nbclaudecodegui.mcp.tools.GetDiagnostics;
 import io.github.nbclaudecodegui.mcp.tools.GetOpenEditors;
@@ -548,7 +550,10 @@ public class NetBeansMCPHandler {
             CompletableFuture<String> future = DiffTabTracker.registerHookFuture(tabName);
 
             FileDiffOpener.open(filePath, before, after, tabName, cwd,
-            () -> DiffTabTracker.resolveHook(tabName, hookAllowJson()),
+            () -> {
+                DiffTabTracker.resolveHook(tabName, hookAllowJson());
+                openPlanPreviewIfNeeded(toolInput, filePath);
+            },
             reason -> DiffTabTracker.resolveHook(tabName, hookDenyJson(reason)),
             () -> {
                 DiffTabTracker.resolveHook(tabName, hookDenyJson(""));
@@ -563,6 +568,35 @@ public class NetBeansMCPHandler {
             LOGGER.log(Level.SEVERE, "handlePreToolUse error", e);
             return CompletableFuture.completedFuture(hookAskJson());
         }
+    }
+
+    /**
+     * Opens a live Markdown Preview tab for the written file when it is a plan
+     * file ({@code <configDir>/plans/*.md}) and the {@code autoPlanPreview}
+     * setting is enabled.  Called after the user approves a Write hook.
+     *
+     * <p>The plans directory is identified by the parent directory being named
+     * {@code "plans"}, making it robust against different {@code CLAUDE_CONFIG_DIR}
+     * values (default {@code ~/.claude}, isolated profiles, etc.)
+     *
+     * <p>The tab is opened before Claude writes the file; {@link MarkdownPreviewTab#openLive}
+     * schedules a deferred {@code forceReload()} that wires the {@link org.openide.filesystems.FileChangeListener}
+     * once the file appears on disk.
+     */
+    private void openPlanPreviewIfNeeded(JsonNode toolInput, String filePath) {
+        if (!ClaudeCodePreferences.isAutoPlanPreview()) return;
+        if (filePath == null || filePath.isEmpty() || !filePath.endsWith(".md")) return;
+        java.nio.file.Path p = java.nio.file.Path.of(filePath);
+        if (p.getParent() == null
+                || !"plans".equals(p.getParent().getFileName().toString())) return;
+        File file = new File(filePath);
+        FileObject fo = FileUtil.toFileObject(FileUtil.normalizeFile(file));
+        String currentContent = "";
+        if (fo != null) {
+            try { currentContent = fo.asText(); } catch (java.io.IOException ignored) {}
+        }
+        final String initialContent = currentContent;
+        SwingUtilities.invokeLater(() -> MarkdownPreviewTab.openLive(filePath, initialContent, fo));
     }
 
     private static boolean isFileEditTool(String toolName) {

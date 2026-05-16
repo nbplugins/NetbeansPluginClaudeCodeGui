@@ -17,7 +17,7 @@ class ClaudeCodePreferencesTest {
                 ClaudeCodePreferences.DEFAULT_CLAUDE_EXECUTABLE_PATH);
         ClaudeCodePreferences.setMcpPort(ClaudeCodePreferences.DEFAULT_MCP_PORT);
         ClaudeCodePreferences.setOpenDiffInSeparateTab(ClaudeCodePreferences.DEFAULT_OPEN_DIFF_IN_SEPARATE_TAB);
-        ClaudeCodePreferences.setMdPreviewInDiff(ClaudeCodePreferences.DEFAULT_MD_PREVIEW_IN_DIFF);
+        ClaudeCodePreferences.setMdPreviewInDiffMode(ClaudeCodePreferences.DEFAULT_MD_PREVIEW_IN_DIFF_MODE);
         ClaudeCodePreferences.setSessionDockMode(ClaudeCodePreferences.DEFAULT_SESSION_DOCK_MODE);
         ClaudeCodePreferences.setMarkdownPreviewDockMode(ClaudeCodePreferences.DEFAULT_MARKDOWN_PREVIEW_DOCK_MODE);
         ClaudeCodePreferences.setFileDiffDockMode(ClaudeCodePreferences.DEFAULT_FILE_DIFF_DOCK_MODE);
@@ -100,7 +100,7 @@ class ClaudeCodePreferencesTest {
 
     @Test
     void mdPreviewInDiffStoreAndRetrieve() {
-        ClaudeCodePreferences.setMdPreviewInDiff(false);
+        ClaudeCodePreferences.setMdPreviewInDiffMode(MdPreviewInDiffMode.NEVER);
         assertFalse(ClaudeCodePreferences.isMdPreviewInDiff());
     }
 

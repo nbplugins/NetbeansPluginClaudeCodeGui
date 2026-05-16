@@ -1,3 +1,4 @@
+- Added automatic Markdown Preview tab when Claude writes a plan file (configurable in Settings → General)
 - Added `show_markdown` MCP tool: displays markdown text in a NetBeans Markdown Preview tab
 - Added `show_markdown_file` MCP tool: opens a live-updating Markdown Preview tab for a .md file on disk
 

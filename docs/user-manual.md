@@ -317,11 +317,29 @@ Press Escape to click Cancel.
 
 ### Markdown preview
 
-For `.md` files, a rendered markdown preview is shown alongside the raw diff. Toggle it via **right-click on the diff → Preview Markdown** (checkbox). The default state is configured in **Tools → Options → Claude Code → General → Show markdown preview for .md files in diff**. Toggling in the context menu does not change the global setting.
+For `.md` files, a rendered markdown preview is shown alongside the raw diff. Toggle it via **right-click on the diff → Preview Markdown** (checkbox). The default state is configured in **Tools → Options → Claude Code → General → Markdown preview in diff**, which offers three options:
+
+| Option | Behaviour |
+|--------|-----------|
+| **Always** | Always show the inline preview for `.md` files in the diff panel (default) |
+| **Never** | Never show the inline preview |
+| **Except when Plan Preview tab is open** | Show the inline preview, but suppress it when a dedicated live Plan Preview tab is already visible for a file in the `plans/` directory |
+
+Toggling in the context menu does not change the global setting.
 
 **Pin Preview** — opens the rendered markdown (proposed content) in a separate IDE tab that remains open after the diff is closed.
 
 Both features are especially useful in Claude's plan mode: they let you read the formatted plan before deciding whether to accept it.
+
+### Auto Plan Preview
+
+When Claude writes a plan file to a `plans/` directory (e.g. `~/.claude/plans/my-plan.md`), the plugin can automatically open a live **Markdown Preview** tab the moment you click **Accept** in the diff panel.
+
+- The preview opens immediately when you click **Accept**; the file content appears within a second or two as Claude finishes writing it.
+- If you click **Accept** again for the same plan file (e.g. after an update), the existing preview tab refreshes in-place instead of opening a new tab.
+- The feature works with any `CLAUDE_CONFIG_DIR` location — it detects the `plans/` directory by name, so named profiles with custom config directories are supported automatically.
+
+**Enable / disable:** **Tools → Options → Claude Code → General → Automatically open Plan Preview tab when Claude writes a plan**.
 
 If the file being edited is outside the current project directory, a warning ⚠ is shown in the diff panel.
 
@@ -343,7 +361,8 @@ Open **Tools → Options → Claude Code** in NetBeans.
 | Insert newline key | Enter | Key combination that inserts a newline in the input area. The send and newline keys are configured independently but cannot be set to the same value. |
 | Open file diff in a separate tab | Off | Opens the diff panel in a new IDE tab instead of embedding it in the session tab. |
 | File diff tab dock position | Editor area | Where the File Diff tab is docked when opened as a separate tab. Enabled only when "Open file diff in a separate tab" is checked. |
-| Show markdown preview for .md files in diff | On | Shows a rendered markdown preview alongside the raw diff for `.md` files. |
+| Markdown preview in diff | Always | Controls when the inline markdown preview is shown for `.md` files in the diff panel. **Always** — always show it. **Never** — never show it. **Except when Plan Preview tab is open** — show it, but suppress it when the diffed file is a plan file and Auto Plan Preview is on (or its tab is already open). |
+| Automatically open Plan Preview tab when Claude writes a plan | On | When enabled, a live Markdown Preview tab opens automatically as soon as the user clicks Allow in a diff panel for a file in a `plans/` directory. |
 | Markdown preview dock position | Right side | Where the Markdown Preview tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
 | Choice menu focus | Grab focus | Controls whether the choice menu panel grabs keyboard focus when it appears. Choices: Grab focus, Show without grabbing focus, Hide menu. |
 | Terminal font | Auto | Font used in the embedded terminal. Click **Choose…** to open the font picker. The label shows the resolved font name (e.g. `Adwaita Mono, 14 (Auto)` when auto-detection is active, or `Monospaced, 14` when set explicitly). |
@@ -657,6 +676,8 @@ The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protoc
 | `openDiff` | Shows a git diff for a file in the diff viewer |
 | `closeAllDiffTabs` | Closes all open diff viewer tabs |
 | `permission_prompt` | Shows proposed file changes in the diff panel and waits for your approval |
+| `show_markdown` | Renders markdown text directly in a Markdown Preview tab; accepts the markdown content plus optional title and file path |
+| `show_markdown_file` | Opens a live-updating Markdown Preview tab for an existing `.md` file on disk; the tab automatically refreshes when the file changes |
 
 ### Prompts that work well with IDE tools
 

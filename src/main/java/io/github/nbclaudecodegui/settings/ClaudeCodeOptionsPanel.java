@@ -2,6 +2,9 @@ package io.github.nbclaudecodegui.settings;
 
 import io.github.nbclaudecodegui.model.FavoriteEntry;
 import io.github.nbclaudecodegui.model.PromptFavoritesStore;
+import javax.swing.DefaultListCellRenderer;
+import javax.swing.JComboBox;
+import javax.swing.JList;
 import io.github.nbclaudecodegui.ui.FavoritesPanel;
 import java.awt.BorderLayout;
 import java.awt.GridBagConstraints;
@@ -72,8 +75,12 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private javax.swing.JCheckBox debugCheckBox;
     /** Checkbox to open diff in a separate tab. */
     private javax.swing.JCheckBox diffInSessionCheck;
-    /** Checkbox to show markdown preview for .md files in diff. */
-    private javax.swing.JCheckBox mdPreviewInDiffCheck;
+    /** Label for the markdown preview in diff combobox. */
+    private JLabel mdPreviewInDiffLabel;
+    /** Combobox for the markdown preview in diff mode. */
+    private JComboBox<MdPreviewInDiffMode> mdPreviewInDiffCombo;
+    /** Checkbox to automatically open Plan Preview when Claude writes a plan file. */
+    private javax.swing.JCheckBox autoPlanPreviewCheck;
     /** Checkbox for context-menu session mode (checked = New, unchecked = Continue last). */
     private javax.swing.JCheckBox startNewSessionCheck;
     /** Spinner for the maximum number of sessions shown in the session list. */
@@ -219,13 +226,36 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         row++;
 
         // --- md preview in diff ---
-        mdPreviewInDiffCheck = new javax.swing.JCheckBox("Show markdown preview for .md files in diff");
-        GridBagConstraints mdGbc = new GridBagConstraints();
-        mdGbc.gridx = 0; mdGbc.gridy = row;
-        mdGbc.gridwidth = 3;
-        mdGbc.anchor = GridBagConstraints.WEST;
-        mdGbc.insets = new Insets(4, 8, 4, 8);
-        form.add(mdPreviewInDiffCheck, mdGbc);
+        mdPreviewInDiffLabel = new JLabel("Markdown preview in diff:");
+        form.add(mdPreviewInDiffLabel, gbc(0, row, false));
+        mdPreviewInDiffCombo = new JComboBox<>(MdPreviewInDiffMode.values());
+        mdPreviewInDiffCombo.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public java.awt.Component getListCellRendererComponent(
+                    JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof MdPreviewInDiffMode mode) {
+                    setText(switch (mode) {
+                        case ALWAYS      -> "Always";
+                        case NEVER       -> "Never";
+                        case EXCEPT_PLAN -> "Except when Plan Preview tab is open";
+                    });
+                }
+                return this;
+            }
+        });
+        form.add(mdPreviewInDiffCombo, gbc(1, row, false));
+        row++;
+
+        // --- auto plan preview ---
+        autoPlanPreviewCheck = new javax.swing.JCheckBox(
+                "Automatically open Plan Preview tab when Claude writes a plan");
+        GridBagConstraints appGbc = new GridBagConstraints();
+        appGbc.gridx = 0; appGbc.gridy = row;
+        appGbc.gridwidth = 3;
+        appGbc.anchor = GridBagConstraints.WEST;
+        appGbc.insets = new Insets(4, 8, 4, 8);
+        form.add(autoPlanPreviewCheck, appGbc);
         row++;
 
         // --- markdown preview dock mode ---
@@ -444,7 +474,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         debugCheckBox.setSelected(ClaudeCodePreferences.isDebugMode());
         diffInSessionCheck.setSelected(
                 ClaudeCodePreferences.isOpenDiffInSeparateTab());
-        mdPreviewInDiffCheck.setSelected(ClaudeCodePreferences.isMdPreviewInDiff());
+        mdPreviewInDiffCombo.setSelectedItem(ClaudeCodePreferences.getMdPreviewInDiffMode());
+        autoPlanPreviewCheck.setSelected(ClaudeCodePreferences.isAutoPlanPreview());
         startNewSessionCheck.setSelected(
                 ClaudeCodePreferences.getContextMenuSessionMode()
                         == io.github.nbclaudecodegui.model.SessionMode.NEW);
@@ -489,7 +520,9 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         ClaudeCodePreferences.setHistoryTtlDays((Integer) historyTtlDaysSpinner.getValue());
         ClaudeCodePreferences.setDebugMode(debugCheckBox.isSelected());
         ClaudeCodePreferences.setOpenDiffInSeparateTab(diffInSessionCheck.isSelected());
-        ClaudeCodePreferences.setMdPreviewInDiff(mdPreviewInDiffCheck.isSelected());
+        MdPreviewInDiffMode selMode = (MdPreviewInDiffMode) mdPreviewInDiffCombo.getSelectedItem();
+        if (selMode != null) ClaudeCodePreferences.setMdPreviewInDiffMode(selMode);
+        ClaudeCodePreferences.setAutoPlanPreview(autoPlanPreviewCheck.isSelected());
         ClaudeCodePreferences.setContextMenuSessionMode(
                 startNewSessionCheck.isSelected()
                         ? io.github.nbclaudecodegui.model.SessionMode.NEW

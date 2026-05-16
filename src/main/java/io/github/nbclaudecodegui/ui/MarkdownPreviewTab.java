@@ -16,6 +16,8 @@ import javax.swing.AbstractAction;
 import javax.swing.JComponent;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.util.Objects;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
 import java.net.URI;
@@ -40,6 +42,7 @@ import org.openide.filesystems.FileChangeListener;
 import org.openide.filesystems.FileEvent;
 import org.openide.filesystems.FileObject;
 import org.openide.filesystems.FileUtil;
+import org.openide.util.RequestProcessor;
 import org.openide.windows.TopComponent;
 
 /**
@@ -67,6 +70,9 @@ public class MarkdownPreviewTab extends TopComponent {
     private static final Map<String, MarkdownPreviewTab> OPEN_TABS =
             Collections.synchronizedMap(new HashMap<>());
 
+    /** Used to schedule deferred {@link #forceReload()} when a tab is opened before the file exists. */
+    private static final RequestProcessor RP = new RequestProcessor("markdown-preview-reload", 1, true);
+
     /** The editor pane that renders HTML-converted markdown. */
     JEditorPane pane;
 
@@ -74,10 +80,10 @@ public class MarkdownPreviewTab extends TopComponent {
     private JScrollPane scrollPane;
 
     /** Listener attached to the backing FileObject, if any. */
-    private FileChangeListener fileListener;
+    FileChangeListener fileListener;
 
     /** The FileObject being monitored (may be null for diff-pinned previews). */
-    private FileObject fileObject;
+    FileObject fileObject;
 
     /** Absolute path key used to identify this tab in {@link #OPEN_TABS}. */
     String filePath;
@@ -131,6 +137,7 @@ public class MarkdownPreviewTab extends TopComponent {
                 existing.fileListener = makeFileListener(existing, fo);
                 fo.addFileChangeListener(existing.fileListener);
             }
+            RP.post(existing::forceReload, 3000);
             existing.requestActive();
             return;
         }
@@ -168,6 +175,8 @@ public class MarkdownPreviewTab extends TopComponent {
         OPEN_TABS.put(filePath, tab);
         UiUtils.dockAndOpen(tab, ClaudeCodePreferences.getMarkdownPreviewDockMode());
         tab.requestActive();
+
+        RP.post(tab::forceReload, 3000);
     }
 
     /**
@@ -472,7 +481,7 @@ public class MarkdownPreviewTab extends TopComponent {
 
         JMenuItem refresh = new JMenuItem("Refresh");
         refresh.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
-        refresh.addActionListener(e -> doRefresh());
+        refresh.addActionListener(e -> forceReload());
 
         JMenuItem selectAll = new JMenuItem("Select All");
         selectAll.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_A, InputEvent.CTRL_DOWN_MASK));
@@ -520,7 +529,9 @@ public class MarkdownPreviewTab extends TopComponent {
                 copyUrl.setEnabled(hasLink);
                 back.setEnabled(canGoBack());
                 forward.setEnabled(canGoForward());
-                refresh.setVisible(fileObject != null);
+                // Show Refresh only when the tab tracks a real file (not synthetic MCP content).
+                refresh.setVisible(fileObject != null
+                        || (filePath != null && new File(filePath).exists()));
                 copy.setEnabled(pane != null
                         && pane.getSelectionStart() != pane.getSelectionEnd());
             }
@@ -538,18 +549,8 @@ public class MarkdownPreviewTab extends TopComponent {
         KeyStroke f5 = KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0);
         p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(f5, "md-refresh");
         p.getActionMap().put("md-refresh", new AbstractAction() {
-            @Override public void actionPerformed(ActionEvent e) { doRefresh(); }
+            @Override public void actionPerformed(ActionEvent e) { forceReload(); }
         });
-    }
-
-    void doRefresh() {
-        if (fileObject == null) return;
-        try {
-            fileObject.refresh(false);
-            updateContent(fileObject.asText());
-        } catch (IOException e) {
-            // silently ignore
-        }
     }
 
     @Override
@@ -633,13 +634,56 @@ public class MarkdownPreviewTab extends TopComponent {
         }
     }
 
+    /**
+     * Returns {@code true} if at least one live Markdown Preview tab is currently
+     * open for a file whose parent directory is named {@code plans}.  Used to
+     * suppress the inline diff preview when a dedicated plan preview is visible.
+     */
+    public static boolean hasActivePlanPreview() {
+        return OPEN_TABS.values().stream()
+                .filter(MarkdownPreviewTab::isOpened)
+                .map(t -> t.filePath != null ? Path.of(t.filePath).getParent() : null)
+                .filter(Objects::nonNull)
+                .anyMatch(p -> "plans".equals(p.getFileName().toString()));
+    }
+
+    /** Returns {@code true} if a live preview tab is currently open for exactly {@code filePath}. */
+    public static boolean isTabOpenFor(String filePath) {
+        MarkdownPreviewTab tab = OPEN_TABS.get(filePath);
+        return tab != null && tab.isOpened();
+    }
+
+    /**
+     * Forces an immediate reload from disk.  When {@code fileObject} is null (tab was
+     * opened before the file existed), attempts to acquire the {@link FileObject} and
+     * attach a {@link FileChangeListener}.  Called automatically by {@link #openLive}
+     * after a 3-second delay whenever the tab is opened without a FileObject.
+     */
+    public void forceReload() {
+        if (fileObject == null) {
+            // File may not have existed when the tab was opened (hook fires before write).
+            // Try to obtain the FileObject now that the file should be on disk.
+            File f = new File(filePath);
+            if (!f.exists()) return;
+            FileObject fo = FileUtil.toFileObject(FileUtil.normalizeFile(f));
+            if (fo == null) return;
+            fileObject = fo;
+            fileListener = makeFileListener(this, fo);
+            fo.addFileChangeListener(fileListener);
+        }
+        try {
+            fileObject.refresh(false);
+            updateContent(fileObject.asText());
+        } catch (IOException ignored) {}
+    }
+
     // --- Test hooks (package-private) ---
 
     static void clearOpenTabsForTest() {
         OPEN_TABS.clear();
     }
 
-    static Map<String, MarkdownPreviewTab> getOpenTabsForTest() {
+    public static Map<String, MarkdownPreviewTab> getOpenTabsForTest() {
         return OPEN_TABS;
     }
 

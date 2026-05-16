@@ -2,8 +2,10 @@ package io.github.nbclaudecodegui.ui;
 
 import io.github.nbclaudecodegui.model.EditMode;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
+import io.github.nbclaudecodegui.settings.MdPreviewInDiffMode;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.io.Reader;
 import java.io.StringReader;
 import java.io.Writer;
@@ -217,7 +219,21 @@ public final class FileDiffOpener {
 
             // Build the wrapper panel that holds either the raw diff or the MD split
             java.awt.Component initialContent = diffView.getComponent();
-            if (isMdFile && ClaudeCodePreferences.isMdPreviewInDiff()) {
+            MdPreviewInDiffMode previewMode = ClaudeCodePreferences.getMdPreviewInDiffMode();
+            boolean showMdPreview = isMdFile && switch (previewMode) {
+                case ALWAYS      -> true;
+                case NEVER       -> false;
+                case EXCEPT_PLAN -> {
+                    // Suppress for plan files when a dedicated tab will open (autoPlanPreview)
+                    // or already is open for this exact file.
+                    Path parent = Path.of(filePath).getParent();
+                    boolean isPlanFile = parent != null
+                            && "plans".equals(parent.getFileName().toString());
+                    yield !(isPlanFile && (ClaudeCodePreferences.isAutoPlanPreview()
+                            || MarkdownPreviewTab.isTabOpenFor(filePath)));
+                }
+            };
+            if (showMdPreview) {
                 MarkdownDiffPanel mdPanel = new MarkdownDiffPanel(before, after);
                 mdPanel.attachRawDiffSync(diffView.getComponent());
                 javax.swing.JSplitPane mdSplit = new javax.swing.JSplitPane(
@@ -257,7 +273,7 @@ public final class FileDiffOpener {
             if (isMdFile) {
                 JCheckBoxMenuItem previewItem =
                         new JCheckBoxMenuItem("Preview Markdown");
-                previewItem.setSelected(ClaudeCodePreferences.isMdPreviewInDiff());
+                previewItem.setSelected(showMdPreview);
                 previewItemRef[0] = previewItem;
 
                 previewItem.addActionListener(e ->
