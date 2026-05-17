@@ -222,6 +222,9 @@ public class MarkdownPreviewTab extends TopComponent {
         KeyStroke ctrlF   = KeyStroke.getKeyStroke(KeyEvent.VK_F,  InputEvent.CTRL_DOWN_MASK);
         KeyStroke f3      = KeyStroke.getKeyStroke(KeyEvent.VK_F3, 0);
         KeyStroke shiftF3 = KeyStroke.getKeyStroke(KeyEvent.VK_F3, InputEvent.SHIFT_DOWN_MASK);
+        // WHEN_FOCUSED overrides built-in JEditorPane Ctrl+F before NetBeans global action
+        p.getInputMap(JComponent.WHEN_FOCUSED).put(ctrlF, "md-find-show");
+        // WHEN_IN_FOCUSED_WINDOW covers F3/Shift+F3 from anywhere in the tab
         p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ctrlF,   "md-find-show");
         p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(f3,      "md-find-next");
         p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(shiftF3, "md-find-prev");
@@ -231,13 +234,13 @@ public class MarkdownPreviewTab extends TopComponent {
         p.getActionMap().put("md-find-next", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) {
                 if (findBar != null && findBar.isVisible()) findBar.findNext();
-                else showFindBar();
+                else if (findBar != null) findBar.searchAndFindNext();
             }
         });
         p.getActionMap().put("md-find-prev", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) {
                 if (findBar != null && findBar.isVisible()) findBar.findPrev();
-                else showFindBar();
+                else if (findBar != null) findBar.searchAndFindPrev();
             }
         });
     }

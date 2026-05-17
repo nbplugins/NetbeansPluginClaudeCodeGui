@@ -94,14 +94,15 @@ class MarkdownFindBarTest {
     }
 
     @Test
-    void hideHidesBarAndClearsHighlights() {
+    void hideHidesBarPreservesPositionsForResumedSearch() {
         bar.gainFocus();
         assertTrue(bar.isVisible());
         setQuery("hello");
+        assertEquals(4, bar.getMatchPositions().size());
         bar.looseFocus();
         assertFalse(bar.isVisible());
-        assertEquals(0, bar.getMatchPositions().size());
-        assertEquals(-1, bar.getCurrentMatchIndex());
+        // matchPositions preserved so F3 can resume from correct position
+        assertEquals(4, bar.getMatchPositions().size());
     }
 
     @Test

@@ -131,6 +131,7 @@ public class MarkdownDiffPanel extends JPanel {
         KeyStroke ctrlF   = KeyStroke.getKeyStroke(KeyEvent.VK_F,  InputEvent.CTRL_DOWN_MASK);
         KeyStroke f3      = KeyStroke.getKeyStroke(KeyEvent.VK_F3, 0);
         KeyStroke shiftF3 = KeyStroke.getKeyStroke(KeyEvent.VK_F3, InputEvent.SHIFT_DOWN_MASK);
+        pane.getInputMap(JComponent.WHEN_FOCUSED).put(ctrlF, "mddiff-find-show");
         pane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ctrlF,   "mddiff-find-show");
         pane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(f3,      "mddiff-find-next");
         pane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(shiftF3, "mddiff-find-prev");
@@ -139,12 +140,12 @@ public class MarkdownDiffPanel extends JPanel {
         });
         pane.getActionMap().put("mddiff-find-next", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) {
-                if (fb.isVisible()) fb.findNext(); else fb.gainFocus();
+                if (fb.isVisible()) fb.findNext(); else fb.searchAndFindNext();
             }
         });
         pane.getActionMap().put("mddiff-find-prev", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) {
-                if (fb.isVisible()) fb.findPrev(); else fb.gainFocus();
+                if (fb.isVisible()) fb.findPrev(); else fb.searchAndFindPrev();
             }
         });
     }
