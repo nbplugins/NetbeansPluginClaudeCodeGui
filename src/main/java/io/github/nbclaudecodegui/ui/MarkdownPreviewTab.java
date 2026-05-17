@@ -3,6 +3,7 @@ package io.github.nbclaudecodegui.ui;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.ui.common.MarkdownRenderer;
 import io.github.nbclaudecodegui.ui.common.UiUtils;
+import io.github.nbclaudecodegui.ui.common.markdown.MarkdownFindBar;
 import java.awt.BorderLayout;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
@@ -103,6 +104,9 @@ public class MarkdownPreviewTab extends TopComponent {
     /** Snapshot of the href captured when the context menu opens; read by action listeners. */
     String menuHref = null;
 
+    /** Find bar shown at the bottom of the preview. */
+    private MarkdownFindBar findBar;
+
     /** File path saved by writeExternal; applied in componentOpened() after IDE restart. */
     String savedFilePath = null;
 
@@ -156,10 +160,11 @@ public class MarkdownPreviewTab extends TopComponent {
         tab.scrollPane = new JScrollPane(tab.pane);
         tab.add(tab.scrollPane, BorderLayout.CENTER);
 
-        // Attach hyperlink listener and context menu
+        // Attach hyperlink listener, context menu, and find bar
         tab.attachHyperlinkListener();
         tab.bindRefreshKey(tab.pane);
         tab.pane.setComponentPopupMenu(tab.buildContextMenu());
+        tab.initFindBar(tab.pane);
 
         if (fo != null) {
             tab.fileListener = makeFileListener(tab, fo);
@@ -205,6 +210,40 @@ public class MarkdownPreviewTab extends TopComponent {
                 viewport.setViewPosition(new Point(0, newY));
             });
         });
+    }
+
+    private void initFindBar(JEditorPane p) {
+        findBar = new MarkdownFindBar(p);
+        add(findBar, BorderLayout.SOUTH);
+        bindFindBarKeys(p);
+    }
+
+    private void bindFindBarKeys(JEditorPane p) {
+        KeyStroke ctrlF   = KeyStroke.getKeyStroke(KeyEvent.VK_F,  InputEvent.CTRL_DOWN_MASK);
+        KeyStroke f3      = KeyStroke.getKeyStroke(KeyEvent.VK_F3, 0);
+        KeyStroke shiftF3 = KeyStroke.getKeyStroke(KeyEvent.VK_F3, InputEvent.SHIFT_DOWN_MASK);
+        p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ctrlF,   "md-find-show");
+        p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(f3,      "md-find-next");
+        p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(shiftF3, "md-find-prev");
+        p.getActionMap().put("md-find-show", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) { showFindBar(); }
+        });
+        p.getActionMap().put("md-find-next", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                if (findBar != null && findBar.isVisible()) findBar.findNext();
+                else showFindBar();
+            }
+        });
+        p.getActionMap().put("md-find-prev", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                if (findBar != null && findBar.isVisible()) findBar.findPrev();
+                else showFindBar();
+            }
+        });
+    }
+
+    void showFindBar() {
+        if (findBar != null) findBar.gainFocus();
     }
 
     @Override
@@ -483,6 +522,10 @@ public class MarkdownPreviewTab extends TopComponent {
         refresh.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
         refresh.addActionListener(e -> forceReload());
 
+        JMenuItem find = new JMenuItem("Find…");
+        find.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK));
+        find.addActionListener(e -> showFindBar());
+
         JMenuItem selectAll = new JMenuItem("Select All");
         selectAll.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_A, InputEvent.CTRL_DOWN_MASK));
         selectAll.addActionListener(e -> { if (pane != null) pane.selectAll(); });
@@ -507,6 +550,8 @@ public class MarkdownPreviewTab extends TopComponent {
         menu.add(back);
         menu.add(forward);
         menu.add(refresh);
+        menu.addSeparator();
+        menu.add(find);
         menu.addSeparator();
         menu.add(selectAll);
         menu.add(copy);
@@ -604,6 +649,7 @@ public class MarkdownPreviewTab extends TopComponent {
             attachHyperlinkListener();
             bindRefreshKey(pane);
             pane.setComponentPopupMenu(buildContextMenu());
+            initFindBar(pane);
         }
 
         filePath = path;

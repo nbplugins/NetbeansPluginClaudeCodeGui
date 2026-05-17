@@ -1,15 +1,22 @@
 package io.github.nbclaudecodegui.ui;
 
 import io.github.nbclaudecodegui.ui.common.MarkdownRenderer;
+import io.github.nbclaudecodegui.ui.common.markdown.MarkdownFindBar;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
+import javax.swing.AbstractAction;
+import javax.swing.JComponent;
 import javax.swing.JEditorPane;
 import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import org.openide.util.NbPreferences;
 
@@ -66,7 +73,18 @@ public class MarkdownDiffPanel extends JPanel {
         beforeScroll = new JScrollPane(mdBeforePane);
         afterScroll  = new JScrollPane(mdAfterPane);
 
-        splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, beforeScroll, afterScroll);
+        MarkdownFindBar beforeFindBar = new MarkdownFindBar(mdBeforePane);
+        MarkdownFindBar afterFindBar  = new MarkdownFindBar(mdAfterPane);
+
+        JPanel beforePanel = new JPanel(new BorderLayout());
+        beforePanel.add(beforeScroll, BorderLayout.CENTER);
+        beforePanel.add(beforeFindBar, BorderLayout.SOUTH);
+
+        JPanel afterPanel = new JPanel(new BorderLayout());
+        afterPanel.add(afterScroll, BorderLayout.CENTER);
+        afterPanel.add(afterFindBar, BorderLayout.SOUTH);
+
+        splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, beforePanel, afterPanel);
         splitPane.setResizeWeight(0.5);
 
         // restore divider
@@ -86,10 +104,16 @@ public class MarkdownDiffPanel extends JPanel {
         add(splitPane, BorderLayout.CENTER);
         wireScrollSync();
 
-        // Add "Hide" and "Pin Preview" to the existing popup menus on both editor panes
-        for (JEditorPane pane : new JEditorPane[]{mdBeforePane, mdAfterPane}) {
+        // Add "Find…", "Hide", and "Pin Preview" to the existing popup menus on both panes
+        for (int i = 0; i < 2; i++) {
+            JEditorPane pane = i == 0 ? mdBeforePane : mdAfterPane;
+            MarkdownFindBar fb = i == 0 ? beforeFindBar : afterFindBar;
             JPopupMenu menu = pane.getComponentPopupMenu();
             if (menu == null) { menu = new JPopupMenu(); pane.setComponentPopupMenu(menu); }
+            JMenuItem findItem = new JMenuItem("Find…");
+            findItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK));
+            findItem.addActionListener(e -> fb.gainFocus());
+            menu.add(findItem);
             menu.addSeparator();
             JMenuItem hideItem = new JMenuItem("Hide");
             hideItem.addActionListener(e -> { if (onHide != null) onHide.run(); });
@@ -97,9 +121,32 @@ public class MarkdownDiffPanel extends JPanel {
             pinItem.addActionListener(e -> { if (onPinPreview != null) onPinPreview.run(); });
             menu.add(hideItem);
             menu.add(pinItem);
+            bindFindBarKeys(pane, fb);
         }
         // Let right-click on the divider also show the menu
         splitPane.setComponentPopupMenu(mdBeforePane.getComponentPopupMenu());
+    }
+
+    private static void bindFindBarKeys(JEditorPane pane, MarkdownFindBar fb) {
+        KeyStroke ctrlF   = KeyStroke.getKeyStroke(KeyEvent.VK_F,  InputEvent.CTRL_DOWN_MASK);
+        KeyStroke f3      = KeyStroke.getKeyStroke(KeyEvent.VK_F3, 0);
+        KeyStroke shiftF3 = KeyStroke.getKeyStroke(KeyEvent.VK_F3, InputEvent.SHIFT_DOWN_MASK);
+        pane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ctrlF,   "mddiff-find-show");
+        pane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(f3,      "mddiff-find-next");
+        pane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(shiftF3, "mddiff-find-prev");
+        pane.getActionMap().put("mddiff-find-show", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) { fb.gainFocus(); }
+        });
+        pane.getActionMap().put("mddiff-find-next", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                if (fb.isVisible()) fb.findNext(); else fb.gainFocus();
+            }
+        });
+        pane.getActionMap().put("mddiff-find-prev", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                if (fb.isVisible()) fb.findPrev(); else fb.gainFocus();
+            }
+        });
     }
 
     private void wireScrollSync() {
