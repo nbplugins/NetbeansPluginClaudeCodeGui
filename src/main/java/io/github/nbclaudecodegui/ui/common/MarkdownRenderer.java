@@ -239,11 +239,9 @@ public final class MarkdownRenderer {
                 }
                 if (continueList) {
                     String[] contLines = seg.split("\n", -1);
-                    // Find the first non-blank list item line.
+                    // Skip only blank lines to find the first non-blank content.
                     int firstIdx = 0;
-                    while (firstIdx < contLines.length
-                            && (contLines[firstIdx].isBlank()
-                                || (!isOrdered(contLines[firstIdx]) && !isUnordered(contLines[firstIdx])))) {
+                    while (firstIdx < contLines.length && contLines[firstIdx].isBlank()) {
                         firstIdx++;
                     }
                     int subListEnd = firstIdx;
@@ -256,12 +254,18 @@ public final class MarkdownRenderer {
                     html.append("</li>");
                     // Render remaining lines using the saved outer context so that items at
                     // different indent levels (siblings vs. outer) are placed correctly.
-                    renderNestedList(contLines, subListEnd, html,
+                    int listEnd = renderNestedList(contLines, subListEnd, html,
                                      new ArrayList<>(savedIndentStack), new ArrayList<>(savedTypeStack));
                     continueList = false;
                     savedTypeStack = null;
                     savedIndentStack = null;
                     savedOwnerIndent = -1;
+                    // Process any content after the list (headings, paragraphs, next list prefix).
+                    if (listEnd < contLines.length) {
+                        String tail = String.join("\n",
+                                Arrays.copyOfRange(contLines, listEnd, contLines.length));
+                        html.append(convertSegment(tail));
+                    }
                 } else {
                     html.append(convertSegment(seg));
                 }
