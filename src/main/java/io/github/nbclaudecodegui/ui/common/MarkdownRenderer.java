@@ -226,29 +226,46 @@ public final class MarkdownRenderer {
      */
     public static String toHtml(String markdown) {
         StringBuilder html = new StringBuilder();
-        // Split on fenced code blocks; odd-indexed segments are code content.
         String[] parts = markdown.split("```[^\\n]*\\n", -1);
         boolean continueList = false;
+        List<Boolean> savedTypeStack = null;
+        List<Integer> savedIndentStack = null;
+        int savedOwnerIndent = -1;
         for (int i = 0; i < parts.length; i++) {
             if (i % 2 == 0) {
-                // regular text segment
-                // strip trailing ``` from previous code block end
                 String seg = parts[i];
                 if (i > 0 && seg.startsWith("```")) {
                     seg = seg.substring(3);
                 }
-                String converted = convertSegment(seg);
                 if (continueList) {
-                    // strip the new <ol start="N">...</ol> wrapper and continue inside the open list
-                    converted = converted.replaceFirst("^<ol start=\"\\d+\">", "")
-                                         .replaceFirst("</ol>$", "");
+                    String[] contLines = seg.split("\n", -1);
+                    // Find the first non-blank list item line.
+                    int firstIdx = 0;
+                    while (firstIdx < contLines.length
+                            && (contLines[firstIdx].isBlank()
+                                || (!isOrdered(contLines[firstIdx]) && !isUnordered(contLines[firstIdx])))) {
+                        firstIdx++;
+                    }
+                    int subListEnd = firstIdx;
+                    if (firstIdx < contLines.length
+                            && leadingSpaces(contLines[firstIdx]) > savedOwnerIndent) {
+                        // Sub-items belong inside the currently open <li> — render them there.
+                        subListEnd = renderNestedList(contLines, firstIdx, html);
+                    }
+                    // Close the owner item now that its content (code block + any sub-list) is done.
+                    html.append("</li>");
+                    // Render remaining lines using the saved outer context so that items at
+                    // different indent levels (siblings vs. outer) are placed correctly.
+                    renderNestedList(contLines, subListEnd, html,
+                                     new ArrayList<>(savedIndentStack), new ArrayList<>(savedTypeStack));
                     continueList = false;
-                    html.append(converted).append("</ol>");
+                    savedTypeStack = null;
+                    savedIndentStack = null;
+                    savedOwnerIndent = -1;
                 } else {
-                    html.append(converted);
+                    html.append(convertSegment(seg));
                 }
             } else {
-                // code block content
                 String code = parts[i];
                 if (code.endsWith("```")) {
                     code = code.substring(0, code.length() - 3);
@@ -256,18 +273,38 @@ public final class MarkdownRenderer {
                 code = code.stripTrailing();
                 code = dedent(code);
                 String preHtml = "<pre>" + esc(code) + "</pre>";
-                // An indented fence (spaces before ```) means the code block belongs to a list item
                 boolean indented = i > 0 && parts[i - 1].matches("(?s).*[ \t]+$");
                 if (indented) {
-                    // Remove the list closure emitted by the previous segment, then
-                    // embed the code block inside the last <li> before re-closing it.
-                    if (html.toString().endsWith("</ol>")) {
+                    // Reconstruct the active list context by scanning all text segments up to here.
+                    savedIndentStack = new ArrayList<>();
+                    savedTypeStack = new ArrayList<>();
+                    for (int k = 0; k < i; k += 2) {
+                        for (String pl : parts[k].split("\n", -1)) {
+                            if (!isOrdered(pl) && !isUnordered(pl)) continue;
+                            int indent = leadingSpaces(pl);
+                            boolean isOl = isOrdered(pl);
+                            while (!savedIndentStack.isEmpty()
+                                   && savedIndentStack.get(savedIndentStack.size() - 1) >= indent) {
+                                savedIndentStack.remove(savedIndentStack.size() - 1);
+                                savedTypeStack.remove(savedTypeStack.size() - 1);
+                            }
+                            savedIndentStack.add(indent);
+                            savedTypeStack.add(isOl);
+                        }
+                    }
+                    savedOwnerIndent = savedIndentStack.isEmpty() ? -1
+                                       : savedIndentStack.get(savedIndentStack.size() - 1);
+                    // Remove ALL trailing list-close tags and the owner item's </li> from html.
+                    String buf = html.toString();
+                    while (buf.endsWith("</ol>") || buf.endsWith("</ul>")) {
+                        html.delete(html.length() - 5, html.length());
+                        buf = html.toString();
+                    }
+                    if (buf.endsWith("</li>")) {
                         html.delete(html.length() - 5, html.length());
                     }
-                    if (html.toString().endsWith("</li>")) {
-                        html.delete(html.length() - 5, html.length());
-                    }
-                    html.append(preHtml).append("</li>");
+                    // Append code block but leave the owner <li> open for sub-list content.
+                    html.append(preHtml);
                     continueList = true;
                 } else {
                     html.append(preHtml);
@@ -275,7 +312,11 @@ public final class MarkdownRenderer {
             }
         }
         if (continueList) {
-            html.append("</ol>");
+            // Code block was the last content — close owner item then close all open lists.
+            html.append("</li>");
+            for (int k = savedTypeStack.size() - 1; k >= 0; k--) {
+                html.append(savedTypeStack.get(k) ? "</ol>" : "</ul>");
+            }
         }
         return html.toString();
     }
@@ -538,8 +579,12 @@ public final class MarkdownRenderer {
     }
 
     private static int renderNestedList(String[] lines, int start, StringBuilder html) {
-        List<Integer> indentStack = new ArrayList<>();
-        List<Boolean> typeStack = new ArrayList<>();
+        return renderNestedList(lines, start, html, new ArrayList<>(), new ArrayList<>());
+    }
+
+    private static int renderNestedList(String[] lines, int start, StringBuilder html,
+                                         List<Integer> indentStack, List<Boolean> typeStack) {
+        int startIndent = indentStack.isEmpty() ? -1 : indentStack.get(0);
 
         int i = start;
         while (i < lines.length) {
@@ -561,6 +606,7 @@ public final class MarkdownRenderer {
             boolean ordered = isOrdered(line);
 
             if (indentStack.isEmpty()) {
+                startIndent = indent;
                 html.append(ordered ? "<ol start=\"" + orderedListNumber(line) + "\">" : "<ul>");
                 indentStack.add(indent);
                 typeStack.add(ordered);
@@ -571,10 +617,14 @@ public final class MarkdownRenderer {
                     indentStack.add(indent);
                     typeStack.add(ordered);
                 } else if (indent < topIndent) {
-                    while (indentStack.size() > 1 && indentStack.get(indentStack.size() - 1) > indent) {
+                    while (!indentStack.isEmpty() && indentStack.get(indentStack.size() - 1) > indent) {
                         html.append(typeStack.get(typeStack.size() - 1) ? "</ol>" : "</ul>");
                         indentStack.remove(indentStack.size() - 1);
                         typeStack.remove(typeStack.size() - 1);
+                    }
+                    // Item is less indented than our starting level — belongs to outer context.
+                    if (indentStack.isEmpty() || indent < startIndent) {
+                        break;
                     }
                 }
                 if (!typeStack.isEmpty() && typeStack.get(typeStack.size() - 1) != ordered) {
@@ -585,8 +635,21 @@ public final class MarkdownRenderer {
             }
 
             String content = line.replaceFirst("^\\s*(?:\\d+\\.|[-*])\\s+", "");
-            html.append("<li>").append(inlineToHtml(content)).append("</li>");
+            html.append("<li>").append(inlineToHtml(content));
             i++;
+            // Lookahead: include non-list lines more indented than topIndent as continuation content.
+            int curTopIndent = indentStack.get(indentStack.size() - 1);
+            int j = i;
+            while (j < lines.length && lines[j].isBlank()) j++;
+            while (j < lines.length && !lines[j].isBlank()
+                    && !isOrdered(lines[j]) && !isUnordered(lines[j])
+                    && leadingSpaces(lines[j]) > curTopIndent) {
+                html.append(inlineToHtml(lines[j].trim()));
+                j++;
+                while (j < lines.length && lines[j].isBlank()) j++;
+            }
+            i = j;
+            html.append("</li>");
         }
 
         for (int k = typeStack.size() - 1; k >= 0; k--) {

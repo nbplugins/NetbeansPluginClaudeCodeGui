@@ -423,4 +423,161 @@ class MarkdownRendererTest {
         assertTrue(preContent.contains("mkdir foo"),
                 "Code block must contain the command: " + preContent);
     }
+
+    // -------------------------------------------------------------------------
+    // Nested list + multiple code blocks
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testNestedListMultipleCodeBlocks() {
+        // Depth-2 list: items 1 and 2 each have an indented code block.
+        String md =
+                "1. First:\n\n" +
+                "    ```bash\n" +
+                "    cmd1\n" +
+                "    ```\n\n" +
+                "2. Second:\n\n" +
+                "    ```bash\n" +
+                "    cmd2\n" +
+                "    ```\n\n" +
+                "3. Third\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // All items must be in ONE <ol>.
+        int firstOl = html.indexOf("<ol ");
+        int secondOl = html.indexOf("<ol ", firstOl + 1);
+        assertEquals(-1, secondOl, "Must be a single <ol>, got: " + html);
+        assertTrue(html.contains("cmd1"), "cmd1 present: " + html);
+        assertTrue(html.contains("cmd2"), "cmd2 present: " + html);
+        assertTrue(html.contains("Third"), "Third present: " + html);
+        // Both <pre> blocks must appear before the list closes.
+        int pre1 = html.indexOf("<pre>");
+        int pre2 = html.indexOf("<pre>", pre1 + 1);
+        assertTrue(pre2 > pre1, "Two <pre> blocks expected: " + html);
+        assertTrue(html.indexOf("</ol>") > pre2, "</ol> must come after both <pre>: " + html);
+    }
+
+    @Test
+    void testListReturnsToOuterLevelAfterSubList() {
+        // item 2 has a sub-list; item 3 must return to the top level.
+        String md =
+                "1. Item one\n" +
+                "    1. Sub-item\n" +
+                "2. Item two\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // "Item two" must be in the outer <ol>, not stuck inside the inner one.
+        // Verify: </ol> count is exactly 2 (inner + outer).
+        int count = 0;
+        int idx = 0;
+        while ((idx = html.indexOf("</ol>", idx)) != -1) { count++; idx++; }
+        assertEquals(2, count, "Expected 2 </ol> tags, got: " + html);
+        assertTrue(html.contains("Item two"), "Item two present: " + html);
+    }
+
+    @Test
+    void testUnorderedListIndentedCodeBlockNotSplit() {
+        String md =
+                "- Item one\n\n" +
+                "    ```bash\n" +
+                "    echo hi\n" +
+                "    ```\n\n" +
+                "- Item two\n";
+        String html = MarkdownRenderer.toHtml(md);
+        int firstUl = html.indexOf("<ul>");
+        int secondUl = html.indexOf("<ul>", firstUl + 1);
+        assertEquals(-1, secondUl, "Must be a single <ul>, got: " + html);
+        assertTrue(html.contains("echo hi"), "code present: " + html);
+        assertTrue(html.contains("Item two"), "Item two present: " + html);
+    }
+
+    @Test
+    void testUnorderedListIndentedCodeBlockInsideLi() {
+        String md =
+                "- Item one\n\n" +
+                "    ```bash\n" +
+                "    echo hi\n" +
+                "    ```\n\n" +
+                "- Item two\n";
+        String html = MarkdownRenderer.toHtml(md);
+        int preOpen = html.indexOf("<pre>");
+        int liClose = html.indexOf("</li>");
+        assertTrue(preOpen > 0, "<pre> expected: " + html);
+        assertTrue(preOpen < liClose, "<pre> must be before first </li>: " + html);
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-list after code block + non-list continuation content
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testNestedListSubItemsAfterCodeBlock() {
+        // Item 3 starts directly with a code block, followed by sub-items 3.1–3.3.
+        // Sub-items must be INSIDE item 3's <li>, not at the same level as items 1–4.
+        String md =
+                "1. Item one\n\n" +
+                "    ```bash\n" +
+                "    cmd1\n" +
+                "    ```\n\n" +
+                "2. Item two\n\n" +
+                "    ```bash\n" +
+                "    cmd2\n" +
+                "    ```\n\n" +
+                "3. \n\n" +
+                "    ```bash\n" +
+                "    cmd3\n" +
+                "    ```\n\n" +
+                "    1. Sub one\n\n" +
+                "    2. Sub two\n\n" +
+                "    3. Sub three\n\n" +
+                "4. Item four\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // Sub-items must appear after cmd3's </pre> and before item 3's </li>
+        int pre3 = html.indexOf("<pre>cmd3</pre>");
+        assertTrue(pre3 > 0, "cmd3 <pre> expected: " + html);
+        int sub1 = html.indexOf("Sub one", pre3);
+        assertTrue(sub1 > 0, "Sub one must appear after cmd3 block: " + html);
+        int item3LiClose = html.indexOf("</li>", pre3);
+        assertTrue(sub1 < item3LiClose,
+                "Sub one must be inside item 3's <li>: " + html);
+        // Item four must appear after item 3's </li>
+        int item4 = html.indexOf("Item four");
+        assertTrue(item4 > item3LiClose,
+                "Item four must be outside item 3's <li>: " + html);
+    }
+
+    @Test
+    void testNonListContinuationInsideLi() {
+        // A non-list line more indented than the list item should appear as
+        // content of that <li>, not as a separate paragraph.
+        String md =
+                "1. Parent item\n\n" +
+                "    1. Sub item\n\n" +
+                "        extra content line\n\n" +
+                "    2. Another sub\n";
+        String html = MarkdownRenderer.toHtml(md);
+        int extraIdx = html.indexOf("extra content line");
+        assertTrue(extraIdx > 0, "extra content line must be present: " + html);
+        int anotherSub = html.indexOf("Another sub");
+        assertTrue(anotherSub > extraIdx, "Another sub must come after extra content: " + html);
+        // extra content must not appear between </li> and the next <li> as a <p>
+        int subItemClose = html.indexOf("</li>", html.indexOf("Sub item"));
+        assertTrue(extraIdx < subItemClose,
+                "extra content must be inside Sub item's <li>, not a separate paragraph: " + html);
+    }
+
+    @Test
+    void testOuterItemAfterCodeBlockInSubList() {
+        // 1. A / 1. B (code E) / 2. C / 2. D — D must be at A's level (depth-1).
+        // Wrong: ...<li>C</li></ol><ol start="2"><li>D</li></ol></ol>
+        // Right: ...<li>C</li></ol><li>D</li></ol>
+        String md = "1. A\n\n    1. B\n\n        ```\n        E\n        ```\n\n    2. C\n\n2. D\n";
+        String html = MarkdownRenderer.toHtml(md);
+        // The inner </ol> (closing B/C list) must be followed directly by <li>D</li>,
+        // NOT by another <ol start="..."> wrapper.
+        int innerOlClose = html.indexOf("</ol>");
+        assertTrue(innerOlClose >= 0, "</ol> expected: " + html);
+        int dLiPos = html.indexOf("<li>D</li>");
+        assertTrue(dLiPos > innerOlClose, "D must come after inner </ol>: " + html);
+        String between = html.substring(innerOlClose + 5, dLiPos);
+        assertFalse(between.contains("<ol"), "No <ol> must appear between inner </ol> and D: " + html);
+    }
 }
