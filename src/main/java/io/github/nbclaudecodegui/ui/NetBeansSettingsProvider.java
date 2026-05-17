@@ -23,9 +23,15 @@ import javax.swing.UIManager;
  */
 final class NetBeansSettingsProvider extends DefaultSettingsProvider {
 
+    private int zoomDelta = 0;
+
+    void setZoomDelta(int d) {
+        this.zoomDelta = d;
+    }
+
     @Override
     public float getTerminalFontSize() {
-        return ClaudeCodePreferences.getTerminalFontSize();
+        return ClaudeCodePreferences.getTerminalFontSize() + zoomDelta;
     }
 
     @Override

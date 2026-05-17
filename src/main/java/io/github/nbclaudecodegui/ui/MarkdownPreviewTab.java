@@ -3,7 +3,12 @@ package io.github.nbclaudecodegui.ui;
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbclaudecodegui.ui.common.MarkdownRenderer;
 import io.github.nbclaudecodegui.ui.common.UiUtils;
+import io.github.nbclaudecodegui.ui.common.Zoomable;
+import io.github.nbclaudecodegui.ui.common.ZoomSupport;
 import io.github.nbclaudecodegui.ui.common.markdown.MarkdownFindBar;
+import javax.swing.text.html.HTMLEditorKit;
+import javax.swing.text.html.StyleSheet;
+import org.openide.util.NbPreferences;
 import java.awt.BorderLayout;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
@@ -62,7 +67,7 @@ import org.openide.windows.TopComponent;
     preferredID = "MarkdownPreviewTopComponent",
     persistenceType = TopComponent.PERSISTENCE_ALWAYS
 )
-public class MarkdownPreviewTab extends TopComponent {
+public class MarkdownPreviewTab extends TopComponent implements Zoomable {
 
     /**
      * Open live-preview tabs keyed by absolute file path.
@@ -113,6 +118,9 @@ public class MarkdownPreviewTab extends TopComponent {
     /** Scroll ratio saved by writeExternal; applied in componentOpened() after IDE restart. */
     double savedScrollRatio = 0.0;
 
+    int mdZoomDelta =
+            NbPreferences.forModule(MarkdownPreviewTab.class).getInt("markdownZoomDelta", 0);
+
     /** Creates a new empty tab instance; content and title are configured by factory methods. */
     MarkdownPreviewTab() {
     }
@@ -160,11 +168,14 @@ public class MarkdownPreviewTab extends TopComponent {
         tab.scrollPane = new JScrollPane(tab.pane);
         tab.add(tab.scrollPane, BorderLayout.CENTER);
 
-        // Attach hyperlink listener, context menu, and find bar
+        // Attach hyperlink listener, context menu, find bar, and zoom
         tab.attachHyperlinkListener();
         tab.bindRefreshKey(tab.pane);
         tab.pane.setComponentPopupMenu(tab.buildContextMenu());
         tab.initFindBar(tab.pane);
+        tab.pane.addMouseWheelListener(ZoomSupport.createWheelListener(tab));
+        ZoomSupport.bindResetKey(tab.pane, tab);
+        tab.applyMdZoom(tab.mdZoomDelta);
 
         if (fo != null) {
             tab.fileListener = makeFileListener(tab, fo);
@@ -507,6 +518,40 @@ public class MarkdownPreviewTab extends TopComponent {
         });
     }
 
+    // -------------------------------------------------------------------------
+    // Zoomable
+    // -------------------------------------------------------------------------
+
+    @Override public void zoomIn()    { applyMdZoom(mdZoomDelta + 1); }
+    @Override public void zoomOut()   { applyMdZoom(mdZoomDelta - 1); }
+    @Override public void resetZoom() { applyMdZoom(0); }
+    @Override public int  getZoomDelta() { return mdZoomDelta; }
+    @Override public int  getMinDelta()  { return -8; }
+    @Override public int  getMaxDelta()  { return 20; }
+
+    private void applyMdZoom(int d) {
+        int clamped = Math.max(getMinDelta(), Math.min(getMaxDelta(), d));
+        mdZoomDelta = clamped;
+        NbPreferences.forModule(MarkdownPreviewTab.class).putInt("markdownZoomDelta", clamped);
+        updateZoomCss();
+    }
+
+    private void updateZoomCss() {
+        if (pane == null) return;
+        HTMLEditorKit kit = (HTMLEditorKit) pane.getEditorKit();
+        StyleSheet ss = kit.getStyleSheet();
+        int d = mdZoomDelta;
+        ss.addRule("body  { font-size: " + (13 + d) + "pt; }");
+        ss.addRule("pre   { font-size: " + (12 + d) + "pt; }");
+        ss.addRule("code  { font-size: " + (12 + d) + "pt; }");
+        ss.addRule("h1    { font-size: " + (16 + d) + "pt; }");
+        ss.addRule("h2    { font-size: " + (14 + d) + "pt; }");
+        ss.addRule("h3    { font-size: " + (13 + d) + "pt; }");
+        ss.addRule(".info { font-size: " + (11 + d) + "pt; }");
+        String text = pane.getText();
+        pane.setText(text);
+    }
+
     JPopupMenu buildContextMenu() {
         JPopupMenu menu = new JPopupMenu();
 
@@ -553,6 +598,8 @@ public class MarkdownPreviewTab extends TopComponent {
         menu.add(back);
         menu.add(forward);
         menu.add(refresh);
+        menu.addSeparator();
+        menu.add(ZoomSupport.buildZoomMenu(this));
         menu.addSeparator();
         menu.add(find);
         menu.addSeparator();
@@ -653,6 +700,9 @@ public class MarkdownPreviewTab extends TopComponent {
             bindRefreshKey(pane);
             pane.setComponentPopupMenu(buildContextMenu());
             initFindBar(pane);
+            pane.addMouseWheelListener(ZoomSupport.createWheelListener(this));
+            ZoomSupport.bindResetKey(pane, this);
+            applyMdZoom(mdZoomDelta);
         }
 
         filePath = path;
