@@ -26,11 +26,11 @@ The plugin is available in the [NetBeans Plugin Portal](https://plugins.netbeans
 
 ### Recommended: download from GitHub Releases
 
-Download the latest `.nbm` file from the [Releases page](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/releases/latest).
+Download the latest `.nbm` file from the [Releases page](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/releases/latest).
 
 ### Intermediate builds
 
-Builds between releases are available as artifacts on the [Actions](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/actions) page — open the latest successful workflow run and download the `nbm` artifact (delivered as a zip file; extract the `.nbm` before installing).
+Builds between releases are available as artifacts on the [Actions](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/actions) page — open the latest successful workflow run and download the `nbm` artifact (delivered as a zip file; extract the `.nbm` before installing).
 
 ### Install into NetBeans
 

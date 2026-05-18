@@ -3,7 +3,7 @@ package org.openbeans.claude.netbeans;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.github.nbclaudecodegui.mcp.MCPResponseBuilder;
+import io.github.nbplugins.claudecodegui.mcp.MCPResponseBuilder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

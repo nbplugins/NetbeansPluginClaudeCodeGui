@@ -32,7 +32,7 @@ jobs:
           cache: maven
 
       - name: Auto-tag
-        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
+        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'nbplugins/NetbeansPluginClaudeCodeGui'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -111,11 +111,11 @@ jobs:
         # xvfb-run provides a virtual display so Swing UI tests don't throw HeadlessException
         run: xvfb-run mvn package --batch-mode
       - name: Deploy to Maven Central (release only)
-        if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
+        if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbplugins/NetbeansPluginClaudeCodeGui'
         run: |
           VERSION="${{ needs.calc_ver.outputs.project_ver }}"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://repo1.maven.org/maven2/io/github/nbclaudecodegui/netbeans-claude-code-gui/$VERSION/netbeans-claude-code-gui-$VERSION.pom")
+            "https://repo1.maven.org/maven2/io/github/nbplugins/netbeans-plugin-claude-code-gui/$VERSION/netbeans-plugin-claude-code-gui-$VERSION.pom")
           if [[ "$STATUS" == "200" ]]; then
             echo "Version $VERSION already published to Maven Central, skipping."
           else
@@ -146,7 +146,7 @@ jobs:
 
   release:
     needs: [calc_ver, build]
-    if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbclaudecodegui/NetbeansClaudeCodeGui'
+    if: needs.calc_ver.outputs.release_flag == 'ON' && github.repository == 'nbplugins/NetbeansPluginClaudeCodeGui'
     runs-on: ubuntu-latest
     steps:
       - name: Publish GitHub Release

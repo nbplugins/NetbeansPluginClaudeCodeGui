@@ -1,7 +1,7 @@
 package org.openbeans.claude.netbeans;
 
-import io.github.nbclaudecodegui.mcp.MCPSseServer;
-import io.github.nbclaudecodegui.mcp.NetBeansMCPHandler;
+import io.github.nbplugins.claudecodegui.mcp.MCPSseServer;
+import io.github.nbplugins.claudecodegui.mcp.NetBeansMCPHandler;
 import java.net.ServerSocket;
 import org.junit.jupiter.api.Test;
 

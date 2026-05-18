@@ -3,7 +3,7 @@ package org.openbeans.claude.netbeans.tools;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.nbclaudecodegui.mcp.MCPResponseBuilder;
+import io.github.nbplugins.claudecodegui.mcp.MCPResponseBuilder;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import org.openbeans.claude.netbeans.tools.params.CloseTabParams;

@@ -89,7 +89,7 @@ Each changelog entry must be committed **together with the code change it descri
 Commit messages must also start with a past-tense verb (e.g. "Fixed ...", "Added ..."). The subject line describes *what* was done; the body (if needed) explains *how* or *why*.
 
 When the commit fixes a GitHub issue:
-- The CHANGELOG entry must include the full issue URL: e.g. `Fixed ... (https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/issues/N)`
+- The CHANGELOG entry must include the full issue URL: e.g. `Fixed ... (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/N)`
 - The commit subject line should match the CHANGELOG entry text (without the leading `-`)
 - The commit body must include `Resolves: #N` followed by implementation explanation
 
@@ -176,7 +176,7 @@ The plugin follows an MVC structure for session management:
 | `ui/common/` | Shared input components: `AtCompletionPopup` — @-triggered path popup; `AtPathHighlighter` — blue token highlight; `FileDropHandler` — DnD + Ctrl+V → @path insertion; `ShortcutMatcher` — key→shortcut match with KEY_TYPED suppression; `TextComponentDecorator` — wires all the above; `DecoratedTextArea/TextField`, `TextContextMenu`, `RangeHighlightable` |
 | `settings/` | `ClaudeCodePreferences` — NbPreferences wrapper (keys: `contextMenuSessionMode` default CONTINUE_LAST, `sessionListLimit` default 30); `ClaudeCodeOptionsPanelController` / `ClaudeCodeOptionsPanel` — Tools→Options (General + Profiles tabs); `ClaudeProfile`, `ClaudeProfileStore` — named profiles with isolated `CLAUDE_CONFIG_DIR`, auth, proxy, extra env vars; `ClaudeProjectProperties` — per-project profile assignment |
 | `actions/` | `ClaudeCodeAction` — toolbar button; `OpenWithClaudeAction` — project node context menu; `PromptFavoriteAction` — dynamically registered action per favorite for Keymap API |
-| `io.github.nbclaudecodegui.mcp` | `MCPSseServer` — Jetty `/sse` `/messages` `/hook`; `NetBeansMCPHandler` — MCP dispatcher + PreToolUse hook; `tools/` — `OpenDiff`, `PermissionPromptTool`, `DiffTabTracker`, `GetDiagnostics`, `GetOpenEditors`, `GetCurrentSelection`, `OpenFile` |
+| `io.github.nbplugins.claudecodegui.mcp` | `MCPSseServer` — Jetty `/sse` `/messages` `/hook`; `NetBeansMCPHandler` — MCP dispatcher + PreToolUse hook; `tools/` — `OpenDiff`, `PermissionPromptTool`, `DiffTabTracker`, `GetDiagnostics`, `GetOpenEditors`, `GetCurrentSelection`, `OpenFile` |
 | `org.openbeans.claude.netbeans` | **Legacy package — do not add new code here and avoid modifying existing code.** Contains: `ClaudeCodeStatusService`, `ClaudeCodeStatusLineElement`, `EditorUtils`, `NbUtils`; `tools/` — `AsyncHandler`, `AsyncResponse`, `GetWorkspaceFolders`, `CheckDocumentDirty`, `SaveDocument`, `CloseTab`, `CloseAllDiffTabs` |
 
 ### Session lifecycle
@@ -263,7 +263,7 @@ After any action the originating `ClaudeSessionTab` is re-activated automaticall
 - Integration test: `ClaudeCodePluginIT` uses `NbModuleSuite` for full IDE lifecycle
 - Test fixtures (JSON): `src/test/resources/fixtures/`
 - `ClaudeProcessTest` skips on Windows; uses a fake `claude` shell script
-- Test resources in `src/test/resources/` must mirror the package structure of `src/main/java/`. For example, resources for `io.github.nbclaudecodegui.process.ScreenContentDetector` go in `src/test/resources/io/github/nbclaudecodegui/process/`.
+- Test resources in `src/test/resources/` must mirror the package structure of `src/main/java/`. For example, resources for `io.github.nbplugins.claudecodegui.process.ScreenContentDetector` go in `src/test/resources/io/github/nbplugins/claudecodegui/process/`.
 
 ## Bug Fixing Protocol
 
@@ -303,7 +303,7 @@ Reserve `LOG.info` for important events; wrap with `isDebugMode()` only when usi
 ## Git Workflow
 
 - `origin` — personal fork
-- `upstream` — org repo (`nbclaudecodegui/NetbeansClaudeCodeGui`)
+- `upstream` — org repo (`nbplugins/NetbeansPluginClaudeCodeGui`)
 
 **Never push directly to upstream.** Always:
 1. Run `git fetch upstream` before creating a branch

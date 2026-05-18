@@ -1,8 +1,8 @@
 # Claude Code GUI — NetBeans Plugin
 
-![Build](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/actions/workflows/build.yml/badge.svg)
-[![Release](https://img.shields.io/github/v/release/nbclaudecodegui/NetbeansClaudeCodeGui)](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/nbclaudecodegui/NetbeansClaudeCodeGui/total)](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/releases)
+![Build](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/actions/workflows/build.yml/badge.svg)
+[![Release](https://img.shields.io/github/v/release/nbplugins/NetbeansPluginClaudeCodeGui)](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/nbplugins/NetbeansPluginClaudeCodeGui/total)](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/releases)
 
 > **Alpha:** The plugin is under active development. Some features may not work correctly.
 
@@ -25,9 +25,9 @@ The plugin code was written entirely by [Claude Code](https://claude.ai/code) us
 
 ## Download
 
-Download the latest `.nbm` file from [GitHub Releases](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/releases/latest).
+Download the latest `.nbm` file from [GitHub Releases](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/releases/latest).
 
-Intermediate builds between releases are available as artifacts on the [Actions](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/actions) page — open the latest successful workflow run and download the `nbm` artifact (delivered as a zip file; extract the `.nbm` before installing).
+Intermediate builds between releases are available as artifacts on the [Actions](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/actions) page — open the latest successful workflow run and download the `nbm` artifact (delivered as a zip file; extract the `.nbm` before installing).
 
 ---
 

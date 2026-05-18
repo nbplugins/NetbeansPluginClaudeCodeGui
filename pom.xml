@@ -4,13 +4,13 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>io.github.nbclaudecodegui</groupId>
-    <artifactId>netbeans-claude-code-gui</artifactId>
-    <version>0.23.19-SNAPSHOT</version>
+    <groupId>io.github.nbplugins</groupId>
+    <artifactId>netbeans-plugin-claude-code-gui</artifactId>
+    <version>1.0.1-SNAPSHOT</version>
     <packaging>nbm</packaging>
     <name>Netbeans Plugin Claude Code GUI</name>
     <description>NetBeans plugin that provides a GUI for Claude Code CLI — run claude code sessions directly inside the IDE.</description>
-    <url>https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui</url>
+    <url>https://github.com/nbplugins/NetbeansPluginClaudeCodeGui</url>
 
     <licenses>
         <license>
@@ -22,16 +22,16 @@
 
     <developers>
         <developer>
-            <id>nbclaudecodegui</id>
-            <name>nbclaudecodegui</name>
-            <url>https://github.com/nbclaudecodegui</url>
+            <id>nbplugins</id>
+            <name>nbplugins</name>
+            <url>https://github.com/nbplugins</url>
         </developer>
     </developers>
 
     <scm>
-        <connection>scm:git:git://github.com/nbclaudecodegui/NetbeansClaudeCodeGui.git</connection>
-        <developerConnection>scm:git:ssh://github.com/nbclaudecodegui/NetbeansClaudeCodeGui.git</developerConnection>
-        <url>https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui</url>
+        <connection>scm:git:git://github.com/nbplugins/NetbeansPluginClaudeCodeGui.git</connection>
+        <developerConnection>scm:git:ssh://github.com/nbplugins/NetbeansPluginClaudeCodeGui.git</developerConnection>
+        <url>https://github.com/nbplugins/NetbeansPluginClaudeCodeGui</url>
     </scm>
 
     <properties>
@@ -127,9 +127,9 @@
                                 import org.apache.batik.transcoder.TranscoderOutput
 
                                 def svg = new File(project.basedir,
-                                    'src/main/resources/io/github/nbclaudecodegui/icons/cc-gui-icon.svg')
+                                    'src/main/resources/io/github/nbplugins/claudecodegui/icons/cc-gui-icon.svg')
                                 def out = new File(project.build.outputDirectory,
-                                    'io/github/nbclaudecodegui/icons')
+                                    'io/github/nbplugins/claudecodegui/icons')
                                 out.mkdirs()
 
                                 [['claude-icon.png', 16f], ['claude-icon-32.png', 32f]].each { name, size ->
