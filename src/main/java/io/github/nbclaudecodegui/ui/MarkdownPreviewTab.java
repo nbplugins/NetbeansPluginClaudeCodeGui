@@ -174,7 +174,8 @@ public class MarkdownPreviewTab extends TopComponent implements Zoomable {
         tab.pane.setComponentPopupMenu(tab.buildContextMenu());
         tab.initFindBar(tab.pane);
         tab.pane.addMouseWheelListener(ZoomSupport.createWheelListener(tab, true));
-        ZoomSupport.bindResetKey(tab.pane, tab);
+        tab.pane.addMouseListener(ZoomSupport.createClickListener(tab));
+        ZoomSupport.bindZoomKeys(tab.pane, tab);
         tab.applyMdZoom(tab.mdZoomDelta);
 
         if (fo != null) {
@@ -704,7 +705,8 @@ public class MarkdownPreviewTab extends TopComponent implements Zoomable {
             pane.setComponentPopupMenu(buildContextMenu());
             initFindBar(pane);
             pane.addMouseWheelListener(ZoomSupport.createWheelListener(this, true));
-            ZoomSupport.bindResetKey(pane, this);
+            pane.addMouseListener(ZoomSupport.createClickListener(this));
+            ZoomSupport.bindZoomKeys(pane, this);
             applyMdZoom(mdZoomDelta);
         }
 

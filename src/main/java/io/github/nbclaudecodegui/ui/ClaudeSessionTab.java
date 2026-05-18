@@ -188,12 +188,14 @@ public class ClaudeSessionTab extends TopComponent
     private final KeyEventDispatcher zoomKeyInterceptor = e -> {
         if (e.getID() != KeyEvent.KEY_PRESSED || terminalWidget == null) return false;
         if (!SwingUtilities.isDescendingFrom(e.getComponent(), terminalWidget)) return false;
-        if (e.getKeyCode() == KeyEvent.VK_0
-                && (e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0) {
-            SwingUtilities.invokeLater(this::resetZoom);
-            return true;
+        boolean ctrl = (e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0;
+        if (!ctrl) return false;
+        switch (e.getKeyCode()) {
+            case KeyEvent.VK_0:      SwingUtilities.invokeLater(this::resetZoom); return true;
+            case KeyEvent.VK_MINUS:  SwingUtilities.invokeLater(this::zoomOut);   return true;
+            case KeyEvent.VK_EQUALS: SwingUtilities.invokeLater(this::zoomIn);    return true;
+            default: return false;
         }
-        return false;
     };
     private JSplitPane      splitPane;
     private JPanel          errorPanel;
@@ -904,9 +906,10 @@ public class ClaudeSessionTab extends TopComponent
 
         widget.getTerminalPanel().addMouseWheelListener(
                 ZoomSupport.createWheelListener(this));
+        widget.getTerminalPanel().addMouseListener(ZoomSupport.createClickListener(this));
         // The Zoom submenu is spliced into JediTerm's native context menu by
         // ZoomableJediTermWidget (JediTerm ignores setComponentPopupMenu).
-        ZoomSupport.bindResetKey(this, this);
+        ZoomSupport.bindZoomKeys(this, this);
 
         add(splitPane, BorderLayout.CENTER);
         revalidate();

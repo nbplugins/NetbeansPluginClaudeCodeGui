@@ -4,6 +4,8 @@ import java.awt.Component;
 import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.event.MouseWheelListener;
 import javax.swing.AbstractAction;
@@ -92,13 +94,13 @@ public final class ZoomSupport {
     public static JMenu buildZoomMenu(Zoomable zoomable) {
         JMenu menu = new JMenu("Zoom");
 
-        JMenuItem increase = new JMenuItem("Increase (Alt+Scroll Up)");
+        JMenuItem increase = new JMenuItem("Increase (Alt+Scroll Up / Ctrl+=)");
         increase.addActionListener(e -> zoomable.zoomIn());
 
-        JMenuItem decrease = new JMenuItem("Decrease (Alt+Scroll Down)");
+        JMenuItem decrease = new JMenuItem("Decrease (Alt+Scroll Down / Ctrl+−)");
         decrease.addActionListener(e -> zoomable.zoomOut());
 
-        JMenuItem reset = new JMenuItem("Reset (Ctrl+0)");
+        JMenuItem reset = new JMenuItem("Reset (Ctrl+0 / Alt+Click Wheel)");
         reset.addActionListener(e -> zoomable.resetZoom());
 
         menu.add(increase);
@@ -130,14 +132,36 @@ public final class ZoomSupport {
         menu.add(buildZoomMenu(zoomable));
     }
 
-    /** Binds Ctrl+0 → resetZoom() on the given component via InputMap/ActionMap. */
-    public static void bindResetKey(JComponent comp, Zoomable zoomable) {
-        KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK);
-        // WHEN_FOCUSED overrides the NetBeans global Ctrl+0 action while comp is focused
-        comp.getInputMap(JComponent.WHEN_FOCUSED).put(ks, "zoom-reset");
-        comp.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, "zoom-reset");
-        comp.getActionMap().put("zoom-reset", new AbstractAction() {
-            @Override public void actionPerformed(ActionEvent e) { zoomable.resetZoom(); }
+    /**
+     * Binds Ctrl+0 (reset), Ctrl+− (out), and Ctrl+= (in) on the given component
+     * via InputMap/ActionMap. Both WHEN_FOCUSED and WHEN_IN_FOCUSED_WINDOW maps are
+     * populated so the shortcuts work whether the component itself or a child has focus.
+     */
+    public static void bindZoomKeys(JComponent comp, Zoomable zoomable) {
+        bindKey(comp, KeyEvent.VK_0,      "zoom-reset", zoomable::resetZoom);
+        bindKey(comp, KeyEvent.VK_MINUS,  "zoom-out",   zoomable::zoomOut);
+        bindKey(comp, KeyEvent.VK_EQUALS, "zoom-in",    zoomable::zoomIn);
+    }
+
+    /** Returns a MouseAdapter that resets zoom on Alt+middle-click (button 2). */
+    public static MouseAdapter createClickListener(Zoomable zoomable) {
+        return new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON2
+                        && (e.getModifiersEx() & InputEvent.ALT_DOWN_MASK) != 0) {
+                    e.consume();
+                    zoomable.resetZoom();
+                }
+            }
+        };
+    }
+
+    private static void bindKey(JComponent comp, int vk, String actionKey, Runnable action) {
+        KeyStroke ks = KeyStroke.getKeyStroke(vk, InputEvent.CTRL_DOWN_MASK);
+        comp.getInputMap(JComponent.WHEN_FOCUSED).put(ks, actionKey);
+        comp.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, actionKey);
+        comp.getActionMap().put(actionKey, new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) { action.run(); }
         });
     }
 }
