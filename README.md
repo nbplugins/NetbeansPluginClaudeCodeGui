@@ -16,8 +16,9 @@ NetBeans Claude Code GUI is a NetBeans IDE plugin that embeds the Claude Code CL
 - **Session management** — start new sessions, continue the last session, or resume a specific past session; sessions persist across IDE restarts
 - **Markdown Preview** — live-rendered markdown tab for plan files and MCP-initiated previews; includes a find bar (Ctrl+F) and font zoom (Alt+Scroll)
 - **Auto Plan Preview** — when Claude writes a plan file, a live preview tab opens automatically as soon as you accept the diff
-
-IDE integration (open editors, diagnostics, current selection, file operations) is exposed to Claude via the MCP protocol so that Claude always has full context about your work.
+- **IDE integration via MCP** — open editors, diagnostics, current selection, and file operations are exposed to Claude via the MCP protocol so it always has full context about your work
+- **NetBeans look & feel** — the plugin respects the active NetBeans color theme and font settings, including dark/light mode
+- **Flexible UI customization** — per-session terminal font and zoom (Alt+Scroll), configurable diff viewer placement, adjustable session list limit, and keyboard shortcuts for favorite prompts
 
 The plugin code was written entirely by [Claude Code](https://claude.ai/code) using **Claude Sonnet 4.6**, with the author acting as architect and reviewer.
 
