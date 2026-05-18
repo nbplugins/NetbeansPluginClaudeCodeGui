@@ -1,5 +1,7 @@
 package io.github.nbclaudecodegui.ui.common;
 
+import java.awt.Component;
+import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.MouseWheelEvent;
@@ -9,7 +11,9 @@ import javax.swing.JComponent;
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
+import javax.swing.JScrollPane;
 import javax.swing.KeyStroke;
+import javax.swing.SwingUtilities;
 import java.awt.event.KeyEvent;
 
 /** Shared zoom utilities for terminal and markdown preview surfaces. */
@@ -27,6 +31,24 @@ public final class ZoomSupport {
 
     /** Creates a MouseWheelListener that calls zoomIn/zoomOut when Alt is held. */
     public static MouseWheelListener createWheelListener(Zoomable zoomable) {
+        return createWheelListener(zoomable, false);
+    }
+
+    /**
+     * Creates a MouseWheelListener that calls zoomIn/zoomOut when Alt is held.
+     * <p>
+     * When {@code forwardToScrollAncestor} is {@code true}, non-zoom wheel events
+     * (Alt not held) are re-dispatched to the nearest ancestor {@link JScrollPane}.
+     * This is required when the listener is attached to a component (e.g. a
+     * {@code JEditorPane} inside a {@code JScrollPane}) whose plain scrolling
+     * relied on Swing's automatic forwarding to the scroll pane — registering any
+     * wheel listener on that component disables the JDK's
+     * {@code dispatchMouseWheelToAncestor} fallback, so we replicate it here.
+     * Surfaces that scroll via their own wheel listener (e.g. JediTerm's
+     * terminal panel) pass {@code false} and keep their original behavior.
+     */
+    public static MouseWheelListener createWheelListener(Zoomable zoomable,
+                                                         boolean forwardToScrollAncestor) {
         int mask = discoverZoomWheelModifiers();
         return (MouseWheelEvent e) -> {
             if ((e.getModifiersEx() & mask) != 0) {
@@ -36,8 +58,34 @@ public final class ZoomSupport {
                 } else {
                     zoomable.zoomOut();
                 }
+            } else if (forwardToScrollAncestor) {
+                forwardToScrollAncestor(e);
             }
         };
+    }
+
+    /**
+     * Re-dispatches a non-zoom wheel event to the nearest ancestor
+     * {@link JScrollPane}, mirroring the JDK's native
+     * {@code Component.dispatchMouseWheelToAncestor} so plain scrolling matches
+     * the pre-zoom default.
+     */
+    private static void forwardToScrollAncestor(MouseWheelEvent e) {
+        Component src = e.getComponent();
+        if (src == null) {
+            return;
+        }
+        JScrollPane sp = (JScrollPane)
+                SwingUtilities.getAncestorOfClass(JScrollPane.class, src);
+        if (sp == null) {
+            return;
+        }
+        Point p = SwingUtilities.convertPoint(src, e.getPoint(), sp);
+        sp.dispatchEvent(new MouseWheelEvent(sp, e.getID(), e.getWhen(),
+                e.getModifiersEx(), p.x, p.y, e.getXOnScreen(), e.getYOnScreen(),
+                e.getClickCount(), e.isPopupTrigger(), e.getScrollType(),
+                e.getScrollAmount(), e.getWheelRotation(),
+                e.getPreciseWheelRotation()));
     }
 
     /** Builds a "Zoom" JMenu with Increase, Decrease, and Reset items. */
