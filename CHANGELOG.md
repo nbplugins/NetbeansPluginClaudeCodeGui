@@ -1,3 +1,5 @@
+# 1.0
+
 - Migrated plugin home to https://github.com/nbplugins/NetbeansPluginClaudeCodeGui; updated Maven coordinates to io.github.nbplugins:netbeans-plugin-claude-code-gui; renamed Java packages to io.github.nbplugins.claudecodegui
 
 # 0.23.10 (2026-05-18)
