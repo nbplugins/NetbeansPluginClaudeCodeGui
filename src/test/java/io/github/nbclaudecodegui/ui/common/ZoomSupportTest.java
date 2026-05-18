@@ -1,10 +1,14 @@
 package io.github.nbclaudecodegui.ui.common;
 
 import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.event.MouseWheelListener;
+import javax.swing.Action;
+import javax.swing.JComponent;
 import javax.swing.JEditorPane;
 import javax.swing.JLabel;
+import javax.swing.KeyStroke;
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
@@ -207,5 +211,35 @@ class ZoomSupportTest {
         assertEquals(0, calls[1]);
         assertEquals(0, forwarded[0], "zoom event must not be forwarded to the scroll pane");
         assertTrue(alt.isConsumed(), "zoom event must be consumed");
+    }
+
+    // --- bindResetKey: Ctrl+0 must reach the focused surface (NetBeans steals
+    //     WHEN_IN_FOCUSED_WINDOW), so it must also be in WHEN_FOCUSED -----------
+
+    @Test
+    void bindResetKey_registersCtrl0InFocusedAndWindowMaps() {
+        int[] resets = {0};
+        Zoomable z = new Zoomable() {
+            @Override public void zoomIn()    {}
+            @Override public void zoomOut()   {}
+            @Override public void resetZoom() { resets[0]++; }
+            @Override public int getZoomDelta() { return 0; }
+            @Override public int getMinDelta()  { return -8; }
+            @Override public int getMaxDelta()  { return 20; }
+        };
+        JLabel comp = new JLabel();
+
+        ZoomSupport.bindResetKey(comp, z);
+
+        KeyStroke ctrl0 = KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK);
+        assertEquals("zoom-reset",
+                comp.getInputMap(JComponent.WHEN_FOCUSED).get(ctrl0),
+                "Ctrl+0 must be bound in WHEN_FOCUSED to beat the NetBeans global action");
+        assertEquals("zoom-reset",
+                comp.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).get(ctrl0));
+        Action action = comp.getActionMap().get("zoom-reset");
+        assertNotNull(action);
+        action.actionPerformed(null);
+        assertEquals(1, resets[0], "the bound action must invoke resetZoom()");
     }
 }

@@ -1,3 +1,4 @@
+- Fixed F5 not refreshing the Markdown Preview from disk
 - Added font zoom (Alt+Scroll) for Terminal and Markdown Preview; Ctrl+0 resets; right-click "Zoom" submenu
 - Added Find bar (Ctrl+F / F3 / Shift+F3) to Markdown Preview
 - Added automatic Markdown Preview tab when Claude writes a plan file (configurable in Settings → General)

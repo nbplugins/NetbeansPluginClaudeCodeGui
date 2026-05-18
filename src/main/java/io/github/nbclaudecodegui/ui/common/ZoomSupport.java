@@ -133,6 +133,8 @@ public final class ZoomSupport {
     /** Binds Ctrl+0 → resetZoom() on the given component via InputMap/ActionMap. */
     public static void bindResetKey(JComponent comp, Zoomable zoomable) {
         KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK);
+        // WHEN_FOCUSED overrides the NetBeans global Ctrl+0 action while comp is focused
+        comp.getInputMap(JComponent.WHEN_FOCUSED).put(ks, "zoom-reset");
         comp.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, "zoom-reset");
         comp.getActionMap().put("zoom-reset", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) { zoomable.resetZoom(); }

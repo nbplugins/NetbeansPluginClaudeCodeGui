@@ -640,8 +640,11 @@ public class MarkdownPreviewTab extends TopComponent implements Zoomable {
         return menu;
     }
 
-    private void bindRefreshKey(JEditorPane p) {
+    void bindRefreshKey(JEditorPane p) {
         KeyStroke f5 = KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0);
+        // WHEN_FOCUSED overrides the NetBeans global F5 action while the pane is focused
+        p.getInputMap(JComponent.WHEN_FOCUSED).put(f5, "md-refresh");
+        // WHEN_IN_FOCUSED_WINDOW still covers F5 from elsewhere in the tab (e.g. find bar)
         p.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(f5, "md-refresh");
         p.getActionMap().put("md-refresh", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) { forceReload(); }
