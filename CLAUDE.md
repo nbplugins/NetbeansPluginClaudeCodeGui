@@ -99,6 +99,31 @@ When finishing a release by adding `# MAJOR.MINOR` to CHANGELOG.md, the commit m
 
 A NetBeans IDE plugin that embeds Claude Code CLI as a PTY-based terminal session connected to the IDE via three channels: PTY, MCP SSE, and an HTTP hook.
 
+### Why JediTerm and not NetBeans' built-in terminal
+
+The terminal is JetBrains **JediTerm** (`jediterm-core`/`jediterm-ui`), not NetBeans' built-in
+terminal (`org.netbeans.lib.terminalemulator.Term` / the "Open in Terminal" action). The built-in
+terminal was evaluated and rejected for the following reasons:
+
+- **Broken TUI rendering (decisive).** `lib.terminalemulator` does not support the alternate
+  screen buffer (DECSET 1049) nor 256-color SGR codes (`ESC[38;5;Nm` / `ESC[48;5;Nm`). Claude Code
+  is a full-screen `xterm-256color` TUI that relies on both — it would render corrupted.
+- **No screen-buffer introspection.** Only whole-row text (`Term.getRowText(int)`) is exposed; no
+  per-cell/attribute access. `ScreenContentDetector` polls the rendered screen to detect
+  interactive choice menus, which would be unreliable without cell/attribute data.
+- **Context menu not extensible.** `Term`'s right-click menu is hardcoded in
+  `org.netbeans.modules.terminal.ioprovider.Terminal` with no public hook. JediTerm, by contrast,
+  exposes a `createPopupMenu` / `TerminalActionProvider` extension point (see `ZoomableJediTermWidget`).
+- **No per-instance font/zoom API.** Term font size is a global setting only — incompatible with
+  the per-surface zoom feature.
+- **Friend-only API.** `lib.terminalemulator` and `terminal` declare no public packages
+  (friend-package restricted), so they are not a supported third-party API and may break between
+  NetBeans releases.
+
+Only PTY hosting is equivalent (`StreamTerm.connect(streams)` vs. JediTerm's `TtyConnector`).
+Replacing JediTerm would mean rewriting `process/`, `controller/`, and screen detection for a
+net loss of capability — do not pursue it.
+
 ### Process startup
 
 `ClaudeProcess.start(workingDir, profile, extraCliArgs, mode, resumeSessionId)`:

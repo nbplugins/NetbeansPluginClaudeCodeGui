@@ -4,6 +4,8 @@ import com.jediterm.terminal.model.TerminalTextBuffer;
 import com.jediterm.terminal.ui.JediTermWidget;
 import io.github.nbclaudecodegui.controller.ClaudeSessionController;
 import io.github.nbclaudecodegui.ui.common.BasicTextContextMenu;
+import io.github.nbclaudecodegui.ui.common.Zoomable;
+import io.github.nbclaudecodegui.ui.common.ZoomSupport;
 import io.github.nbclaudecodegui.model.ChoiceMenuModel;
 import io.github.nbclaudecodegui.model.ClaudeSessionModel;
 import io.github.nbclaudecodegui.model.EditMode;
@@ -19,8 +21,12 @@ import java.awt.CardLayout;
 import java.awt.FlowLayout;
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.KeyEventDispatcher;
+import java.awt.KeyboardFocusManager;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -103,7 +109,7 @@ import org.openide.windows.WindowManager;
     openAtStartup = false
 )
 public class ClaudeSessionTab extends TopComponent
-        implements ClaudeSessionModel.ClaudeSessionModelListener {
+        implements ClaudeSessionModel.ClaudeSessionModelListener, Zoomable {
 
     private static final Logger LOG = Logger.getLogger(ClaudeSessionTab.class.getName());
 
@@ -174,7 +180,21 @@ public class ClaudeSessionTab extends TopComponent
     // UI — session (created once a session starts, nulled on stop)
     // -------------------------------------------------------------------------
 
-    private JediTermWidget  terminalWidget;
+    private JediTermWidget         terminalWidget;
+    private NetBeansSettingsProvider settingsProvider;
+    private int termZoomDelta =
+            org.openide.util.NbPreferences.forModule(ClaudeSessionTab.class)
+                    .getInt("terminalZoomDelta", 0);
+    private final KeyEventDispatcher zoomKeyInterceptor = e -> {
+        if (e.getID() != KeyEvent.KEY_PRESSED || terminalWidget == null) return false;
+        if (!SwingUtilities.isDescendingFrom(e.getComponent(), terminalWidget)) return false;
+        if (e.getKeyCode() == KeyEvent.VK_0
+                && (e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0) {
+            SwingUtilities.invokeLater(this::resetZoom);
+            return true;
+        }
+        return false;
+    };
     private JSplitPane      splitPane;
     private JPanel          errorPanel;
     JPanel          southCard;
@@ -436,6 +456,44 @@ public class ClaudeSessionTab extends TopComponent
     protected void componentActivated() {
         super.componentActivated();
         requestFocusOnInput();
+    }
+
+    @Override
+    protected void componentShowing() {
+        super.componentShowing();
+        KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                .addKeyEventDispatcher(zoomKeyInterceptor);
+    }
+
+    @Override
+    protected void componentHidden() {
+        super.componentHidden();
+        KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                .removeKeyEventDispatcher(zoomKeyInterceptor);
+    }
+
+    // -------------------------------------------------------------------------
+    // Zoomable
+    // -------------------------------------------------------------------------
+
+    @Override public void zoomIn()    { applyTermZoom(termZoomDelta + 1); }
+    @Override public void zoomOut()   { applyTermZoom(termZoomDelta - 1); }
+    @Override public void resetZoom() { applyTermZoom(0); }
+    @Override public int  getZoomDelta() { return termZoomDelta; }
+    @Override public int  getMinDelta()  { return 6 - (int) ClaudeCodePreferences.getTerminalFontSize(); }
+    @Override public int  getMaxDelta()  { return 72 - (int) ClaudeCodePreferences.getTerminalFontSize(); }
+
+    private void applyTermZoom(int d) {
+        int clamped = Math.max(getMinDelta(), Math.min(getMaxDelta(), d));
+        termZoomDelta = clamped;
+        org.openide.util.NbPreferences.forModule(ClaudeSessionTab.class)
+                .putInt("terminalZoomDelta", clamped);
+        if (settingsProvider != null) {
+            settingsProvider.setZoomDelta(clamped);
+        }
+        if (terminalWidget instanceof ZoomableJediTermWidget zw) {
+            zw.refreshFont();
+        }
     }
 
     @Override
@@ -754,7 +812,9 @@ public class ClaudeSessionTab extends TopComponent
             (cmd, err) -> showStartError(cmd, err, model.getWorkingDirectory(), capturedConfigDir));
         updateDisplayName(dir);
         sessionTag = "[" + dir.getName() + "] ";
-        JediTermWidget widget = new JediTermWidget(new NetBeansSettingsProvider());
+        settingsProvider = new NetBeansSettingsProvider();
+        settingsProvider.setZoomDelta(termZoomDelta);
+        ZoomableJediTermWidget widget = new ZoomableJediTermWidget(settingsProvider, this);
         Color termBg = UIManager.getColor("EditorPane.background");
         if (termBg == null) termBg = UIManager.getColor("Panel.background");
         if (termBg != null) {
@@ -841,6 +901,12 @@ public class ClaudeSessionTab extends TopComponent
                         .putInt(getSavedCardKey(), bottom);
             }
         });
+
+        widget.getTerminalPanel().addMouseWheelListener(
+                ZoomSupport.createWheelListener(this));
+        // The Zoom submenu is spliced into JediTerm's native context menu by
+        // ZoomableJediTermWidget (JediTerm ignores setComponentPopupMenu).
+        ZoomSupport.bindResetKey(this, this);
 
         add(splitPane, BorderLayout.CENTER);
         revalidate();
