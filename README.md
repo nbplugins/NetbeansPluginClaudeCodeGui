@@ -42,12 +42,6 @@ See the [User Manual](docs/user-manual.md) for full documentation of all plugin 
 ---
 
 
-## Development
-
-See [docs/plan-nb-claude-code-gui.md](docs/plan-nb-claude-code-gui.md) for the full development plan and stage history.
-
----
-
 ## Third-party code
 
 The MCP server integration (package `org.openbeans.claude.netbeans`) is based on
@@ -75,4 +69,4 @@ integrated into the `netbeans-claude-code-gui` plugin build alongside the PTY te
 
 ## License
 
-Apache License 2.0
+[Apache License 2.0](LICENSE)

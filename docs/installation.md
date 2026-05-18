@@ -18,6 +18,12 @@ The `claude` executable must be on your system `PATH` **or** its absolute path m
 
 ## Installation
 
+### NetBeans Plugin Portal
+
+The plugin is available in the [NetBeans Plugin Portal](https://plugins.netbeans.apache.org/). Open NetBeans → **Tools → Plugins → Available Plugins**, search for **Claude Code GUI**, and click **Install**.
+
+> **Note:** Due to the plugin portal's publication cycle, the version available there may be older than the latest release on GitHub. If you need the newest version, download it directly from [GitHub Releases](#recommended-download-from-github-releases).
+
 ### Recommended: download from GitHub Releases
 
 Download the latest `.nbm` file from the [Releases page](https://github.com/nbclaudecodegui/NetbeansClaudeCodeGui/releases/latest).
