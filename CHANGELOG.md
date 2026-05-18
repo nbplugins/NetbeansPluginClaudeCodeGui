@@ -1,3 +1,5 @@
+# 0.23
+
 - Fixed F5 not refreshing the Markdown Preview from disk
 - Added font zoom (Alt+Scroll / Ctrl+= / Ctrl+−) for Terminal and Markdown Preview; Ctrl+0 or Alt+Click Wheel resets; right-click "Zoom" submenu
 - Added Find bar (Ctrl+F / F3 / Shift+F3) to Markdown Preview
