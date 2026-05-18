@@ -61,6 +61,8 @@ The session tab contains the following areas:
 ### Terminal area (center)
 Displays Claude Code output. You can also click into the terminal and interact with Claude Code directly — as if it were running in a standalone terminal. Use this when the plugin fails to detect Claude's state correctly, for example if an interactive choice panel was not shown.
 
+**Zoom** — use **Alt+Scroll** (mouse wheel) to zoom in and out, or **Ctrl+=** / **Ctrl+−**. Press **Ctrl+0** or **Alt+Click Wheel** (middle-click while holding Alt) to reset to the default size. The **Zoom** submenu is also available via right-click.
+
 ### Prompt panel (bottom)
 Contains the input area, **▶ Send** / **✖ Cancel** buttons, and **☰ History** / **★ Favorites** buttons.
 
@@ -330,6 +332,22 @@ Toggling in the context menu does not change the global setting.
 **Pin Preview** — opens the rendered markdown (proposed content) in a separate IDE tab that remains open after the diff is closed.
 
 Both features are especially useful in Claude's plan mode: they let you read the formatted plan before deciding whether to accept it.
+
+### Markdown Preview controls
+
+These controls apply to every Markdown Preview tab — whether shown inside the diff panel, opened by the `show_markdown` / `show_markdown_file` MCP tools, or the Auto Plan Preview tab.
+
+| Action | Key / gesture |
+|--------|--------------|
+| Open find bar | Ctrl+F |
+| Next match | F3 |
+| Previous match | Shift+F3 |
+| Close find bar | Escape |
+| Reload from disk | F5 |
+| Zoom in | Alt+Scroll up  or  Ctrl+= |
+| Zoom out | Alt+Scroll down  or  Ctrl+− |
+| Reset zoom | Ctrl+0  or  Alt+Click Wheel |
+| Zoom submenu | Right-click → **Zoom** |
 
 ### Auto Plan Preview
 

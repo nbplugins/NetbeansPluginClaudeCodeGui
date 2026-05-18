@@ -8,10 +8,16 @@
 
 NetBeans Claude Code GUI is a NetBeans IDE plugin that embeds the Claude Code CLI as a full interactive terminal session directly inside the IDE. You type prompts in a dedicated session tab, Claude reads and edits your project files, and the plugin provides:
 
-- a graphical file diff (using NetBeans' built-in diff viewer) before any change is written to disk
-- a graphical panel for responding to Claude's interactive questions
+- **Graphical file diff** — review every proposed file change before it is written to disk; accept, decline (with an optional reason), or interrupt Claude
+- **Interactive choice menu** — Claude's Yes/No and multiple-choice prompts appear as a native panel instead of raw terminal text
+- **Prompt history and favorites** — recall past prompts with Ctrl+Up/Down; save reusable prompts as favorites with optional keyboard shortcuts
+- **File attachments** — attach files via `@path` tokens with auto-completion popup, drag-and-drop, and clipboard paste support
+- **Multiple profiles** — run Claude Code under separate accounts or API keys for different projects, each with an isolated config directory, authentication, proxy, and model settings
+- **Session management** — start new sessions, continue the last session, or resume a specific past session; sessions persist across IDE restarts
+- **Markdown Preview** — live-rendered markdown tab for plan files and MCP-initiated previews; includes a find bar (Ctrl+F) and font zoom (Alt+Scroll)
+- **Auto Plan Preview** — when Claude writes a plan file, a live preview tab opens automatically as soon as you accept the diff
 
-IDE integration (open editors, diagnostics, current selection) is exposed to Claude via the MCP protocol so that Claude always has full context about your work.
+IDE integration (open editors, diagnostics, current selection, file operations) is exposed to Claude via the MCP protocol so that Claude always has full context about your work.
 
 The plugin code was written entirely by [Claude Code](https://claude.ai/code) using **Claude Sonnet 4.6**, with the author acting as architect and reviewer.
 
