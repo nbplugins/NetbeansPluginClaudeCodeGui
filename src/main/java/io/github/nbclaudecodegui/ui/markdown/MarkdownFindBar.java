@@ -1,4 +1,4 @@
-package io.github.nbclaudecodegui.ui.common.markdown;
+package io.github.nbclaudecodegui.ui.markdown;
 
 import java.awt.Color;
 import java.awt.Dimension;

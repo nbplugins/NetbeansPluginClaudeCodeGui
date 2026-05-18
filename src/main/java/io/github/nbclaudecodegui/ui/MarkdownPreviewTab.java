@@ -1,11 +1,11 @@
 package io.github.nbclaudecodegui.ui;
 
 import io.github.nbclaudecodegui.settings.ClaudeCodePreferences;
-import io.github.nbclaudecodegui.ui.common.MarkdownRenderer;
 import io.github.nbclaudecodegui.ui.common.UiUtils;
 import io.github.nbclaudecodegui.ui.common.Zoomable;
 import io.github.nbclaudecodegui.ui.common.ZoomSupport;
-import io.github.nbclaudecodegui.ui.common.markdown.MarkdownFindBar;
+import io.github.nbclaudecodegui.ui.markdown.MarkdownFindBar;
+import io.github.nbclaudecodegui.ui.markdown.MarkdownRenderer;
 import javax.swing.text.html.HTMLEditorKit;
 import javax.swing.text.html.StyleSheet;
 import org.openide.util.NbPreferences;

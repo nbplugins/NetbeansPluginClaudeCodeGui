@@ -1,6 +1,6 @@
 package io.github.nbclaudecodegui.ui;
 
-import io.github.nbclaudecodegui.ui.common.MarkdownRenderer;
+import io.github.nbclaudecodegui.ui.markdown.MarkdownRenderer;
 import java.awt.event.KeyEvent;
 import javax.swing.JComponent;
 import javax.swing.JEditorPane;

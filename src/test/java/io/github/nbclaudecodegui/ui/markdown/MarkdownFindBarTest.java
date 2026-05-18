@@ -1,4 +1,4 @@
-package io.github.nbclaudecodegui.ui.common.markdown;
+package io.github.nbclaudecodegui.ui.markdown;
 
 import java.util.List;
 import javax.swing.JEditorPane;

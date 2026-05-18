@@ -1,4 +1,4 @@
-package io.github.nbclaudecodegui.ui.common;
+package io.github.nbclaudecodegui.ui.markdown;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for {@link MarkdownRenderer}.
  *
  * <p>toHtml() tests are fixture-based: each case is a pair of resource files under
- * {@code io/github/nbclaudecodegui/ui/common/markdown-renderer/to-html/}:
+ * {@code io/github/nbclaudecodegui/ui/markdown/markdown-renderer/to-html/}:
  * <ul>
  *   <li>{@code <case>.src.md} — input markdown</li>
  *   <li>{@code <case>.expectedHtml.html} — expected HTML output</li>
@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class MarkdownRendererTest {
 
     private static final String TO_HTML_RESOURCE_DIR =
-            "io/github/nbclaudecodegui/ui/common/markdown-renderer/to-html";
+            "io/github/nbclaudecodegui/ui/markdown/markdown-renderer/to-html";
 
     static Stream<Object[]> toHtmlTestCases() throws Exception {
         URL dirUrl = MarkdownRendererTest.class.getClassLoader().getResource(TO_HTML_RESOURCE_DIR);
