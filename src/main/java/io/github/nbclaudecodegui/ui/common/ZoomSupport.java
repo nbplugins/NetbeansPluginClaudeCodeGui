@@ -8,6 +8,7 @@ import javax.swing.AbstractAction;
 import javax.swing.JComponent;
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
+import javax.swing.JPopupMenu;
 import javax.swing.KeyStroke;
 import java.awt.event.KeyEvent;
 
@@ -57,6 +58,28 @@ public final class ZoomSupport {
         menu.addSeparator();
         menu.add(reset);
         return menu;
+    }
+
+    /**
+     * Appends a separator (only when {@code menu} already has items) followed by
+     * the "Zoom" submenu produced by {@link #buildZoomMenu(Zoomable)} to the given
+     * popup. Used to splice the Zoom controls into JediTerm's native terminal
+     * context menu, which JediTerm builds internally and does not expose via
+     * Swing's {@code setComponentPopupMenu}.
+     *
+     * @param menu     the popup to extend (typically JediTerm's native context menu);
+     *                 must not be {@code null}
+     * @param zoomable the surface whose font is zoomed by the submenu items; a
+     *                 {@code null} value makes this a no-op
+     */
+    public static void appendZoomMenu(JPopupMenu menu, Zoomable zoomable) {
+        if (zoomable == null) {
+            return;
+        }
+        if (menu.getComponentCount() > 0) {
+            menu.addSeparator();
+        }
+        menu.add(buildZoomMenu(zoomable));
     }
 
     /** Binds Ctrl+0 → resetZoom() on the given component via InputMap/ActionMap. */

@@ -27,7 +27,6 @@ import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
-import javax.swing.JPopupMenu;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -492,15 +491,8 @@ public class ClaudeSessionTab extends TopComponent
         if (settingsProvider != null) {
             settingsProvider.setZoomDelta(clamped);
         }
-        if (terminalWidget != null) {
-            try {
-                java.lang.reflect.Method m =
-                        terminalWidget.getTerminalPanel().getClass()
-                                .getMethod("reinitFontAndResize");
-                m.invoke(terminalWidget.getTerminalPanel());
-            } catch (ReflectiveOperationException ex) {
-                LOG.fine("reinitFontAndResize not available: " + ex.getMessage());
-            }
+        if (terminalWidget instanceof ZoomableJediTermWidget zw) {
+            zw.refreshFont();
         }
     }
 
@@ -822,7 +814,7 @@ public class ClaudeSessionTab extends TopComponent
         sessionTag = "[" + dir.getName() + "] ";
         settingsProvider = new NetBeansSettingsProvider();
         settingsProvider.setZoomDelta(termZoomDelta);
-        JediTermWidget widget = new JediTermWidget(settingsProvider);
+        ZoomableJediTermWidget widget = new ZoomableJediTermWidget(settingsProvider, this);
         Color termBg = UIManager.getColor("EditorPane.background");
         if (termBg == null) termBg = UIManager.getColor("Panel.background");
         if (termBg != null) {
@@ -912,9 +904,8 @@ public class ClaudeSessionTab extends TopComponent
 
         widget.getTerminalPanel().addMouseWheelListener(
                 ZoomSupport.createWheelListener(this));
-        JPopupMenu termMenu = new JPopupMenu();
-        termMenu.add(ZoomSupport.buildZoomMenu(this));
-        widget.getTerminalPanel().setComponentPopupMenu(termMenu);
+        // The Zoom submenu is spliced into JediTerm's native context menu by
+        // ZoomableJediTermWidget (JediTerm ignores setComponentPopupMenu).
         ZoomSupport.bindResetKey(this, this);
 
         add(splitPane, BorderLayout.CENTER);
