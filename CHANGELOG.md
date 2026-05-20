@@ -1,3 +1,5 @@
+- Fixed missing Claude Code icon in Tools → Options dialog
+
 # 1.0.4 (2026-05-18)
 
 - Migrated plugin home to https://github.com/nbplugins/NetbeansPluginClaudeCodeGui; updated Maven coordinates to io.github.nbplugins:netbeans-plugin-claude-code-gui; renamed Java packages to io.github.nbplugins.claudecodegui

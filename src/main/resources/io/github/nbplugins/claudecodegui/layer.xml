@@ -11,7 +11,7 @@
             <attr bundlevalue="io.github.nbplugins.claudecodegui.Bundle#OptionsCategory_Name_ClaudeCodeGUI"
                   name="categoryName"/>
             <attr name="iconBase"
-                  stringvalue="io/github/nbclaudecodegui/icons/claude-icon-32.png"/>
+                  stringvalue="io/github/nbplugins/claudecodegui/icons/claude-icon-32.png"/>
             <attr bundlevalue="io.github.nbplugins.claudecodegui.Bundle#OptionsCategory_Keywords_ClaudeCodeGUI"
                   name="keywords"/>
             <attr name="keywordsCategory" stringvalue="ClaudeCodeGUI"/>
