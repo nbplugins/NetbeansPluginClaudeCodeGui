@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/nbplugins/NetbeansPluginClaudeCodeGui)](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/nbplugins/NetbeansPluginClaudeCodeGui/total)](https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/releases)
 
+![Overview](docs/screenshots/overview.png)
+
 NetBeans Claude Code GUI is a NetBeans IDE plugin that embeds the Claude Code CLI as a full interactive terminal session directly inside the IDE. You type prompts in a dedicated session tab, Claude reads and edits your project files, and the plugin provides:
 
 - **Graphical file diff** — review every proposed file change before it is written to disk; accept, decline (with an optional reason), or interrupt Claude
