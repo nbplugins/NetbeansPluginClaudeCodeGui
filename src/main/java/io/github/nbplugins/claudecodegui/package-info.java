@@ -4,7 +4,7 @@
  * send prompts, attach files, and review AI-suggested file changes directly inside
  * the Apache NetBeans IDE.
  *
- * <p>Plugin identifier: {@code io.github.nbclaudecodegui}
+ * <p>Plugin identifier: {@code io.github.nbplugins.claudecodegui}
  * <p>NetBeans platform version: RELEASE230
  */
 package io.github.nbplugins.claudecodegui;
