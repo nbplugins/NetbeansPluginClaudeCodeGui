@@ -1,3 +1,4 @@
+- Added ability to manually add, rename, and sort models in the Model Aliases dialog
 - Fixed missing Claude Code icon in Tools → Options dialog
 
 # 1.0.4 (2026-05-18)

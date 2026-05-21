@@ -153,19 +153,25 @@ public final class ModelAliasesDialog extends JDialog {
 
         // --- Button panel (right, vertical) ---
         JButton fetchBtn  = new JButton("Fetch");
+        JButton addBtn    = new JButton("Add");
+        JButton renameBtn = new JButton("Rename");
         JButton upBtn     = new JButton("\u2191");
         JButton downBtn   = new JButton("\u2193");
+        JButton sortBtn   = new JButton("Sort");
         JButton deleteBtn = new JButton("Delete");
         JButton pruneBtn  = new JButton("Prune");
 
-        for (JButton b : new JButton[]{fetchBtn, upBtn, downBtn, deleteBtn, pruneBtn}) {
+        for (JButton b : new JButton[]{fetchBtn, addBtn, renameBtn, upBtn, downBtn, sortBtn, deleteBtn, pruneBtn}) {
             b.setAlignmentX(Component.CENTER_ALIGNMENT);
             b.setMaximumSize(new Dimension(80, 28));
         }
 
         fetchBtn .addActionListener(e -> onFetch());
+        addBtn   .addActionListener(e -> onAdd());
+        renameBtn.addActionListener(e -> onRename());
         upBtn    .addActionListener(e -> moveRow(-1));
         downBtn  .addActionListener(e -> moveRow(+1));
+        sortBtn  .addActionListener(e -> onSort());
         deleteBtn.addActionListener(e -> onDelete());
         pruneBtn .addActionListener(e -> onPrune());
 
@@ -173,9 +179,15 @@ public final class ModelAliasesDialog extends JDialog {
         btnPanel.setLayout(new BoxLayout(btnPanel, BoxLayout.Y_AXIS));
         btnPanel.add(fetchBtn);
         btnPanel.add(Box.createVerticalStrut(4));
+        btnPanel.add(addBtn);
+        btnPanel.add(Box.createVerticalStrut(2));
+        btnPanel.add(renameBtn);
+        btnPanel.add(Box.createVerticalStrut(4));
         btnPanel.add(upBtn);
         btnPanel.add(Box.createVerticalStrut(2));
         btnPanel.add(downBtn);
+        btnPanel.add(Box.createVerticalStrut(4));
+        btnPanel.add(sortBtn);
         btnPanel.add(Box.createVerticalStrut(4));
         btnPanel.add(deleteBtn);
         btnPanel.add(Box.createVerticalStrut(4));
@@ -326,6 +338,16 @@ public final class ModelAliasesDialog extends JDialog {
         table.setRowSelectionInterval(target, target);
     }
 
+    private void onSort() {
+        stopEditing();
+        List<ModelAlias> rows = collectModels();
+        rows.sort((a, b) -> a.id().compareToIgnoreCase(b.id()));
+        tableModel.setRowCount(0);
+        for (ModelAlias m : rows) {
+            tableModel.addRow(new Object[]{m.id(), m.available(), m.alias()});
+        }
+    }
+
     private void onDelete() {
         stopEditing();
         int sel = table.getSelectedRow();
@@ -339,6 +361,58 @@ public final class ModelAliasesDialog extends JDialog {
                 tableModel.removeRow(i);
             }
         }
+    }
+
+    private void onAdd() {
+        String id = JOptionPane.showInputDialog(this, "Model ID:", "Add Model", JOptionPane.PLAIN_MESSAGE);
+        if (id == null) return;
+        id = id.trim();
+        String error = validateModelId(id, -1);
+        if (error != null) { statusLabel.setText(error); return; }
+        tableModel.addRow(new Object[]{id, null, ""});
+        int newRow = tableModel.getRowCount() - 1;
+        table.setRowSelectionInterval(newRow, newRow);
+        table.scrollRectToVisible(table.getCellRect(newRow, 0, true));
+        statusLabel.setText(" ");
+    }
+
+    private void onRename() {
+        stopEditing();
+        int sel = table.getSelectedRow();
+        if (sel < 0) return;
+        String current = (String) tableModel.getValueAt(sel, 0);
+        String newId = (String) JOptionPane.showInputDialog(
+                this, "Model ID:", "Rename Model", JOptionPane.PLAIN_MESSAGE, null, null, current);
+        if (newId == null) return;
+        newId = newId.trim();
+        if (newId.equals(current)) return;
+        String error = validateModelId(newId, sel);
+        if (error != null) { statusLabel.setText(error); return; }
+        tableModel.setValueAt(newId, sel, 0);
+        tableModel.setValueAt(null, sel, 1);
+        statusLabel.setText(" ");
+    }
+
+    String validateModelId(String id, int skipRow) {
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < tableModel.getRowCount(); i++) {
+            ids.add((String) tableModel.getValueAt(i, 0));
+        }
+        return validateModelId(id, ids, skipRow);
+    }
+
+    /**
+     * Returns an error message if {@code id} is blank or already exists in
+     * {@code existingIds} (excluding {@code skipRow}), or {@code null} if valid.
+     */
+    static String validateModelId(String id, List<String> existingIds, int skipRow) {
+        if (id.isBlank()) return "Model ID must not be blank.";
+        for (int i = 0; i < existingIds.size(); i++) {
+            if (i != skipRow && id.equals(existingIds.get(i))) {
+                return "Model already in the list: " + id;
+            }
+        }
+        return null;
     }
 
     private void onOk() {

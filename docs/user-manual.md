@@ -495,6 +495,8 @@ If your provider names models differently from Anthropic's standard names, the p
 
 Click **Model Aliases…** to open the Model Aliases dialog.
 
+![Model Aliases dialog](screenshots/model-aliases.png)
+
 The dialog shows a table with three columns:
 
 | Column | Description |
@@ -508,7 +510,10 @@ The dialog shows a table with three columns:
 | Button | Effect |
 |--------|--------|
 | **Fetch** | Queries the provider's models endpoint using the configured API key, fills the table with discovered model IDs, and marks each as available (✓) or unavailable (✗) |
+| **Add** | Opens an input dialog; enter a model ID to append a new row to the table (with blank alias and no availability mark) |
+| **Rename** | Opens an input dialog pre-filled with the selected row's ID; confirm to update the model ID in place |
 | **↑ / ↓** | Reorder rows — the order determines how models appear in the status bar model selector |
+| **Sort** | Sort all rows alphabetically by model ID (case-insensitive) |
 | **Delete** | Remove the selected row |
 | **Prune** | Remove all rows marked as unavailable (✗) |
 
