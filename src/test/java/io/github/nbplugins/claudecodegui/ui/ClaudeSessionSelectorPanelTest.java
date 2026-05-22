@@ -190,6 +190,44 @@ class ClaudeSessionSelectorPanelTest {
     }
 
     // -------------------------------------------------------------------------
+    // Profile combo refresh on popup open
+    // -------------------------------------------------------------------------
+
+    @Test
+    void profileComboRefreshesOnPopupOpen() {
+        ClaudeSessionSelectorPanel p = panel();
+        javax.swing.JComboBox<?> combo = getProfileCombo(p);
+        int countBefore = combo.getItemCount();
+        assertTrue(countBefore >= 1, "Profile combo must have at least the Default profile");
+
+        // Fire the popup-will-become-visible event (simulates user opening the dropdown)
+        for (javax.swing.event.PopupMenuListener l : combo.getPopupMenuListeners()) {
+            l.popupMenuWillBecomeVisible(new javax.swing.event.PopupMenuEvent(combo));
+        }
+
+        assertEquals(countBefore, combo.getItemCount(),
+                "Profile combo item count must stay the same after refresh when profiles did not change");
+    }
+
+    @Test
+    void profileComboPreservesSelectionAfterRefresh() {
+        ClaudeSessionSelectorPanel p = panel();
+        javax.swing.JComboBox<?> combo = getProfileCombo(p);
+
+        // Select the first profile (Default)
+        combo.setSelectedIndex(0);
+        String selectedBefore = (String) combo.getSelectedItem();
+
+        // Fire the popup listener
+        for (javax.swing.event.PopupMenuListener l : combo.getPopupMenuListeners()) {
+            l.popupMenuWillBecomeVisible(new javax.swing.event.PopupMenuEvent(combo));
+        }
+
+        assertEquals(selectedBefore, combo.getSelectedItem(),
+                "Profile selection must be preserved after refresh when the profile still exists");
+    }
+
+    // -------------------------------------------------------------------------
     // History persistence helpers
     // -------------------------------------------------------------------------
 
@@ -242,6 +280,18 @@ class ClaudeSessionSelectorPanelTest {
         }
         // index 0 = projectCombo, index 1 = profileCombo
         return nonEditable.size() > 1 ? nonEditable.get(1).getSelectedIndex() : -1;
+    }
+
+    /** Returns the profile JComboBox (second non-editable combo). */
+    private static javax.swing.JComboBox<?> getProfileCombo(ClaudeSessionSelectorPanel panel) {
+        java.util.List<javax.swing.JComboBox<?>> nonEditable = new java.util.ArrayList<>();
+        for (java.awt.Component c : getAllComponents(panel)) {
+            if (c instanceof javax.swing.JComboBox<?> combo && !combo.isEditable()) {
+                nonEditable.add(combo);
+            }
+        }
+        assertTrue(nonEditable.size() > 1, "Expected at least 2 non-editable combos (project + profile)");
+        return nonEditable.get(1);
     }
 
     /** Recursively collects all components from a container. */

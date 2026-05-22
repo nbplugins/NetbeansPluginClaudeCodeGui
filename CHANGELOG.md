@@ -1,3 +1,4 @@
+- Fixed profile combo not refreshing when profiles are added or removed after session start
 - Added ability to manually add, rename, and sort models in the Model Aliases dialog
 - Fixed missing Claude Code icon in Tools → Options dialog
 

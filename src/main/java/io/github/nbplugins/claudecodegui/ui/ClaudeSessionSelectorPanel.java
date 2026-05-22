@@ -179,6 +179,15 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
 
         // Pre-fill from selected profile; update when profile changes
         profileCombo.addActionListener(e -> onProfileSelected());
+        profileCombo.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
+            @Override public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) {
+                String current = (String) profileCombo.getSelectedItem();
+                populateProfileCombo();
+                if (current != null) profileCombo.setSelectedItem(current);
+            }
+            @Override public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) {}
+            @Override public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) {}
+        });
         onProfileSelected();
 
         // --- open button ---
