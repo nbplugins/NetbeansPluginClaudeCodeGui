@@ -247,4 +247,24 @@ public class ClaudeCodeInstaller extends ModuleInstall implements PropertyChange
     public boolean isLockFileValid() {
         return false; // lock file no longer used
     }
+
+    @Override
+    public void registerOpenAIProxy(String uuid, String baseUrl, String apiKey,
+            io.github.nbplugins.claudecodegui.settings.ProxyConfiguration proxy) {
+        if (mcpServer != null) {
+            mcpServer.registerOpenAIProxy(uuid, baseUrl, apiKey, proxy);
+        }
+    }
+
+    @Override
+    public void deregisterOpenAIProxy(String uuid) {
+        if (mcpServer != null) {
+            mcpServer.deregisterOpenAIProxy(uuid);
+        }
+    }
+
+    @Override
+    public io.github.nbplugins.claudecodegui.proxy.OpenAIProxyConfig getOpenAIProxyConfig(String uuid) {
+        return mcpServer != null ? mcpServer.getOpenAIProxyConfig(uuid) : null;
+    }
 }

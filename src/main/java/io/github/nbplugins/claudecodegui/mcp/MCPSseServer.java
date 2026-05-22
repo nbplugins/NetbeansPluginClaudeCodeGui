@@ -4,6 +4,9 @@ package io.github.nbplugins.claudecodegui.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.nbplugins.claudecodegui.proxy.OpenAIProxyConfig;
+import io.github.nbplugins.claudecodegui.proxy.OpenAIProxyServlet;
+import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.servlet.ServletContextHandler;
@@ -63,6 +66,13 @@ public class MCPSseServer {
             new ConcurrentHashMap<>();
 
     /**
+     * Registry of active OpenAI-compatible proxy sessions, keyed by UUID.
+     * Each entry is a config snapshot taken at session start.
+     */
+    private final ConcurrentHashMap<String, OpenAIProxyConfig> openAIProxies =
+            new ConcurrentHashMap<>();
+
+    /**
      * Creates a new MCPSseServer backed by the given MCP handler.
      *
      * @param mcpHandler the handler that processes incoming MCP requests
@@ -103,6 +113,7 @@ public class MCPSseServer {
             ctx.addServlet(hookHolder, "/hook");
             ctx.addServlet(new ServletHolder(new StopServlet()), "/stop");
             ctx.addServlet(new ServletHolder(new PermissionRequestServlet()), "/permission-request");
+            ctx.addServlet(new ServletHolder(new OpenAIProxyServlet(this)), "/openai-proxy/*");
 
             server.setHandler(ctx);
             server.setRequestLog((request, response) ->
@@ -140,6 +151,43 @@ public class MCPSseServer {
      * @return the port number
      */
     public int getPort() { return port; }
+
+    // -------------------------------------------------------------------------
+    // OpenAI proxy registry
+    // -------------------------------------------------------------------------
+
+    /**
+     * Registers an OpenAI-compatible proxy session.
+     *
+     * @param uuid   unique session identifier
+     * @param baseUrl provider base URL
+     * @param apiKey  provider API key
+     * @param proxy   proxy settings from the profile (used by the servlet's HttpClient)
+     */
+    public void registerOpenAIProxy(String uuid, String baseUrl, String apiKey, ProxyConfiguration proxy) {
+        openAIProxies.put(uuid, new OpenAIProxyConfig(baseUrl, apiKey, proxy));
+        LOGGER.log(Level.FINE, "OpenAI proxy registered: uuid={0}", uuid);
+    }
+
+    /**
+     * Deregisters an OpenAI-compatible proxy session.
+     *
+     * @param uuid unique session identifier
+     */
+    public void deregisterOpenAIProxy(String uuid) {
+        openAIProxies.remove(uuid);
+        LOGGER.log(Level.FINE, "OpenAI proxy deregistered: uuid={0}", uuid);
+    }
+
+    /**
+     * Returns the proxy config for the given UUID, or {@code null} if not found.
+     *
+     * @param uuid unique session identifier
+     * @return config snapshot or {@code null}
+     */
+    public OpenAIProxyConfig getOpenAIProxyConfig(String uuid) {
+        return openAIProxies.get(uuid);
+    }
 
     /**
      * Returns {@code true} while the Jetty server is running.

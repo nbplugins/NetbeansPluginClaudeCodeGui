@@ -1,0 +1,11 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 512,
+  "messages": [{
+    "role": "assistant",
+    "content": [
+      {"type": "text", "text": "I will call the tool."},
+      {"type": "tool_use", "id": "t1", "name": "fn", "input": {}}
+    ]
+  }]
+}

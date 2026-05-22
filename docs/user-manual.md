@@ -78,7 +78,7 @@ Contains the input area, **▶ Send** / **✖ Cancel** buttons, and **☰ Histor
 
 Press **Shift+Tab** anywhere in the prompt panel to cycle through modes.
 
-**Model selector** — lists the models available in the current session. Standard entries (`sonnet`, `opus`, `haiku`) are discovered by opening the `/model` menu. For **Other API** profiles, any models assigned the `custom` alias in **Model Aliases** also appear here, shown by their full provider ID. Selecting a model switches to it immediately.
+**Model selector** — lists the models available in the current session. Standard entries (`sonnet`, `opus`, `haiku`) are discovered by opening the `/model` menu. For **Claude-compatible API** profiles, any models assigned the `custom` alias in **Model Aliases** also appear here, shown by their full provider ID. Selecting a model switches to it immediately.
 
 On the right side of the status bar:
 
@@ -487,9 +487,12 @@ Select the authentication type using the radio buttons:
 | **Claude Managed** | None | Claude manages authentication itself. Run `claude` in a terminal once to set it up, or Claude will prompt you on first launch. Use `/login` in the session terminal to re-authenticate. |
 | **Subscription** | OAuth token | Obtain the token at [claude.ai](https://claude.ai) (requires Pro, Max, Team, or Enterprise subscription). **Note:** OAuth tokens expire periodically and must be regenerated and re-entered manually. For a smoother experience, prefer **Claude Managed** instead. |
 | **Claude API** | API key | Obtain the key at [console.anthropic.com](https://console.anthropic.com) (requires an Anthropic Console account with API access). |
-| **Other API** | API key + Base URL | Use the API key and base URL provided by your third-party provider. |
+| **Claude-compatible API** | API key + Base URL | Use the API key and base URL provided by your third-party provider (Anthropic-compatible endpoint). |
+| **OpenAI-compatible API** | API key + Base URL | Route Claude Code through any OpenAI-compatible provider. The plugin starts an internal proxy that translates Anthropic API calls to OpenAI Chat Completions format. See [OpenAI-compatible API](#openai-compatible-api) below. |
 
-### Model aliases (Other API only)
+> **Note:** Changes to connection parameters (API key, Base URL) take effect only after restarting the session.
+
+### Model aliases (Claude-compatible API only)
 
 If your provider names models differently from Anthropic's standard names, the plugin cannot match them to the `sonnet`, `opus`, and `haiku` aliases used by Claude Code. In that case, set the alias to the actual model ID used by your provider (for example, with an `anthropic/` prefix).
 
@@ -545,6 +548,49 @@ The dialog shows a table with three columns:
 | **NO_PROXY** | Empty or a comma-separated list of host patterns | `localhost,127.0.0.1,.example.com` |
 
 **Note:** Claude Code communicates with the plugin via `localhost`. External proxies are not aware of this. If you fill in the **NO_PROXY** field, make sure it includes `localhost` — otherwise the plugin integration will stop working. If you leave the field empty, the plugin adds `localhost` automatically.
+
+### OpenAI-compatible API
+
+Claude Code sends requests in Anthropic Messages API format. Many AI providers — including OpenAI, Azure OpenAI, Groq, DeepSeek, and local models via Ollama or LM Studio — use OpenAI Chat Completions format instead. The **OpenAI-compatible API** connection type bridges this gap by running an internal HTTP proxy inside the plugin.
+
+**How it works:**
+
+1. When a session starts, the plugin registers an internal proxy path within the already-running MCP server.
+2. Claude Code is directed to send requests to that path (`ANTHROPIC_BASE_URL=http://127.0.0.1:<mcp-port>/openai-proxy/<session-id>`).
+3. The proxy translates each Anthropic Messages API request to OpenAI Chat Completions format, forwards it to your provider, and translates the response back — including streaming and tool calls.
+4. When the session stops, the proxy path is deregistered. No separate port or process is used.
+
+**Setup:**
+
+1. Create a new profile and select **OpenAI-compatible API** as the connection type.
+2. Fill in **Base URL** — the base URL of your provider's API (e.g. `https://api.openai.com/v1`, `http://localhost:11434/v1` for Ollama).
+3. Fill in **API Key** — the API key for your provider (enter any non-blank value if the provider does not require a key).
+4. Open **Model Aliases…** and map Claude model tiers to your provider's model names:
+
+| Alias | Provider model example |
+|-------|----------------------|
+| `sonnet` | `gpt-4o` |
+| `opus`   | `gpt-4o` |
+| `haiku`  | `gpt-4o-mini` |
+
+Without model aliases, Claude Code will send Anthropic model names (e.g. `claude-sonnet-4-5`) to your provider. Most OpenAI-compatible providers will reject these — configure aliases to avoid errors.
+
+**Provider examples:**
+
+| Provider | Base URL | Notes |
+|----------|----------|-------|
+| OpenAI | `https://api.openai.com/v1` | Standard OpenAI key |
+| Azure OpenAI | `https://<resource>.openai.azure.com/openai/deployments/<deployment>` | Azure API key |
+| Groq | `https://api.groq.com/openai/v1` | Groq API key |
+| DeepSeek | `https://api.deepseek.com/v1` | DeepSeek API key |
+| Ollama (local) | `http://localhost:11434/v1` | Any value for API key |
+| LM Studio (local) | `http://localhost:1234/v1` | Any value for API key |
+
+**Limitations:**
+
+- Not all OpenAI-compatible models support all Claude Code features (tool use, large context windows). Using an incompatible model may cause errors.
+- Images in conversations (base64 content) are forwarded in OpenAI vision format; provider must support it.
+- Changes to the profile's Base URL or API Key take effect only after restarting the session.
 
 ### Extra environment variables
 

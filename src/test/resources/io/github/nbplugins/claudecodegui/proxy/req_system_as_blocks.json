@@ -1,0 +1,9 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 512,
+  "system": [
+    {"type": "text", "text": "Block one."},
+    {"type": "text", "text": "Block two."}
+  ],
+  "messages": [{"role": "user", "content": "Hi"}]
+}

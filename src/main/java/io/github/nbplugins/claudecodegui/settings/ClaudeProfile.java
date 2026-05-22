@@ -51,7 +51,13 @@ public final class ClaudeProfile {
         CLAUDE_API,
         /** Third-party or custom API endpoint — injects {@code ANTHROPIC_AUTH_TOKEN}
          *  and {@code ANTHROPIC_BASE_URL}. */
-        OTHER_API
+        OTHER_API,
+        /**
+         * OpenAI-compatible provider routed through the internal proxy.
+         * The proxy is started by {@code ClaudeProcess} and injects its own
+         * {@code ANTHROPIC_BASE_URL}; no env vars are set here.
+         */
+        OPENAI_PROXY
     }
 
     /**
@@ -157,6 +163,13 @@ public final class ClaudeProfile {
      */
     private String storageDir;
 
+    /**
+     * When {@code true}, this profile uses the internal OpenAI-compatible proxy.
+     * {@link #computeConnectionType()} returns {@link ConnectionType#OPENAI_PROXY}.
+     * {@link #baseUrl} and {@link #apiKey} hold the OpenAI endpoint URL and API key.
+     */
+    private boolean openaiProxy;
+
     // -------------------------------------------------------------------------
     // No-arg constructor (Jackson)
     // -------------------------------------------------------------------------
@@ -235,6 +248,9 @@ public final class ClaudeProfile {
      * @return the connection type inferred from current field values
      */
     public ConnectionType computeConnectionType() {
+        if (openaiProxy) {
+            return ConnectionType.OPENAI_PROXY;
+        }
         if (!isBlank(apiKey)) {
             return isBlank(baseUrl) ? ConnectionType.CLAUDE_API : ConnectionType.OTHER_API;
         }
@@ -266,13 +282,14 @@ public final class ClaudeProfile {
 
         // Auth
         switch (computeConnectionType()) {
-            case SUBSCRIPTION -> env.put("CLAUDE_CODE_OAUTH_TOKEN", blankToEmpty(token));
-            case CLAUDE_API   -> { /* API key is written to settings.local.json as apiKeyHelper */ }
-            case OTHER_API    -> {
+            case SUBSCRIPTION  -> env.put("CLAUDE_CODE_OAUTH_TOKEN", blankToEmpty(token));
+            case CLAUDE_API    -> { /* API key is written to settings.local.json as apiKeyHelper */ }
+            case OTHER_API     -> {
                 env.put("ANTHROPIC_AUTH_TOKEN", blankToEmpty(apiKey));
                 env.put("ANTHROPIC_BASE_URL", blankToEmpty(baseUrl));
             }
-            default -> { /* CLAUDE_MANAGED — nothing to inject */ }
+            case OPENAI_PROXY  -> { /* ANTHROPIC_BASE_URL is injected by ClaudeProcess after proxy start */ }
+            default            -> { /* CLAUDE_MANAGED — nothing to inject */ }
         }
 
         // Proxy
@@ -583,6 +600,12 @@ public final class ClaudeProfile {
         setStorageDir(storageDir);
         return this;
     }
+
+    /** Returns {@code true} if this profile uses the internal OpenAI-compatible proxy. */
+    public boolean isOpenaiProxy() { return openaiProxy; }
+
+    /** Sets whether this profile uses the internal OpenAI-compatible proxy. */
+    public void setOpenaiProxy(boolean openaiProxy) { this.openaiProxy = openaiProxy; }
 
     // -------------------------------------------------------------------------
     // Object

@@ -1,0 +1,8 @@
+{
+  "id": "chatcmpl-123",
+  "choices": [{
+    "message": {"role": "assistant", "content": "Hello there!"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+}

@@ -1,0 +1,11 @@
+{
+  "model": "big-pickle",
+  "max_tokens": 1024,
+  "messages": [{
+    "role": "assistant",
+    "content": [
+      {"type": "thinking", "thinking": "Let me reason about this.", "signature": "orig_sig"},
+      {"type": "text", "text": "Here is the answer."}
+    ]
+  }]
+}

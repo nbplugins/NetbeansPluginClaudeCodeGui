@@ -1,0 +1,13 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 512,
+  "messages": [{"role": "user", "content": "use tool"}],
+  "tools": [{
+    "name": "read_file",
+    "description": "Reads a file",
+    "input_schema": {
+      "type": "object",
+      "properties": {"path": {"type": "string"}}
+    }
+  }]
+}

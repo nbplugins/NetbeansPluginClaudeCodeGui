@@ -1,0 +1,13 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 512,
+  "messages": [{
+    "role": "assistant",
+    "content": [{
+      "type": "tool_use",
+      "id": "call_1",
+      "name": "read_file",
+      "input": {"path": "/tmp/test.txt"}
+    }]
+  }]
+}

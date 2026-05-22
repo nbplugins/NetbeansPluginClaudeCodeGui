@@ -1,3 +1,5 @@
+- Added OpenAI-compatible proxy: profiles can now route Claude Code through any OpenAI-compatible API provider (OpenAI, Azure, Groq, DeepSeek, Ollama, local models, etc.)
+
 # 1.1.7 (2026-05-22)
 
 - Fixed profile combo not refreshing when profiles are added or removed after session start

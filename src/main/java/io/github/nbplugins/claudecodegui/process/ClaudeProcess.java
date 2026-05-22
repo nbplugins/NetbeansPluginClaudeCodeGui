@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 import org.openbeans.claude.netbeans.ClaudeCodeStatusService;
@@ -77,6 +78,9 @@ public final class ClaudeProcess {
 
     /** Temp file holding the --mcp-config JSON; {@code null} when not in use. */
     private volatile Path mcpConfigTempFile;
+
+    /** UUID of the active OpenAI proxy session; {@code null} when not using OpenAI proxy. */
+    private volatile String openAIProxyUuid;
 
     /**
      * Starts a Claude CLI PTY process in the given working directory using
@@ -155,7 +159,28 @@ public final class ClaudeProcess {
 
         Map<String, String> env = buildEnv(profile, ClaudeCodePreferences.getProfilesDir());
 
-        boolean apiKeyHelper = profile != null && !profile.getApiKey().isBlank() && profile.getBaseUrl().isBlank();
+        // OpenAI proxy: register session and inject ANTHROPIC_BASE_URL pointing to internal proxy
+        if (profile != null
+                && profile.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_PROXY) {
+            ClaudeCodeStatusService mcpSvc = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
+            if (mcpSvc != null && mcpSvc.isServerRunning()) {
+                String uuid = UUID.randomUUID().toString();
+                mcpSvc.registerOpenAIProxy(uuid, profile.getBaseUrl(), profile.getApiKey(),
+                        io.github.nbplugins.claudecodegui.settings.ProxyConfiguration.from(profile));
+                openAIProxyUuid = uuid;
+                env.put("ANTHROPIC_BASE_URL",
+                        "http://127.0.0.1:" + mcpSvc.getServerPort() + "/openai-proxy/" + uuid);
+                env.put("ANTHROPIC_AUTH_TOKEN", "sk-proxy-internal");
+                LOG.info("OpenAI proxy registered: uuid=" + uuid
+                        + ", profile=" + profile.getName()
+                        + ", target=" + profile.getBaseUrl());
+            } else {
+                LOG.warning("OpenAI proxy: MCP server not running — proxy cannot be started");
+            }
+        }
+
+        boolean apiKeyHelper = profile != null && !profile.getApiKey().isBlank() && profile.getBaseUrl().isBlank()
+                && profile.computeConnectionType() != ClaudeProfile.ConnectionType.OPENAI_PROXY;
         LOG.info("Starting Claude: profile=" + (profile != null ? profile.getName() + " (" + profile.computeConnectionType() + ")" : "Default")
                 + ", apiKeyHelper=" + (apiKeyHelper ? "SET" : "NOT SET")
                 + ", ANTHROPIC_AUTH_TOKEN=" + (!env.getOrDefault("ANTHROPIC_AUTH_TOKEN", "").isBlank() ? "SET" : "NOT SET")
@@ -312,6 +337,17 @@ public final class ClaudeProcess {
 
     public void stop() {
         killOnly();
+
+        // Deregister OpenAI proxy session if active
+        String proxyUuid = openAIProxyUuid;
+        openAIProxyUuid = null;
+        if (proxyUuid != null) {
+            ClaudeCodeStatusService mcpSvc = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
+            if (mcpSvc != null) {
+                mcpSvc.deregisterOpenAIProxy(proxyUuid);
+                LOG.fine("OpenAI proxy deregistered: uuid=" + proxyUuid);
+            }
+        }
 
         Path tmp = mcpConfigTempFile;
         mcpConfigTempFile = null;

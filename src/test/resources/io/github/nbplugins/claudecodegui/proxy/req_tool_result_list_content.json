@@ -1,0 +1,12 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 512,
+  "messages": [{
+    "role": "user",
+    "content": [{
+      "type": "tool_result",
+      "tool_use_id": "call_2",
+      "content": [{"type": "text", "text": "result text"}]
+    }]
+  }]
+}

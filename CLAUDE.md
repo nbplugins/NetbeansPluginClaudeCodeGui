@@ -176,7 +176,8 @@ The plugin follows an MVC structure for session management:
 | `ui/common/` | Shared input components: `AtCompletionPopup` — @-triggered path popup; `AtPathHighlighter` — blue token highlight; `FileDropHandler` — DnD + Ctrl+V → @path insertion; `ShortcutMatcher` — key→shortcut match with KEY_TYPED suppression; `TextComponentDecorator` — wires all the above; `DecoratedTextArea/TextField`, `TextContextMenu`, `RangeHighlightable` |
 | `settings/` | `ClaudeCodePreferences` — NbPreferences wrapper (keys: `contextMenuSessionMode` default CONTINUE_LAST, `sessionListLimit` default 30); `ClaudeCodeOptionsPanelController` / `ClaudeCodeOptionsPanel` — Tools→Options (General + Profiles tabs); `ClaudeProfile`, `ClaudeProfileStore` — named profiles with isolated `CLAUDE_CONFIG_DIR`, auth, proxy, extra env vars; `ClaudeProjectProperties` — per-project profile assignment |
 | `actions/` | `ClaudeCodeAction` — toolbar button; `OpenWithClaudeAction` — project node context menu; `PromptFavoriteAction` — dynamically registered action per favorite for Keymap API |
-| `io.github.nbplugins.claudecodegui.mcp` | `MCPSseServer` — Jetty `/sse` `/messages` `/hook`; `NetBeansMCPHandler` — MCP dispatcher + PreToolUse hook; `tools/` — `OpenDiff`, `PermissionPromptTool`, `DiffTabTracker`, `GetDiagnostics`, `GetOpenEditors`, `GetCurrentSelection`, `OpenFile` |
+| `io.github.nbplugins.claudecodegui.mcp` | `MCPSseServer` — Jetty `/sse` `/messages` `/hook` `/openai-proxy/*`; `NetBeansMCPHandler` — MCP dispatcher + PreToolUse hook; `tools/` — `OpenDiff`, `PermissionPromptTool`, `DiffTabTracker`, `GetDiagnostics`, `GetOpenEditors`, `GetCurrentSelection`, `OpenFile` |
+| `io.github.nbplugins.claudecodegui.proxy` | `OpenAIProxyConfig` — per-session config snapshot; `OpenAIProxyServlet` — translates Anthropic → OpenAI requests and responses; `AnthropicToOpenAITranslator` — stateless translation logic including streaming SSE state machine |
 | `org.openbeans.claude.netbeans` | **Legacy package — do not add new code here and avoid modifying existing code.** Contains: `ClaudeCodeStatusService`, `ClaudeCodeStatusLineElement`, `EditorUtils`, `NbUtils`; `tools/` — `AsyncHandler`, `AsyncResponse`, `GetWorkspaceFolders`, `CheckDocumentDirty`, `SaveDocument`, `CloseTab`, `CloseAllDiffTabs` |
 
 ### Session lifecycle
@@ -254,6 +255,8 @@ After any action the originating `ClaudeSessionTab` is re-activated automaticall
 |---------|---------------|---------|-------------|
 | "Start new session when opening with Claude" checkbox | `contextMenuSessionMode` | `CONTINUE_LAST` | Checked → `SessionMode.NEW`; unchecked → `SessionMode.CONTINUE_LAST`. Controls the mode used by the toolbar button and project context menu. |
 | "Session list limit" spinner (1–500) | `sessionListLimit` | 30 | Max number of past sessions shown in the resume list. |
+
+**Note:** Changes to profile connection parameters (API key, base URL, proxy settings) take effect only after restarting the session. This applies to all connection types, including OpenAI Compatible Proxy.
 
 ### Registration
 `layer.xml` registers the Options category (position 1500) and toolbar action. Icon PNGs are generated at build time from `cc-gui-icon.svg` via the Groovy script in `pom.xml` using Apache Batik.

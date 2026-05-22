@@ -67,7 +67,8 @@ public final class ClaudeProfilesPanel extends JPanel {
     private static final String CONN_MANAGED     = "Claude managed";
     private static final String CONN_SUBSCRIPTION = "Subscription";
     private static final String CONN_CLAUDE_API  = "Claude API";
-    private static final String CONN_OTHER_API   = "Other API";
+    private static final String CONN_OTHER_API   = "Claude-compatible API";
+    private static final String CONN_OPENAI_PROXY = "OpenAI-compatible API";
 
     private static final String PROXY_CARD_NONE   = "proxy_none";
     private static final String PROXY_CARD_CUSTOM = "proxy_custom";
@@ -106,6 +107,9 @@ public final class ClaudeProfilesPanel extends JPanel {
     private JRadioButton rbClaudeApi;
     /** Radio button for other (custom base URL) API connection. */
     private JRadioButton rbOtherApi;
+    /** Radio button for OpenAI-compatible proxy connection. */
+    private JRadioButton rbOpenAIProxy;
+    /** Info label shown when OpenAI proxy is selected. */
     /** Password field for the OAuth token. */
     private JPasswordField tokenField;
     /** Password field for the Anthropic API key. */
@@ -290,8 +294,9 @@ public final class ClaudeProfilesPanel extends JPanel {
         rbSubscription = new JRadioButton(CONN_SUBSCRIPTION);
         rbClaudeApi    = new JRadioButton(CONN_CLAUDE_API);
         rbOtherApi     = new JRadioButton(CONN_OTHER_API);
+        rbOpenAIProxy  = new JRadioButton(CONN_OPENAI_PROXY);
         ButtonGroup bg = new ButtonGroup();
-        for (JRadioButton rb : new JRadioButton[]{rbManaged, rbSubscription, rbClaudeApi, rbOtherApi}) {
+        for (JRadioButton rb : new JRadioButton[]{rbManaged, rbSubscription, rbClaudeApi, rbOtherApi, rbOpenAIProxy}) {
             bg.add(rb);
         }
 
@@ -339,6 +344,7 @@ public final class ClaudeProfilesPanel extends JPanel {
         rbSubscription.addActionListener(e -> updateFieldEnablement());
         rbClaudeApi.addActionListener(e    -> updateFieldEnablement());
         rbOtherApi.addActionListener(e     -> updateFieldEnablement());
+        rbOpenAIProxy.addActionListener(e  -> updateFieldEnablement());
 
         // Grid: col0=radio, col1=label, col2=field(fill), col3=button
         JPanel grid = new JPanel(new GridBagLayout());
@@ -375,6 +381,9 @@ public final class ClaudeProfilesPanel extends JPanel {
         grid.add(baseUrlField, inlineFieldGbc(2, 3));
         grid.add(modelAliasesBtn, inlineBtnGbc(3, 3));
 
+        // row 4: rbOpenAIProxy — fields (baseUrlField, apiKeyField) are shared with rows 2-3
+        grid.add(rbOpenAIProxy, inlineRbGbc(0, 4));
+
         JPanel outer = new JPanel(new BorderLayout(0, 4));
         outer.add(new JLabel("Connection Type:"), BorderLayout.NORTH);
         outer.add(grid, BorderLayout.CENTER);
@@ -382,14 +391,15 @@ public final class ClaudeProfilesPanel extends JPanel {
     }
 
     private void updateFieldEnablement() {
-        boolean sub      = rbSubscription.isSelected();
-        boolean api      = rbClaudeApi.isSelected() || rbOtherApi.isSelected();
-        boolean otherApi = rbOtherApi.isSelected();
+        boolean sub       = rbSubscription.isSelected();
+        boolean api       = rbClaudeApi.isSelected() || rbOtherApi.isSelected() || rbOpenAIProxy.isSelected();
+        boolean otherApi  = rbOtherApi.isSelected();
+        boolean openai    = rbOpenAIProxy.isSelected();
         tokenField.setEnabled(sub);
         tokenShowBtn.setEnabled(sub);
         apiKeyField.setEnabled(api);
         apiKeyShowBtn.setEnabled(api);
-        baseUrlField.setEditable(otherApi);
+        baseUrlField.setEditable(otherApi || openai);
         if (claudeAiBtn != null) {
             claudeAiBtn.setVisible(sub);
             consoleAnthropicBtn.setVisible(rbClaudeApi.isSelected());
@@ -398,7 +408,7 @@ public final class ClaudeProfilesPanel extends JPanel {
     }
 
     private void updateModelAliasesBtn() {
-        boolean other  = rbOtherApi.isSelected();
+        boolean other  = rbOtherApi.isSelected() || rbOpenAIProxy.isSelected();
         boolean hasKey = !new String(apiKeyField.getPassword()).isBlank();
         boolean hasUrl = !baseUrlField.getText().isBlank();
         modelAliasesBtn.setEnabled(other && hasKey && hasUrl);
@@ -582,18 +592,27 @@ public final class ClaudeProfilesPanel extends JPanel {
             p.setToken(new String(tokenField.getPassword()));
             p.setApiKey("");
             p.setBaseUrl("");
+            p.setOpenaiProxy(false);
         } else if (rbClaudeApi.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setToken("");
             p.setBaseUrl("");
+            p.setOpenaiProxy(false);
         } else if (rbOtherApi.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setBaseUrl(baseUrlField.getText().trim());
             p.setToken("");
+            p.setOpenaiProxy(false);
+        } else if (rbOpenAIProxy.isSelected()) {
+            p.setApiKey(new String(apiKeyField.getPassword()));
+            p.setBaseUrl(baseUrlField.getText().trim());
+            p.setToken("");
+            p.setOpenaiProxy(true);
         } else {
             p.setToken("");
             p.setApiKey("");
             p.setBaseUrl("");
+            p.setOpenaiProxy(false);
         }
 
         // Proxy
@@ -655,6 +674,11 @@ public final class ClaudeProfilesPanel extends JPanel {
             }
             case OTHER_API -> {
                 rbOtherApi.setSelected(true);
+                apiKeyField.setText(p.getApiKey());
+                baseUrlField.setText(p.getBaseUrl());
+            }
+            case OPENAI_PROXY -> {
+                rbOpenAIProxy.setSelected(true);
                 apiKeyField.setText(p.getApiKey());
                 baseUrlField.setText(p.getBaseUrl());
             }
