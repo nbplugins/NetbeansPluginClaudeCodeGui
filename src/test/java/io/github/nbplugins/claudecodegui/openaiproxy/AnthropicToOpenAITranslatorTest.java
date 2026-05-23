@@ -12,12 +12,12 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for {@link AnthropicToOpenAITranslator}.
  *
  * <p>JSON fixtures are in
- * {@code src/test/resources/io/github/nbplugins/claudecodegui/proxy/}.
+ * {@code src/test/resources/io/github/nbplugins/claudecodegui/openaiproxy/}.
  */
 class AnthropicToOpenAITranslatorTest {
 
     private static JsonNode load(String name) throws Exception {
-        String path = "/io/github/nbplugins/claudecodegui/proxy/" + name;
+        String path = "/io/github/nbplugins/claudecodegui/openaiproxy/" + name;
         try (InputStream is = AnthropicToOpenAITranslatorTest.class.getResourceAsStream(path)) {
             assertNotNull(is, "Missing fixture: " + path);
             return AnthropicToOpenAITranslator.MAPPER.readTree(
