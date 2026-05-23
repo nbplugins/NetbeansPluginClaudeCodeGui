@@ -1,6 +1,6 @@
 package org.openbeans.claude.netbeans;
 
-import io.github.nbplugins.claudecodegui.proxy.OpenAIProxyConfig;
+import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyConfig;
 import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
 
 /**

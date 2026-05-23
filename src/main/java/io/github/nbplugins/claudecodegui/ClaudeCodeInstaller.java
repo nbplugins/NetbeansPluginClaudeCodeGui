@@ -264,7 +264,7 @@ public class ClaudeCodeInstaller extends ModuleInstall implements PropertyChange
     }
 
     @Override
-    public io.github.nbplugins.claudecodegui.proxy.OpenAIProxyConfig getOpenAIProxyConfig(String uuid) {
+    public io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyConfig getOpenAIProxyConfig(String uuid) {
         return mcpServer != null ? mcpServer.getOpenAIProxyConfig(uuid) : null;
     }
 }

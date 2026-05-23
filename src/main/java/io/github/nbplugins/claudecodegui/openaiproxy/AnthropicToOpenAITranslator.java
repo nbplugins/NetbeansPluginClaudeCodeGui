@@ -1,4 +1,4 @@
-package io.github.nbplugins.claudecodegui.proxy;
+package io.github.nbplugins.claudecodegui.openaiproxy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

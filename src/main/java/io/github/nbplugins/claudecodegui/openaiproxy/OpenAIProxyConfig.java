@@ -1,4 +1,4 @@
-package io.github.nbplugins.claudecodegui.proxy;
+package io.github.nbplugins.claudecodegui.openaiproxy;
 
 import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
 import java.net.http.HttpClient;

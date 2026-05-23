@@ -4,8 +4,8 @@ package io.github.nbplugins.claudecodegui.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.nbplugins.claudecodegui.proxy.OpenAIProxyConfig;
-import io.github.nbplugins.claudecodegui.proxy.OpenAIProxyServlet;
+import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyConfig;
+import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyServlet;
 import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
