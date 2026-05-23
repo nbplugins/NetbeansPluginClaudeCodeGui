@@ -526,10 +526,12 @@ public class NetBeansMCPHandler {
                 return CompletableFuture.completedFuture(hookAllowJson());
             }
 
-            // cwd from hook JSON == confirmedDirectory of the session that launched Claude
+            // cwd from hook JSON == Claude's current working directory (may be a subdirectory of session root)
             String cwd = hook.has("cwd") ? hook.get("cwd").asText() : null;
             EditMode editMode = getEditModeForCwd(cwd);
-            LOGGER.info("handlePreToolUse: editMode=" + editMode + " cwd=" + cwd);
+            // Session root is the key that matched in the registry (may differ from hook cwd when Claude cd'd into a subdir)
+            String sessionRoot = getSessionRootForCwd(cwd);
+            LOGGER.info("handlePreToolUse: editMode=" + editMode + " cwd=" + cwd + " sessionRoot=" + sessionRoot);
 
             String filePath = getFilePath(toolInput);
 
@@ -537,7 +539,7 @@ public class NetBeansMCPHandler {
             // acceptEdits: auto-allow only if file is inside the session's confirmed directory
             if (editMode == EditMode.BYPASS_PERMISSIONS
                     || (editMode == EditMode.ACCEPT_EDITS
-                        && io.github.nbplugins.claudecodegui.ui.FileDiffOpener.isFileUnderDirectory(filePath, cwd))) {
+                        && io.github.nbplugins.claudecodegui.ui.FileDiffOpener.isFileUnderDirectory(filePath, sessionRoot))) {
                 LOGGER.info(editMode.key() + " mode — auto-allowing: " + filePath);
                 return CompletableFuture.completedFuture(hookAllowJson());
             }
@@ -749,8 +751,44 @@ public class NetBeansMCPHandler {
      */
     private static EditMode getEditModeForCwd(String cwd) {
         if (cwd == null) return EditMode.DEFAULT;
-        EditMode mode = io.github.nbplugins.claudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.get(cwd);
-        return mode != null ? mode : EditMode.DEFAULT;
+        // Exact match (common fast path)
+        EditMode exact = io.github.nbplugins.claudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.get(cwd);
+        if (exact != null) return exact;
+        // Prefix match: Claude may have cd'd into a subdirectory of the session root.
+        // Find the longest registered key that is an ancestor of the hook's cwd.
+        java.nio.file.Path cwdPath = java.nio.file.Path.of(cwd);
+        EditMode best = EditMode.DEFAULT;
+        int bestLen = -1;
+        for (var entry : io.github.nbplugins.claudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.entrySet()) {
+            java.nio.file.Path keyPath = java.nio.file.Path.of(entry.getKey());
+            if (cwdPath.startsWith(keyPath) && entry.getKey().length() > bestLen) {
+                best = entry.getValue();
+                bestLen = entry.getKey().length();
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Returns the session root directory (registry key) that best matches {@code cwd},
+     * using the same longest-prefix logic as {@link #getEditModeForCwd}.
+     * Used to evaluate the {@code acceptEdits} directory boundary against the session root
+     * rather than Claude's current working directory (which may be a subdirectory).
+     */
+    private static String getSessionRootForCwd(String cwd) {
+        if (cwd == null) return null;
+        if (io.github.nbplugins.claudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.containsKey(cwd)) return cwd;
+        java.nio.file.Path cwdPath = java.nio.file.Path.of(cwd);
+        String best = cwd;
+        int bestLen = -1;
+        for (String key : io.github.nbplugins.claudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY.keySet()) {
+            java.nio.file.Path keyPath = java.nio.file.Path.of(key);
+            if (cwdPath.startsWith(keyPath) && key.length() > bestLen) {
+                best = key;
+                bestLen = key.length();
+            }
+        }
+        return best;
     }
 
     /**

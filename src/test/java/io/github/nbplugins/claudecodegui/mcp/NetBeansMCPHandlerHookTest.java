@@ -119,6 +119,37 @@ class NetBeansMCPHandlerHookTest {
     }
 
     // -------------------------------------------------------------------------
+    // bypassPermissions — hook cwd is a subdirectory of the registered session root
+    // -------------------------------------------------------------------------
+
+    @Test
+    void bypassPermissionsAutoAllowsWhenHookCwdIsSubdirectory() throws Exception {
+        // Session was started at CWD; Claude cd'd into a subdirectory and sends hook with that cwd
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.BYPASS_PERMISSIONS);
+        String subCwd = CWD + "/submodules/Kotlin";
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJsonWithCwd(FILE_INSIDE, subCwd));
+
+        assertTrue(future.isDone(), "Future must be completed immediately in bypassPermissions mode even with subdirectory cwd");
+        String result = future.get(1, TimeUnit.SECONDS);
+        assertTrue(result.contains("\"allow\""),
+                "bypassPermissions must auto-allow when hook cwd is a subdirectory of registered session root, got: " + result);
+    }
+
+    @Test
+    void acceptEditsAutoAllowsInsideProjectWhenHookCwdIsSubdirectory() throws Exception {
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.ACCEPT_EDITS);
+        String subCwd = CWD + "/submodules/Kotlin";
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJsonWithCwd(FILE_INSIDE, subCwd));
+
+        assertTrue(future.isDone(), "Future must be completed immediately for file inside project when hook cwd is subdirectory");
+        String result = future.get(1, TimeUnit.SECONDS);
+        assertTrue(result.contains("\"allow\""),
+                "acceptEdits must auto-allow files inside project even when hook cwd is a subdirectory, got: " + result);
+    }
+
+    // -------------------------------------------------------------------------
     // Non-file-edit tools are always auto-allowed
     // -------------------------------------------------------------------------
 
@@ -137,9 +168,13 @@ class NetBeansMCPHandlerHookTest {
     // -------------------------------------------------------------------------
 
     private static String editJson(String filePath) {
+        return editJsonWithCwd(filePath, CWD);
+    }
+
+    private static String editJsonWithCwd(String filePath, String cwd) {
         return "{\"tool_name\":\"Edit\","
                 + "\"tool_input\":{\"file_path\":\"" + filePath + "\","
                 + "\"old_string\":\"x\",\"new_string\":\"y\"},"
-                + "\"cwd\":\"" + CWD + "\"}";
+                + "\"cwd\":\"" + cwd + "\"}";
     }
 }
