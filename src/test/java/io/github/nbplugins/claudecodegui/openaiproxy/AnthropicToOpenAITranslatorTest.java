@@ -274,4 +274,110 @@ class AnthropicToOpenAITranslatorTest {
         String event = AnthropicToOpenAITranslator.sseEvent("ping", "{\"type\":\"ping\"}");
         assertEquals("event: ping\ndata: {\"type\":\"ping\"}\n\n", event);
     }
+
+    // -------------------------------------------------------------------------
+    // Control character escaping regression tests (fix: use Jackson instead of manual escaping)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void streaming_textWithFormFeedProducesValidJson() throws Exception {
+        var s = state();
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}");
+
+        String textWithControlChars = "line1\fline2line3 line4";
+        String chunk = s.processChunk(
+                "{\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":" +
+                AnthropicToOpenAITranslator.MAPPER.writeValueAsString(textWithControlChars) +
+                "},\"index\":0}]}");
+
+        // The SSE data line must be valid JSON
+        String dataLine = extractSseDataLine(chunk, "content_block_delta");
+        assertNotNull(dataLine, "Expected content_block_delta event in: " + chunk);
+        JsonNode parsed = AnthropicToOpenAITranslator.MAPPER.readTree(dataLine);
+        assertEquals(textWithControlChars, parsed.path("delta").path("text").asText());
+    }
+
+    @Test
+    void streaming_thinkingWithControlCharsProducesValidJson() throws Exception {
+        var s = state();
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}");
+
+        String thinkingWithCtrl = "thinking\n\tcode:";
+        String chunk = s.processChunk(
+                "{\"id\":\"c1\",\"choices\":[{\"delta\":{\"reasoning_content\":" +
+                AnthropicToOpenAITranslator.MAPPER.writeValueAsString(thinkingWithCtrl) +
+                "},\"index\":0}]}");
+
+        String dataLine = extractSseDataLine(chunk, "content_block_delta");
+        assertNotNull(dataLine, "Expected content_block_delta event in: " + chunk);
+        JsonNode parsed = AnthropicToOpenAITranslator.MAPPER.readTree(dataLine);
+        assertEquals(thinkingWithCtrl, parsed.path("delta").path("thinking").asText());
+    }
+
+    @Test
+    void streaming_singleChunkFullResponseProducesCompleteStream() throws Exception {
+        var s = state();
+
+        // Single-chunk pseudo-streaming: full response + finish_reason in one chunk
+        String single = s.processChunk(
+                "{\"id\":\"c1\",\"model\":\"deepseek\",\"choices\":[{\"delta\":{" +
+                "\"role\":\"assistant\",\"content\":\"Hello world\"},\"finish_reason\":\"stop\",\"index\":0}]," +
+                "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3}}");
+
+        assertTrue(single.contains("message_start"),       "missing message_start: " + single);
+        assertTrue(single.contains("content_block_start"), "missing content_block_start: " + single);
+        assertTrue(single.contains("text_delta"),          "missing text_delta: " + single);
+
+        String done = s.processChunk("[DONE]");
+        assertTrue(done.contains("content_block_stop"), "missing content_block_stop: " + done);
+        assertTrue(done.contains("message_delta"),      "missing message_delta: " + done);
+        assertTrue(done.contains("message_stop"),       "missing message_stop: " + done);
+        assertTrue(done.contains("end_turn"),           "missing end_turn: " + done);
+        // Usage from the chunk should be in message_delta
+        JsonNode msgDelta = AnthropicToOpenAITranslator.MAPPER.readTree(
+                extractSseDataLine(done, "message_delta"));
+        assertEquals(3, msgDelta.path("usage").path("output_tokens").asInt());
+    }
+
+    @Test
+    void translateRequest_streamOptionsAddedWhenStreamTrue() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(load("req_simple_text.json"));
+        // req_simple_text.json has no stream field; stream_options should not be added
+        assertFalse(result.has("stream_options"), "stream_options must not appear for non-streaming");
+    }
+
+    @Test
+    void translateRequest_streamOptionsAddedForStreamingRequest() throws Exception {
+        ObjectNode req = (ObjectNode) load("req_simple_text.json");
+        req.put("stream", true);
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(req);
+        assertTrue(result.has("stream_options"),                                "stream_options missing");
+        assertTrue(result.path("stream_options").path("include_usage").asBoolean(), "include_usage not true");
+    }
+
+    @Test
+    void streaming_missingDoneHandledByIsMessageStartedAndIsDoneReceived() {
+        var s = state();
+        assertFalse(s.isMessageStarted());
+        assertFalse(s.isDoneReceived());
+
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}");
+        assertTrue(s.isMessageStarted());
+        assertFalse(s.isDoneReceived());
+
+        s.processChunk("[DONE]");
+        assertTrue(s.isDoneReceived());
+    }
+
+    /** Extract the JSON data line for the first SSE event with the given name from an event block string. */
+    private static String extractSseDataLine(String events, String eventName) {
+        for (String block : events.split("\n\n")) {
+            if (block.contains("event: " + eventName)) {
+                for (String line : block.split("\n")) {
+                    if (line.startsWith("data: ")) return line.substring(6);
+                }
+            }
+        }
+        return null;
+    }
 }

@@ -231,6 +231,10 @@ public final class OpenAIProxyServlet extends HttpServlet {
             }
         }
 
+        if (state.isMessageStarted() && !state.isDoneReceived()) {
+            writer.write(state.buildDoneEvents());
+        }
+
         if (debug) {
             LOG.info("OpenAI proxy: streaming done, total chunks=" + chunkCount);
         }
