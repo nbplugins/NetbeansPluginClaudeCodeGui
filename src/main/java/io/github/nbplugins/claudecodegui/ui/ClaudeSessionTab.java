@@ -1470,13 +1470,17 @@ public class ClaudeSessionTab extends TopComponent
 
     private List<String> getScreenLines() {
         if (terminalWidget == null) return java.util.Collections.emptyList();
+        TerminalTextBuffer buf = terminalWidget.getTerminalTextBuffer();
+        if (buf == null) return java.util.Collections.emptyList();
+        if (!buf.tryLock()) return java.util.Collections.emptyList();
         try {
-            TerminalTextBuffer buf = terminalWidget.getTerminalTextBuffer();
             return buf.getScreenBuffer().getLineTexts();
         } catch (NullPointerException e) {
             // JediTerm's LinesStorage may return null entries during terminal
             // initialization. Return empty so pollScreenState retries next tick.
             return java.util.Collections.emptyList();
+        } finally {
+            buf.unlock();
         }
     }
 
