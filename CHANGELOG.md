@@ -1,3 +1,4 @@
+- Fixed tab title showing "Claude Code" for sessions opened in non-project directories — now shows the directory name
 - Added OpenAI-compatible proxy: profiles can now route Claude Code through any OpenAI-compatible API provider (OpenAI, Azure, Groq, DeepSeek, Ollama, local models, etc.)
 
 # 1.1.7 (2026-05-22)

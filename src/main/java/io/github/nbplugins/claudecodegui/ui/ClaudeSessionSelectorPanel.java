@@ -337,7 +337,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
      * Resolves the tab label for a session directory.
      *
      * <p>Returns the NetBeans project display name when {@code dir} matches an
-     * open project, or {@code "Claude Code"} as a fallback.  Returns the
+     * open project, or the directory name as a fallback.  Returns the
      * localised "New Session" string when {@code dir} is {@code null}.
      *
      * @param dir working directory, or {@code null} for a new empty session
@@ -373,8 +373,8 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
                 LOG.fine("canonical path comparison failed: " + e.getMessage());
             }
         }
-        LOG.warning("resolveTabLabel: no project match for " + dir.getAbsolutePath());
-        return "Claude Code";
+        LOG.fine("resolveTabLabel: no project match for " + dir.getAbsolutePath() + ", using dir name");
+        return dir.getName();
     }
 
     // -------------------------------------------------------------------------
