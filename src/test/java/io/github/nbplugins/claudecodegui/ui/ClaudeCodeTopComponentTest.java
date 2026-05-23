@@ -31,7 +31,7 @@ class ClaudeCodeTopComponentTest {
         tmpDir.deleteOnExit();
         try {
             String label = ClaudeSessionSelectorPanel.resolveTabLabel(tmpDir);
-            assertEquals("Claude Code", label);
+            assertEquals(tmpDir.getName(), label);
         } finally {
             tmpDir.delete();
         }
@@ -72,15 +72,15 @@ class ClaudeCodeTopComponentTest {
     void testTabNameRemainsStableWhenProjectsAlreadyLoaded() throws IOException {
         // When openProjects() Future is already done (projects fully loaded),
         // updateDisplayName must not schedule a background refresh — the name is final.
-        // Verify this by checking that a tab created for a non-project dir keeps "Claude Code".
+        // Verify this by checking that a tab created for a non-project dir uses the dir name.
         File tmpDir = Files.createTempDirectory("proj-loaded-test").toFile();
         tmpDir.deleteOnExit();
         try {
             ClaudeSessionTab tc = new ClaudeSessionTab();
             tc.autoStart(tmpDir, "default");
-            // openProjects() is done in test env (no real projects) — name must be "Claude Code"
-            assertEquals("Claude Code", tc.getDisplayName(),
-                    "Tab name for non-project dir must be 'Claude Code'");
+            // openProjects() is done in test env (no real projects) — name must be the dir basename
+            assertEquals(tmpDir.getName(), tc.getDisplayName(),
+                    "Tab name for non-project dir must be the directory name");
         } finally {
             tmpDir.delete();
         }

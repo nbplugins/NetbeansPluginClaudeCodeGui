@@ -151,9 +151,9 @@ class ClaudeSessionSelectorPanelTest {
         tmpDir.deleteOnExit();
         try {
             String label = ClaudeSessionSelectorPanel.resolveTabLabel(tmpDir);
-            // No open projects in the headless test environment → fallback "Claude Code"
-            assertEquals("Claude Code", label,
-                    "resolveTabLabel must fall back to 'Claude Code' for non-project dirs");
+            // No open projects in the headless test environment → fallback is the directory name
+            assertEquals(tmpDir.getName(), label,
+                    "resolveTabLabel must fall back to the directory name for non-project dirs");
         } finally {
             tmpDir.delete();
         }
