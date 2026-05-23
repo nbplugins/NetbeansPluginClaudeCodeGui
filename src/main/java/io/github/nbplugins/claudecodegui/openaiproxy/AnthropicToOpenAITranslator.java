@@ -71,7 +71,11 @@ public final class AnthropicToOpenAITranslator {
 
         // stream
         if (anthropicRequest.has("stream")) {
-            openai.put("stream", anthropicRequest.get("stream").asBoolean());
+            boolean stream = anthropicRequest.get("stream").asBoolean();
+            openai.put("stream", stream);
+            if (stream) {
+                openai.putObject("stream_options").put("include_usage", true);
+            }
         }
 
         // temperature, top_p (pass through if present)
@@ -422,6 +426,7 @@ public final class AnthropicToOpenAITranslator {
     public static final class StreamingState {
 
         private boolean messageStarted    = false;
+        private boolean doneReceived      = false;
         private boolean thinkingBlockOpen = false;
         private int     thinkingBlockIndex = -1;
         private boolean textBlockOpen     = false;
@@ -443,6 +448,9 @@ public final class AnthropicToOpenAITranslator {
             int blockIndex;
         }
 
+        public boolean isMessageStarted() { return messageStarted; }
+        public boolean isDoneReceived()   { return doneReceived; }
+
         /**
          * Process one OpenAI SSE data line and return zero or more Anthropic SSE events.
          *
@@ -451,6 +459,7 @@ public final class AnthropicToOpenAITranslator {
          */
         public String processChunk(String dataLine) {
             if ("[DONE]".equals(dataLine)) {
+                doneReceived = true;
                 return buildDoneEvents();
             }
 
@@ -582,21 +591,18 @@ public final class AnthropicToOpenAITranslator {
             return out.toString();
         }
 
-        private String buildDoneEvents() {
+        String buildDoneEvents() {
             StringBuilder out = new StringBuilder();
             if (thinkingBlockOpen) {
                 out.append(sseEvent("content_block_delta", buildSignatureDelta(thinkingBlockIndex)));
-                out.append(sseEvent("content_block_stop",
-                        "{\"type\":\"content_block_stop\",\"index\":" + thinkingBlockIndex + "}"));
+                out.append(sseEvent("content_block_stop",  blockStop(thinkingBlockIndex)));
             }
             if (textBlockOpen) {
-                out.append(sseEvent("content_block_stop",
-                        "{\"type\":\"content_block_stop\",\"index\":" + textBlockIndex + "}"));
+                out.append(sseEvent("content_block_stop", blockStop(textBlockIndex)));
             }
             for (ToolCallState state : toolCalls.values()) {
                 if (state.started) {
-                    out.append(sseEvent("content_block_stop",
-                            "{\"type\":\"content_block_stop\",\"index\":" + state.blockIndex + "}"));
+                    out.append(sseEvent("content_block_stop", blockStop(state.blockIndex)));
                 }
             }
             out.append(sseEvent("message_delta", buildMessageDelta()));
@@ -604,77 +610,115 @@ public final class AnthropicToOpenAITranslator {
             return out.toString();
         }
 
+        private static String blockStop(int index) {
+            return "{\"type\":\"content_block_stop\",\"index\":" + index + "}";
+        }
+
         private String buildMessageStart() {
-            return String.format(
-                    "{\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\"," +
-                    "\"role\":\"assistant\",\"content\":[],\"model\":\"%s\"," +
-                    "\"stop_reason\":null,\"stop_sequence\":null," +
-                    "\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}",
-                    messageId, model, inputTokens);
+            try {
+                ObjectNode msg = MAPPER.createObjectNode();
+                msg.put("id",            messageId);
+                msg.put("type",          "message");
+                msg.put("role",          "assistant");
+                msg.putArray("content");
+                msg.put("model",         model);
+                msg.putNull("stop_reason");
+                msg.putNull("stop_sequence");
+                msg.putObject("usage")
+                   .put("input_tokens",  inputTokens)
+                   .put("output_tokens", 0);
+                ObjectNode root = MAPPER.createObjectNode();
+                root.put("type", "message_start");
+                root.set("message", msg);
+                return MAPPER.writeValueAsString(root);
+            } catch (Exception e) {
+                return "{\"type\":\"message_start\",\"message\":{\"type\":\"message\"," +
+                       "\"role\":\"assistant\",\"content\":[],\"stop_reason\":null," +
+                       "\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}";
+            }
         }
 
         private static String buildTextBlockStart(int index) {
-            return String.format(
-                    "{\"type\":\"content_block_start\",\"index\":%d," +
-                    "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
-                    index);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_start");
+            root.put("index", index);
+            root.putObject("content_block").put("type", "text").put("text", "");
+            return toJson(root);
         }
 
         private static String buildTextDelta(int index, String text) {
-            String escaped = text.replace("\\", "\\\\").replace("\"", "\\\"")
-                                 .replace("\n", "\\n").replace("\r", "\\r")
-                                 .replace("\t", "\\t");
-            return String.format(
-                    "{\"type\":\"content_block_delta\",\"index\":%d," +
-                    "\"delta\":{\"type\":\"text_delta\",\"text\":\"%s\"}}",
-                    index, escaped);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_delta");
+            root.put("index", index);
+            root.putObject("delta").put("type", "text_delta").put("text", text);
+            return toJson(root);
         }
 
         private static String buildToolUseBlockStart(int index, String id, String name) {
-            return String.format(
-                    "{\"type\":\"content_block_start\",\"index\":%d," +
-                    "\"content_block\":{\"type\":\"tool_use\",\"id\":\"%s\",\"name\":\"%s\",\"input\":{}}}",
-                    index, id, name);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_start");
+            root.put("index", index);
+            ObjectNode cb = root.putObject("content_block");
+            cb.put("type",  "tool_use");
+            cb.put("id",    id);
+            cb.put("name",  name);
+            cb.putObject("input");
+            return toJson(root);
         }
 
         private static String buildInputJsonDelta(int index, String partialJson) {
-            String escaped = partialJson.replace("\\", "\\\\").replace("\"", "\\\"")
-                                        .replace("\n", "\\n").replace("\r", "\\r");
-            return String.format(
-                    "{\"type\":\"content_block_delta\",\"index\":%d," +
-                    "\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"%s\"}}",
-                    index, escaped);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_delta");
+            root.put("index", index);
+            root.putObject("delta").put("type", "input_json_delta").put("partial_json", partialJson);
+            return toJson(root);
         }
 
         private static String buildThinkingBlockStart(int index) {
-            return String.format(
-                    "{\"type\":\"content_block_start\",\"index\":%d," +
-                    "\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}",
-                    index);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_start");
+            root.put("index", index);
+            root.putObject("content_block").put("type", "thinking").put("thinking", "");
+            return toJson(root);
         }
 
         private static String buildThinkingDelta(int index, String thinking) {
-            String escaped = thinking.replace("\\", "\\\\").replace("\"", "\\\"")
-                                     .replace("\n", "\\n").replace("\r", "\\r")
-                                     .replace("\t", "\\t");
-            return String.format(
-                    "{\"type\":\"content_block_delta\",\"index\":%d," +
-                    "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"%s\"}}",
-                    index, escaped);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_delta");
+            root.put("index", index);
+            root.putObject("delta").put("type", "thinking_delta").put("thinking", thinking);
+            return toJson(root);
         }
 
         private static String buildSignatureDelta(int index) {
-            return String.format(
-                    "{\"type\":\"content_block_delta\",\"index\":%d," +
-                    "\"delta\":{\"type\":\"signature_delta\",\"signature\":\"proxy_thinking_sig\"}}",
-                    index);
+            ObjectNode root = MAPPER.createObjectNode();
+            root.put("type", "content_block_delta");
+            root.put("index", index);
+            root.putObject("delta").put("type", "signature_delta").put("signature", "proxy_thinking_sig");
+            return toJson(root);
         }
 
         private String buildMessageDelta() {
-            return String.format(
-                    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"%s\"," +
-                    "\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}",
-                    stopReason, outputTokens);
+            try {
+                ObjectNode root = MAPPER.createObjectNode();
+                root.put("type", "message_delta");
+                ObjectNode delta = root.putObject("delta");
+                delta.put("stop_reason", stopReason);
+                delta.putNull("stop_sequence");
+                root.putObject("usage").put("output_tokens", outputTokens);
+                return MAPPER.writeValueAsString(root);
+            } catch (Exception e) {
+                return "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"," +
+                       "\"stop_sequence\":null},\"usage\":{\"output_tokens\":0}}";
+            }
+        }
+
+        private static String toJson(ObjectNode node) {
+            try {
+                return MAPPER.writeValueAsString(node);
+            } catch (Exception e) {
+                return "{}";
+            }
         }
     }
 
