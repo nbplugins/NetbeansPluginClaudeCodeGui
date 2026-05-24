@@ -716,6 +716,10 @@ public class ClaudeSessionController {
      * {@code targetMode}, or until 5 attempts are exhausted.
      * 5 attempts cover the full 4-mode cycle plus one extra in case of lag.
      *
+     * <p>When {@code targetMode} is {@link EditMode#AUTO} and the mode cannot be
+     * reached (older Claude Code that does not support auto mode), falls back to
+     * {@link EditMode#BYPASS_PERMISSIONS} if available, then {@link EditMode#ACCEPT_EDITS}.
+     *
      * <p>Runs on a daemon thread; sets lifecycle to WORKING at start and
      * READY on completion.
      *
@@ -729,25 +733,13 @@ public class ClaudeSessionController {
             try {
                 LOG.info("sendShiftTabsUntilMode: target=" + targetMode
                         + " currentModel=" + model.getEditMode());
-                for (int attempt = 0; attempt < 5; attempt++) {
-                    connector.write(new byte[]{0x1b, '[', 'Z'});
-                    Thread.sleep(200);
-                    Optional<EditMode> detected =
-                            screenContentDetector.detectEditMode(screenLines.get());
-                    LOG.fine("sendShiftTabsUntilMode: attempt=" + attempt
-                            + " detected=" + detected.map(EditMode::key).orElse("(empty)"));
-                    if (detected.isPresent() && detected.get() == targetMode) {
-                        LOG.fine("sendShiftTabsUntilMode: reached target on attempt=" + attempt);
-                        return;
-                    }
-                    // DEFAULT mode has no idle-screen marker — empty detection means we are in default
-                    if (targetMode == EditMode.DEFAULT && detected.isEmpty()) {
-                        LOG.fine("sendShiftTabsUntilMode: no mode marker → treating as default on attempt=" + attempt);
-                        return;
-                    }
+                if (trySendShiftTabsUntilMode(targetMode)) return;
+                // AUTO mode not found — older CC doesn't support it; try fallbacks
+                if (targetMode == EditMode.AUTO) {
+                    LOG.warning("sendShiftTabsUntilMode: auto mode not available, trying fallbacks");
+                    if (trySendShiftTabsUntilMode(EditMode.BYPASS_PERMISSIONS)) return;
+                    trySendShiftTabsUntilMode(EditMode.ACCEPT_EDITS);
                 }
-                LOG.warning("sendShiftTabsUntilMode: did not reach " + targetMode
-                        + " after 5 attempts");
             } catch (IOException | InterruptedException ex) {
                 LOG.warning("sendShiftTabsUntilMode failed: " + ex.getMessage());
             } finally {
@@ -757,6 +749,33 @@ public class ClaudeSessionController {
         }, "shift-tab-edit-mode");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * Inner loop: sends up to 5 Shift+Tab presses and returns {@code true} when
+     * {@code targetMode} is detected on screen, {@code false} if not reached.
+     */
+    private boolean trySendShiftTabsUntilMode(EditMode targetMode)
+            throws IOException, InterruptedException {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            connector.write(new byte[]{0x1b, '[', 'Z'});
+            Thread.sleep(200);
+            Optional<EditMode> detected =
+                    screenContentDetector.detectEditMode(screenLines.get());
+            LOG.fine("trySendShiftTabsUntilMode: target=" + targetMode + " attempt=" + attempt
+                    + " detected=" + detected.map(EditMode::key).orElse("(empty)"));
+            if (detected.isPresent() && detected.get() == targetMode) {
+                LOG.fine("trySendShiftTabsUntilMode: reached " + targetMode + " on attempt=" + attempt);
+                return true;
+            }
+            // DEFAULT mode has no idle-screen marker — empty detection means we are in default
+            if (targetMode == EditMode.DEFAULT && detected.isEmpty()) {
+                LOG.fine("trySendShiftTabsUntilMode: no mode marker → treating as default on attempt=" + attempt);
+                return true;
+            }
+        }
+        LOG.warning("trySendShiftTabsUntilMode: did not reach " + targetMode + " after 5 attempts");
+        return false;
     }
 
     // -------------------------------------------------------------------------

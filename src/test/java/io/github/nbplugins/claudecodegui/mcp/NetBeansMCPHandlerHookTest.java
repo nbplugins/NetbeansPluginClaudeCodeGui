@@ -73,6 +73,33 @@ class NetBeansMCPHandlerHookTest {
     }
 
     // -------------------------------------------------------------------------
+    // auto mode — auto-allow regardless of location
+    // -------------------------------------------------------------------------
+
+    @Test
+    void autoModeAutoAllowsFileInsideProject() throws Exception {
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.AUTO);
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJson(FILE_INSIDE));
+
+        assertTrue(future.isDone(), "Future must be completed immediately in auto mode");
+        String result = future.get(1, TimeUnit.SECONDS);
+        assertTrue(result.contains("\"allow\""), "auto mode must allow files inside project, got: " + result);
+    }
+
+    @Test
+    void autoModeAutoAllowsFileOutsideProject() throws Exception {
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.AUTO);
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJson(FILE_OUTSIDE));
+
+        assertTrue(future.isDone(), "Future must be completed immediately in auto mode");
+        String result = future.get(1, TimeUnit.SECONDS);
+        assertTrue(result.contains("\"allow\""),
+                "auto mode must allow files outside project (unconditional), got: " + result);
+    }
+
+    // -------------------------------------------------------------------------
     // acceptEdits — auto-allow only inside cwd
     // -------------------------------------------------------------------------
 

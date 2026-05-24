@@ -214,6 +214,27 @@ class ScreenContentDetectorTest {
     }
 
     @org.junit.jupiter.api.Test
+    void detectEditModeAutoMode() {
+        // Screen text from Claude Code 2.1.83+ with auto mode active
+        List<String> lines = new ArrayList<>(List.of(
+                "Some output",
+                "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+        ));
+        for (int i = 0; i < 10; i++) lines.add("");
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent());
+        assertEquals(EditMode.AUTO, result.get());
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeAutoModeCaseInsensitive() {
+        List<String> lines = List.of("Some output", "Auto Mode on | esc to interrupt");
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent());
+        assertEquals(EditMode.AUTO, result.get());
+    }
+
+    @org.junit.jupiter.api.Test
     void detectEditModeEmptyWhenNullOrEmpty() {
         assertTrue(detector.detectEditMode(null).isEmpty());
         assertTrue(detector.detectEditMode(List.of()).isEmpty());

@@ -535,15 +535,15 @@ public class NetBeansMCPHandler {
 
             String filePath = getFilePath(toolInput);
 
-            // bypassPermissions: auto-allow everything regardless of location
-            // acceptEdits: auto-allow only if file is inside the session's confirmed directory
-            if (editMode == EditMode.BYPASS_PERMISSIONS
-                    || (editMode == EditMode.ACCEPT_EDITS
+            // AUTO or higher (BYPASS_PERMISSIONS): auto-allow regardless of location
+            // ACCEPT_EDITS or higher (but below AUTO): auto-allow only inside the session root
+            if (editMode.ordinal() >= EditMode.AUTO.ordinal()
+                    || (editMode.ordinal() >= EditMode.ACCEPT_EDITS.ordinal()
                         && io.github.nbplugins.claudecodegui.ui.FileDiffOpener.isFileUnderDirectory(filePath, sessionRoot))) {
                 LOGGER.info(editMode.key() + " mode — auto-allowing: " + filePath);
                 return CompletableFuture.completedFuture(hookAllowJson());
             }
-            // plan / ask / acceptEdits-outside: fall through to show diff dialog
+            // PLAN / DEFAULT / ACCEPT_EDITS-outside: fall through to show diff dialog
 
             String before = computeBefore(toolInput, filePath);
             String after = computeAfter(toolName, toolInput, before);

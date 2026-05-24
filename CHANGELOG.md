@@ -1,3 +1,4 @@
+- Added "Auto Mode" to the edit-mode selector (Claude Code 2.1.83+): file edits in auto mode are auto-approved; when auto mode is selected on an older Claude Code version, the plugin falls back to Bypass Permissions or Accept on Edit
 - Fixed diff panel appearing for file edits despite bypassPermissions or acceptEdits mode when Claude's working directory was a subdirectory of the session root
 - Fixed occasional ConcurrentModificationException when the screen-poll timer reads the terminal buffer concurrently with PTY writes
 - Fixed tab title showing "Claude Code" for sessions opened in non-project directories — now shows the directory name

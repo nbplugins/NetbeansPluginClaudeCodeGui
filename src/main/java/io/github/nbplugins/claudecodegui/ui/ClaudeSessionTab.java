@@ -120,9 +120,9 @@ public class ClaudeSessionTab extends TopComponent
     // Edit mode constants
     // -------------------------------------------------------------------------
 
-    /** Base edit modes always shown in the combo (indices 0–2). */
-    static final String[]   EDIT_MODE_LABELS = {"Plan Mode", "Ask on Edit", "Accept on Edit"};
-    static final EditMode[] EDIT_MODE_VALUES = {EditMode.PLAN, EditMode.DEFAULT, EditMode.ACCEPT_EDITS};
+    /** Base edit modes always shown in the combo (indices 0–3). */
+    static final String[]   EDIT_MODE_LABELS = {"Plan Mode", "Ask on Edit", "Accept on Edit", "Auto Mode"};
+    static final EditMode[] EDIT_MODE_VALUES = {EditMode.PLAN, EditMode.DEFAULT, EditMode.ACCEPT_EDITS, EditMode.AUTO};
 
     /** Label / value for the 4th entry added dynamically when bypass-permissions is detected. */
     private static final String   BYPASS_LABEL = "Bypass Permissions";

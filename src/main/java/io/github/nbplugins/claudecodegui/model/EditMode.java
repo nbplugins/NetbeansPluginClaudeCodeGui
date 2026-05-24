@@ -9,29 +9,42 @@ import java.util.Optional;
  * identifier in {@link ClaudeSessionModel#EDIT_MODE_REGISTRY}, in serialized
  * settings, and in logging.
  *
+ * <p>Constants are ordered from <em>least</em> to <em>most</em> permissive, so
+ * ordinal comparisons ({@code >=}, {@code <=}) express permission thresholds naturally.
+ *
  * <p>Screen-text mapping (used by {@code ScreenContentDetector.detectEditMode}):
  * <ul>
  *   <li>{@link #PLAN} — bottom line contains {@code "plan mode"} or {@code "plan-mode"}</li>
- *   <li>{@link #ACCEPT_EDITS} — bottom line contains {@code "accept edits"}</li>
- *   <li>{@link #BYPASS_PERMISSIONS} — bottom line contains {@code "bypass permissions"};
- *       appears when Claude was launched with {@code --dangerously-skip-permissions}</li>
  *   <li>{@link #DEFAULT} — bottom line starts with {@code "  esc to interrupt"}
  *       (two leading spaces)</li>
+ *   <li>{@link #ACCEPT_EDITS} — bottom line contains {@code "accept edits"}</li>
+ *   <li>{@link #AUTO} — bottom line contains {@code "auto mode"};
+ *       available on Max/Team/Enterprise/API plans (Claude Code 2.1.83+)</li>
+ *   <li>{@link #BYPASS_PERMISSIONS} — bottom line contains {@code "bypass permissions"};
+ *       appears when Claude was launched with {@code --dangerously-skip-permissions}</li>
  * </ul>
  */
 public enum EditMode {
 
-    /** Ask-on-edit — shows a diff dialog before every file change. */
-    DEFAULT("default"),
-
-    /** Plan mode — Claude proposes a plan before executing. */
+    /** Plan mode — Claude proposes a plan; no file changes are auto-allowed. */
     PLAN("plan"),
+
+    /** Default (ask-on-edit) — shows a diff dialog before every file change. */
+    DEFAULT("default"),
 
     /**
      * Accept-edits — auto-allows file changes inside the session's working
      * directory; shows a diff dialog for files outside.
      */
     ACCEPT_EDITS("acceptEdits"),
+
+    /**
+     * Auto mode — a classifier auto-approves safe tool calls including all file
+     * edits, blocking only dangerous operations (mass deletion, data exfiltration, etc.).
+     * Available on Max/Team/Enterprise/API plans (Claude Code 2.1.83+).
+     * Detected on screen as {@code ⏵⏵ auto mode on (shift+tab to cycle)}.
+     */
+    AUTO("auto"),
 
     /**
      * Bypass-permissions — auto-allows all file changes regardless of location.

@@ -489,6 +489,9 @@ public final class ScreenContentDetector {
             if (lower.contains("bypass permissions")) {
                 return Optional.of(EditMode.BYPASS_PERMISSIONS);
             }
+            if (lower.contains("auto mode")) {
+                return Optional.of(EditMode.AUTO);
+            }
         }
         // "  esc to interrupt" with two leading spaces is the reliable Ask/default-mode signal.
         // Without leading spaces the screen is in an unknown / transitioning state.
