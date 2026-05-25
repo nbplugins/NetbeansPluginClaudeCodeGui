@@ -1,3 +1,5 @@
+- Fixed a Warning dialog appearing on NetBeans exit when a diff tab had been opened during the session
+
 # 1.2.8 (2026-05-24)
 
 - Added "Auto Mode" to the edit-mode selector (Claude Code 2.1.83+): file edits in auto mode are auto-approved; when auto mode is selected on an older Claude Code version, the plugin falls back to Bypass Permissions or Accept on Edit

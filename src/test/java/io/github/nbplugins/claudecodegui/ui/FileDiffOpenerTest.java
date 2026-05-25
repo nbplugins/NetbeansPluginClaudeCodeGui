@@ -3,10 +3,12 @@ package io.github.nbplugins.claudecodegui.ui;
 import java.awt.Component;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import org.junit.jupiter.api.Test;
+import org.openide.windows.TopComponent;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -282,5 +284,15 @@ class FileDiffOpenerTest {
             if (c instanceof JCheckBoxMenuItem m && text.equals(m.getText())) count++;
         }
         return count;
+    }
+
+    @Test
+    void diffTopComponentPersistenceTypeIsNever() {
+        FileDiffOpener.DiffTopComponent tc = new FileDiffOpener.DiffTopComponent(
+                new Runnable[]{() -> {}},
+                new AtomicBoolean(false),
+                () -> {},
+                "/tmp/test.java");
+        assertEquals(TopComponent.PERSISTENCE_NEVER, tc.getPersistenceType());
     }
 }

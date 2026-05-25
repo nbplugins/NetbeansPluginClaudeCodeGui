@@ -341,17 +341,7 @@ public final class FileDiffOpener {
             }
 
             // --- TOPLEVEL branch ---
-            TopComponent diffTC = new TopComponent() {
-                @Override
-                public void componentClosed() {
-                    super.componentClosed();
-                    removeAwtListener[0].run();
-                    if (!decided.get()) {
-                        onClose.run();
-                        activateSessionForFile(filePath);
-                    }
-                }
-            };
+            TopComponent diffTC = new DiffTopComponent(removeAwtListener, decided, onClose, filePath);
             closeDiffRef[0] = diffTC::close;
             diffTC.setDisplayName(tabName);
             diffTC.setLayout(new java.awt.BorderLayout());
@@ -592,6 +582,36 @@ public final class FileDiffOpener {
                     stc.cancelCurrentPrompt();
                     return;
                 }
+            }
+        }
+    }
+
+    static final class DiffTopComponent extends TopComponent {
+        private final Runnable[] removeAwtListener;
+        private final AtomicBoolean decided;
+        private final Runnable onClose;
+        private final String filePath;
+
+        DiffTopComponent(Runnable[] removeAwtListener, AtomicBoolean decided,
+                         Runnable onClose, String filePath) {
+            this.removeAwtListener = removeAwtListener;
+            this.decided = decided;
+            this.onClose = onClose;
+            this.filePath = filePath;
+        }
+
+        @Override
+        public int getPersistenceType() {
+            return TopComponent.PERSISTENCE_NEVER;
+        }
+
+        @Override
+        public void componentClosed() {
+            super.componentClosed();
+            removeAwtListener[0].run();
+            if (!decided.get()) {
+                onClose.run();
+                activateSessionForFile(filePath);
             }
         }
     }
