@@ -51,8 +51,12 @@ public class ClaudeCodeInstaller extends ModuleInstall implements PropertyChange
         // Migrate window settings files (must run before window system reads them)
         String userDir = System.getProperty("netbeans.user");
         if (userDir != null) {
-            V1MigrationHelper.migrateWindowsSettings(
-                    Paths.get(userDir, "config", "Windows2Local", "Components"));
+            Path componentsDir = Paths.get(userDir, "config", "Windows2Local", "Components");
+            V1MigrationHelper.migrateWindowsSettings(componentsDir);
+            // FileDiffOpener$1 was renamed to FileDiffOpener$DiffTopComponent in 1.2.13;
+            // delete stale .settings files so NetBeans does not warn about the unknown class.
+            V1MigrationHelper.removeStaleComponentSettings(componentsDir,
+                    "FileDiffOpener$1");
         }
 
         // Migrate preferences from old package paths (one-time, after package rename in 1.0)

@@ -41,6 +41,34 @@ class V1MigrationHelper {
         }
     }
 
+    /**
+     * Deletes stale .settings files in componentsDir that reference class names matching
+     * any of the given substrings. Use this when a TopComponent class is renamed or removed
+     * and its serialized binary data can no longer be deserialized.
+     */
+    static void removeStaleComponentSettings(Path componentsDir, String... classNameSubstrings) {
+        if (!Files.exists(componentsDir)) return;
+        try (var stream = Files.list(componentsDir)) {
+            stream.filter(p -> p.toString().endsWith(".settings"))
+                  .forEach(p -> {
+                      try {
+                          String content = Files.readString(p);
+                          for (String substring : classNameSubstrings) {
+                              if (content.contains(substring)) {
+                                  Files.delete(p);
+                                  LOG.log(Level.FINE, "Removed stale window settings: {0}", p);
+                                  break;
+                              }
+                          }
+                      } catch (IOException e) {
+                          LOG.log(Level.WARNING, "Could not process window settings: " + p, e);
+                      }
+                  });
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Stale settings cleanup failed", e);
+        }
+    }
+
     /** Copies keys from oldPath NbPreferences node to newNode, then removes the old node. */
     static void migratePrefsNode(String oldPath, Preferences newNode) {
         migratePrefsNode(NbPreferences.root(), oldPath, newNode);
