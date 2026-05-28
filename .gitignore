@@ -6,3 +6,4 @@ target/
 nbproject/private/
 build/
 dist/
+.vscode/

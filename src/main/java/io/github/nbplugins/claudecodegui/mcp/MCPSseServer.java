@@ -4,6 +4,7 @@ package io.github.nbplugins.claudecodegui.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyConfig;
 import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyServlet;
 import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
@@ -12,6 +13,12 @@ import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.FilterConfig;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -21,6 +28,7 @@ import java.io.InputStream;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -106,6 +114,17 @@ public class MCPSseServer {
             ServletContextHandler ctx =
                     new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
             ctx.setContextPath("/");
+            // CORS filter — scoped only to cross-origin endpoints; localhost origins only.
+            // Sensitive endpoints (/stop, /hook, /openai-proxy, /permission-request)
+            // are intentionally excluded from CORS so they are not reachable from
+            // arbitrary browser-based origins.
+            EnumSet<jakarta.servlet.DispatcherType> corsDispatch = EnumSet.of(
+                    jakarta.servlet.DispatcherType.REQUEST,
+                    jakarta.servlet.DispatcherType.ERROR,
+                    jakarta.servlet.DispatcherType.ASYNC);
+            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/sse", corsDispatch);
+            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/messages", corsDispatch);
+            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/status", corsDispatch);
             ctx.addServlet(new ServletHolder(new SseServlet()), "/sse");
             ctx.addServlet(new ServletHolder(new MessagesServlet()), "/messages");
             ServletHolder hookHolder = new ServletHolder(new HookServlet());
@@ -114,6 +133,7 @@ public class MCPSseServer {
             ctx.addServlet(new ServletHolder(new StopServlet()), "/stop");
             ctx.addServlet(new ServletHolder(new PermissionRequestServlet()), "/permission-request");
             ctx.addServlet(new ServletHolder(new OpenAIProxyServlet(this)), "/openai-proxy/*");
+            ctx.addServlet(new ServletHolder(new StatusServlet()), "/status");
 
             server.setHandler(ctx);
             server.setRequestLog((request, response) ->
@@ -209,6 +229,86 @@ public class MCPSseServer {
             if (!q.offer(msg)) {
                 LOGGER.warning("SSE session queue full; broadcast message dropped");
             }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // CORS filter — scoped to /sse, /messages, /status only
+    // -------------------------------------------------------------------------
+
+    /**
+     * Adds CORS headers so that MCP clients running in Electron / Node.js contexts
+     * (Windsurf, Cursor, VS Code) can reach the public endpoints without
+     * cross-origin restrictions. Restricted to {@code http://localhost} origins
+     * to prevent arbitrary websites from reaching the server.
+     * Also handles pre-flight {@code OPTIONS} requests.
+     */
+    private static class CorsFilter implements Filter {
+        @Override
+        public void init(FilterConfig cfg) {}
+
+        @Override
+        public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+                throws IOException, ServletException {
+            if (!(req instanceof HttpServletRequest) || !(res instanceof HttpServletResponse)) {
+                chain.doFilter(req, res);
+                return;
+            }
+            HttpServletRequest  httpReq = (HttpServletRequest)  req;
+            HttpServletResponse httpRes = (HttpServletResponse) res;
+
+            String origin = httpReq.getHeader("Origin");
+            if (origin != null && (origin.startsWith("http://localhost") || origin.startsWith("https://localhost"))) {
+                httpRes.setHeader("Access-Control-Allow-Origin",  origin);
+                httpRes.setHeader("Vary", "Origin");
+            }
+            httpRes.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            httpRes.setHeader("Access-Control-Allow-Headers",
+                    "Content-Type, Accept, Authorization, X-Requested-With");
+            httpRes.setHeader("Access-Control-Max-Age",  "86400");
+
+            if ("OPTIONS".equalsIgnoreCase(httpReq.getMethod())) {
+                httpRes.setStatus(HttpServletResponse.SC_NO_CONTENT);
+                return;
+            }
+            chain.doFilter(req, res);
+        }
+
+        @Override
+        public void destroy() {}
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /status  — port-discovery endpoint for external MCP clients
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns a JSON object with the server port and tool-count so that
+     * external clients (Windsurf, Cursor, VS Code) can verify the server is
+     * alive and discover its port programmatically.
+     *
+     * <p>Example response:
+     * <pre>{"status":"running","port":28991,"transport":"sse",
+     * "sseEndpoint":"/sse","messagesEndpoint":"/messages"}</pre>
+     */
+    private class StatusServlet extends HttpServlet {
+        @Override
+        protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+                throws IOException {
+            ObjectNode json = objectMapper.createObjectNode();
+            json.put("status", "running");
+            json.put("port", port);
+            json.put("transport", "sse");
+            json.put("sseEndpoint", "/sse");
+            json.put("messagesEndpoint", "/messages");
+            json.put("activeSessions", sessionQueues.size());
+            byte[] bytes = objectMapper.writeValueAsBytes(json);
+            resp.setStatus(HttpServletResponse.SC_OK);
+            resp.setContentType("application/json");
+            resp.setCharacterEncoding("UTF-8");
+            resp.setContentLength(bytes.length);
+            resp.getOutputStream().write(bytes);
+            resp.getOutputStream().flush();
         }
     }
 

@@ -211,7 +211,12 @@ public class ClaudeCodeInstaller extends ModuleInstall implements PropertyChange
 
         if (mcpServer != null) {
             if (mcpServer.isRunning()) {
-                status.append("🟢 MCP SSE Server: Running on port ").append(mcpServer.getPort()).append("<br>");
+                int p = mcpServer.getPort();
+                status.append("🟢 MCP SSE Server: Running on port ").append(p).append("<br>");
+                status.append("&nbsp;&nbsp;&nbsp;Windsurf/Cursor/VS Code serverUrl: ")
+                      .append("<tt>http://localhost:").append(p).append("/sse</tt><br>");
+                status.append("&nbsp;&nbsp;&nbsp;Status endpoint: ")
+                      .append("<tt>http://localhost:").append(p).append("/status</tt><br>");
             } else {
                 status.append("🔴 MCP SSE Server: Stopped<br>");
             }
