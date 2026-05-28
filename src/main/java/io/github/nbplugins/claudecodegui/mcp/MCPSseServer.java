@@ -4,6 +4,7 @@ package io.github.nbplugins.claudecodegui.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyConfig;
 import io.github.nbplugins.claudecodegui.openaiproxy.OpenAIProxyServlet;
 import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
@@ -27,6 +28,7 @@ import java.io.InputStream;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -112,8 +114,17 @@ public class MCPSseServer {
             ServletContextHandler ctx =
                     new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
             ctx.setContextPath("/");
-            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/*",
-                    java.util.EnumSet.of(jakarta.servlet.DispatcherType.REQUEST));
+            // CORS filter — scoped only to cross-origin endpoints; localhost origins only.
+            // Sensitive endpoints (/stop, /hook, /openai-proxy, /permission-request)
+            // are intentionally excluded from CORS so they are not reachable from
+            // arbitrary browser-based origins.
+            EnumSet<jakarta.servlet.DispatcherType> corsDispatch = EnumSet.of(
+                    jakarta.servlet.DispatcherType.REQUEST,
+                    jakarta.servlet.DispatcherType.ERROR,
+                    jakarta.servlet.DispatcherType.ASYNC);
+            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/sse", corsDispatch);
+            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/messages", corsDispatch);
+            ctx.addFilter(new org.eclipse.jetty.servlet.FilterHolder(new CorsFilter()), "/status", corsDispatch);
             ctx.addServlet(new ServletHolder(new SseServlet()), "/sse");
             ctx.addServlet(new ServletHolder(new MessagesServlet()), "/messages");
             ServletHolder hookHolder = new ServletHolder(new HookServlet());
@@ -222,14 +233,15 @@ public class MCPSseServer {
     }
 
     // -------------------------------------------------------------------------
-    // CORS filter — applies to every endpoint
+    // CORS filter — scoped to /sse, /messages, /status only
     // -------------------------------------------------------------------------
 
     /**
-     * Adds CORS headers to every response so that MCP clients running in
-     * Electron / Node.js contexts (Windsurf, Cursor, VS Code) can reach the
-     * server without cross-origin restrictions. Also handles pre-flight
-     * {@code OPTIONS} requests.
+     * Adds CORS headers so that MCP clients running in Electron / Node.js contexts
+     * (Windsurf, Cursor, VS Code) can reach the public endpoints without
+     * cross-origin restrictions. Restricted to {@code http://localhost} origins
+     * to prevent arbitrary websites from reaching the server.
+     * Also handles pre-flight {@code OPTIONS} requests.
      */
     private static class CorsFilter implements Filter {
         @Override
@@ -238,14 +250,25 @@ public class MCPSseServer {
         @Override
         public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
                 throws IOException, ServletException {
-            HttpServletResponse r = (HttpServletResponse) res;
-            r.setHeader("Access-Control-Allow-Origin",  "*");
-            r.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            r.setHeader("Access-Control-Allow-Headers",
+            if (!(req instanceof HttpServletRequest) || !(res instanceof HttpServletResponse)) {
+                chain.doFilter(req, res);
+                return;
+            }
+            HttpServletRequest  httpReq = (HttpServletRequest)  req;
+            HttpServletResponse httpRes = (HttpServletResponse) res;
+
+            String origin = httpReq.getHeader("Origin");
+            if (origin != null && (origin.startsWith("http://localhost") || origin.startsWith("https://localhost"))) {
+                httpRes.setHeader("Access-Control-Allow-Origin",  origin);
+                httpRes.setHeader("Vary", "Origin");
+            }
+            httpRes.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            httpRes.setHeader("Access-Control-Allow-Headers",
                     "Content-Type, Accept, Authorization, X-Requested-With");
-            r.setHeader("Access-Control-Max-Age",  "86400");
-            if ("OPTIONS".equalsIgnoreCase(((HttpServletRequest) req).getMethod())) {
-                r.setStatus(HttpServletResponse.SC_NO_CONTENT);
+            httpRes.setHeader("Access-Control-Max-Age",  "86400");
+
+            if ("OPTIONS".equalsIgnoreCase(httpReq.getMethod())) {
+                httpRes.setStatus(HttpServletResponse.SC_NO_CONTENT);
                 return;
             }
             chain.doFilter(req, res);
@@ -272,14 +295,17 @@ public class MCPSseServer {
         @Override
         protected void doGet(HttpServletRequest req, HttpServletResponse resp)
                 throws IOException {
+            ObjectNode json = objectMapper.createObjectNode();
+            json.put("status", "running");
+            json.put("port", port);
+            json.put("transport", "sse");
+            json.put("sseEndpoint", "/sse");
+            json.put("messagesEndpoint", "/messages");
+            json.put("activeSessions", sessionQueues.size());
+            byte[] bytes = objectMapper.writeValueAsBytes(json);
+            resp.setStatus(HttpServletResponse.SC_OK);
             resp.setContentType("application/json");
             resp.setCharacterEncoding("UTF-8");
-            String json = String.format(
-                    "{\"status\":\"running\",\"port\":%d,\"transport\":\"sse\","
-                  + "\"sseEndpoint\":\"/sse\",\"messagesEndpoint\":\"/messages\","
-                  + "\"activeSessions\":%d}",
-                    port, sessionQueues.size());
-            byte[] bytes = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             resp.setContentLength(bytes.length);
             resp.getOutputStream().write(bytes);
             resp.getOutputStream().flush();
