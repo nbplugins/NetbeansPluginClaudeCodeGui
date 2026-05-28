@@ -92,6 +92,27 @@ See [docs/windsurf-cursor-vscode.md](docs/windsurf-cursor-vscode.md) for full se
 
 ---
 
+## Windsurf Skill — Better AI Results with NetBeans GUI Forms
+
+When you ask Windsurf to create NetBeans JFrame forms via MCP, importing the bundled **skill file** gives the AI precise knowledge of the `.form` XML format, color encoding rules, layout templates, and component properties — resulting in forms that open correctly in the NetBeans GUI Designer on the first attempt.
+
+### How to import the skill
+
+1. Copy [`docs/netbeans-form-color-format.md`](docs/netbeans-form-color-format.md) to your Windsurf skills folder:
+
+```
+%USERPROFILE%\.codeium\windsurf\skills\netbeans\SKILL.md       (Windows)
+~/.codeium/windsurf/skills/netbeans/SKILL.md                    (macOS / Linux)
+```
+
+2. Restart Windsurf (or open **Cascade → Skills** and click **Refresh**).
+3. The skill named **`netbeans`** will appear in the Skills panel as **Global**.
+
+Once active, Windsurf will automatically apply the skill whenever you ask it to create NetBeans GUI forms, JFrames, or work with `.form` files — no extra prompt needed.
+
+> **Why it matters:** NetBeans' `.form` XML has several non-obvious requirements — color values must be hex strings (not decimal), `GEN-BEGIN/END` markers are required for the Design tab, and `.form` files must be in the `views/` package to appear in the Projects panel. The skill encodes all of these rules so the AI gets them right every time.
+
+---
 
 ## Third-party code
 
