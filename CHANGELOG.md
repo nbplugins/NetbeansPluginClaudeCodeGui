@@ -1,3 +1,5 @@
+# 1.2
+
 - Fixed mode switching (e.g. auto → plan) becoming unreliable when Claude Code is actively working: the edit-mode selector now correctly reaches the target mode without overshooting
 - Fixed stale model aliases from a "Claude Compatible API" profile still showing in the model selector after switching the profile to "Managed by Claude"
 - Fixed ClassNotFoundException on plugin installation/upgrade when the session tab had been previously saved under the old package name (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/146)
