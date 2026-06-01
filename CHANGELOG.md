@@ -1,3 +1,4 @@
+- Fixed ClassNotFoundException on plugin installation/upgrade when the session tab had been previously saved under the old package name (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/146)
 - Fixed a Warning dialog appearing on NetBeans exit when a diff tab had been opened during the session
 
 # 1.2.8 (2026-05-24)
