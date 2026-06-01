@@ -308,8 +308,11 @@ public final class ClaudeProfile {
             default -> { /* SYSTEM_MANAGED — inherit from parent process */ }
         }
 
-        // Model aliases (ANTHROPIC_DEFAULT_*_MODEL)
-        if (modelAliases != null) {
+        // Model aliases (ANTHROPIC_DEFAULT_*_MODEL) — only for connection types
+        // that use a custom endpoint; irrelevant (and potentially harmful) otherwise.
+        ConnectionType ct = computeConnectionType();
+        if ((ct == ConnectionType.OTHER_API || ct == ConnectionType.OPENAI_PROXY)
+                && modelAliases != null) {
             for (int i = 0; i < ALIAS_NAMES.length; i++) {
                 String modelId = modelAliases.get(ALIAS_NAMES[i]);
                 if (modelId != null && !modelId.isBlank()) {

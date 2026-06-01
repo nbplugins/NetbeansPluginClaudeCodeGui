@@ -387,4 +387,36 @@ class ClaudeProfileTest {
         ClaudeProfile loaded = mapper.readValue(json, ClaudeProfile.class);
         assertEquals("/custom/path", loaded.getStorageDir());
     }
+
+    // -------------------------------------------------------------------------
+    // toEnvVars — model aliases (regression for stale-aliases-after-type-switch)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void toEnvVars_doesNotInjectModelAliasesForManagedConnection() {
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        // no apiKey / token → CLAUDE_MANAGED
+        p.setModelAliases(Map.of("sonnet", "old-model-id"));
+        p.setCustomModels(List.of("old-custom-model"));
+
+        assertEquals(ConnectionType.CLAUDE_MANAGED, p.computeConnectionType());
+        Map<String, String> env = p.toEnvVars();
+
+        assertFalse(env.containsKey("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                "Model alias env vars must not be injected for CLAUDE_MANAGED connection");
+    }
+
+    @Test
+    void toEnvVars_injectsModelAliasesForOtherApiConnection() {
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        p.setApiKey("sk-test");
+        p.setBaseUrl("https://example.com");
+        p.setModelAliases(Map.of("sonnet", "my-sonnet-model"));
+
+        assertEquals(ConnectionType.OTHER_API, p.computeConnectionType());
+        Map<String, String> env = p.toEnvVars();
+
+        assertEquals("my-sonnet-model", env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                "Model alias env vars must be injected for OTHER_API connection");
+    }
 }
