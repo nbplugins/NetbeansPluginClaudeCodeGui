@@ -10,6 +10,7 @@ import io.github.nbplugins.claudecodegui.model.ChoiceMenuModel;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -509,6 +510,145 @@ class ClaudeSessionControllerTest {
         List<ChoiceMenuModel.Option> opts = List.of(checkbox("1", true), checkbox("2", false));
         List<String> toggles = ClaudeSessionController.computeCheckboxToggles(Set.of("1"), opts);
         assertEquals(List.of(), toggles);
+    }
+
+    // -------------------------------------------------------------------------
+    // trySendShiftTabsUntilMode — read-first, multi-poll fix
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression: when already at the target mode, no Shift+Tab must be sent.
+     * Old code always sent a tab first; that overshoot the mode cycle.
+     */
+    @Test
+    void trySendShiftTabsUntilMode_alreadyAtTarget_noTabSent() throws Exception {
+        AtomicReference<Integer> tabsSent = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() { return Optional.of(EditMode.PLAN); }
+            @Override void sendOneShiftTab() { tabsSent.set(tabsSent.get() + 1); }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        boolean result = invokeTrySend(c, EditMode.PLAN);
+
+        assertTrue(result, "must return true when already at target");
+        assertEquals(0, (int) tabsSent.get(), "no tab should be sent when already at target");
+    }
+
+    /**
+     * Regression: when target is DEFAULT and screen has no mode marker,
+     * the initial read must recognise it as "already in default" and not send any tab.
+     */
+    @Test
+    void trySendShiftTabsUntilMode_alreadyDefault_noTabSent() throws Exception {
+        AtomicReference<Integer> tabsSent = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() { return Optional.empty(); }
+            @Override void sendOneShiftTab() { tabsSent.set(tabsSent.get() + 1); }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        boolean result = invokeTrySend(c, EditMode.DEFAULT);
+
+        assertTrue(result, "must return true when screen has no mode marker and target is DEFAULT");
+        assertEquals(0, (int) tabsSent.get(), "no tab should be sent when already in default");
+    }
+
+    /**
+     * Regression: prevents tab accumulation — only sends the next tab after observing
+     * a concrete mode change caused by the current tab.
+     *
+     * Sequence: initial=AUTO, tab-0→DEFAULT(empty during WORKING, timeout after 15 polls),
+     * tab-1→ACCEPT_EDITS, tab-2→PLAN.
+     */
+    @Test
+    void trySendShiftTabsUntilMode_waitsForConcreteChangeBeforeNextTab() throws Exception {
+        AtomicReference<Integer> tabsSent = new AtomicReference<>(0);
+        // Simulate: initial=AUTO, after tab-0: 15 empty polls (DEFAULT invisible during WORKING)
+        // then after tab-1: ACCEPT_EDITS appears on poll-3, then after tab-2: PLAN on poll-2.
+        AtomicReference<Integer> pollCount = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() {
+                int tabs = tabsSent.get();
+                int poll = pollCount.updateAndGet(v -> v + 1);
+                if (tabs == 0) return Optional.of(EditMode.AUTO); // initial read
+                if (tabs == 1) return Optional.empty();           // tab-0: DEFAULT invisible
+                if (tabs == 2) return poll <= 18 ? Optional.empty()
+                        : Optional.of(EditMode.ACCEPT_EDITS);     // tab-1: ACCEPT_EDITS at poll 3
+                return Optional.of(EditMode.PLAN);                // tab-2: PLAN immediately
+            }
+            @Override void sendOneShiftTab() {
+                pollCount.set(0); // reset poll counter for each new tab
+                tabsSent.updateAndGet(v -> v + 1);
+            }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        boolean result = invokeTrySend(c, EditMode.PLAN);
+
+        assertTrue(result, "must reach PLAN");
+        assertEquals(3, (int) tabsSent.get(), "exactly 3 tabs needed: AUTO→DEFAULT→ACCEPT_EDITS→PLAN");
+    }
+
+    /**
+     * When the mode change is immediately visible (e.g. CC is idle), only one tab
+     * is sent and the target is detected on the first poll.
+     */
+    @Test
+    void trySendShiftTabsUntilMode_stopsAtTargetWithoutOvershoot() throws Exception {
+        AtomicReference<Integer> tabsSent = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() {
+                return tabsSent.get() == 0
+                        ? Optional.of(EditMode.ACCEPT_EDITS)  // initial
+                        : Optional.of(EditMode.PLAN);         // after first tab
+            }
+            @Override void sendOneShiftTab() { tabsSent.updateAndGet(v -> v + 1); }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        boolean result = invokeTrySend(c, EditMode.PLAN);
+
+        assertTrue(result, "must return true on detecting PLAN");
+        assertEquals(1, (int) tabsSent.get(), "exactly one tab needed");
+    }
+
+    /**
+     * When the mode is never reached (e.g. CC doesn't support it), must return
+     * false after 5 attempts. Each attempt times out (returns empty = no concrete change).
+     */
+    @Test
+    void trySendShiftTabsUntilMode_returnsfalseWhenModeNeverReached() throws Exception {
+        AtomicReference<Integer> tabsSent = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        // initial=ACCEPT_EDITS, always stays ACCEPT_EDITS → never see a concrete different mode
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() { return Optional.of(EditMode.ACCEPT_EDITS); }
+            @Override void sendOneShiftTab() { tabsSent.updateAndGet(v -> v + 1); }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        boolean result = invokeTrySend(c, EditMode.PLAN);
+
+        assertFalse(result, "must return false after 5 failed attempts");
+        assertEquals(5, (int) tabsSent.get(), "5 tabs must have been sent");
+    }
+
+    private static void setModeSwitchPollMs(ClaudeSessionController c, int ms) throws Exception {
+        java.lang.reflect.Field f = ClaudeSessionController.class.getDeclaredField("modeSwitchPollMs");
+        f.setAccessible(true);
+        f.setInt(c, ms);
+    }
+
+    private static boolean invokeTrySend(ClaudeSessionController c, EditMode target) throws Exception {
+        java.lang.reflect.Method m = ClaudeSessionController.class
+                .getDeclaredMethod("trySendShiftTabsUntilMode", EditMode.class);
+        m.setAccessible(true);
+        return (boolean) m.invoke(c, target);
     }
 
     // -------------------------------------------------------------------------
