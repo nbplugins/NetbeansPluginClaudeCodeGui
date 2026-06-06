@@ -48,15 +48,18 @@ public class ClaudeCodeInstaller extends ModuleInstall implements PropertyChange
     public void restored() {
         LOGGER.info("Claude Code NetBeans plugin is starting up...");
 
-        // Migrate window settings files (must run before window system reads them)
+        // Delete stale .settings files from old package names / renamed classes.
+        // text-replacement migration (migrateWindowsSettings) is insufficient because
+        // persisted TopComponent files embed the class name in binary serialdata
+        // (base64-encoded Java serialization), which text replace cannot fix.
+        // Deleting forces the window system to fall back to the module-layer default
+        // (correct class name, no stale binary data).
         String userDir = System.getProperty("netbeans.user");
         if (userDir != null) {
             Path componentsDir = Paths.get(userDir, "config", "Windows2Local", "Components");
-            V1MigrationHelper.migrateWindowsSettings(componentsDir);
-            // FileDiffOpener$1 was renamed to FileDiffOpener$DiffTopComponent in 1.2.13;
-            // delete stale .settings files so NetBeans does not warn about the unknown class.
             V1MigrationHelper.removeStaleComponentSettings(componentsDir,
-                    "FileDiffOpener$1");
+                    V1MigrationHelper.OLD_PKG,  // pre-1.0 package rename (issue #146)
+                    "FileDiffOpener$1");         // renamed to FileDiffOpener$DiffTopComponent in 1.2.13
         }
 
         // Migrate preferences from old package paths (one-time, after package rename in 1.0)

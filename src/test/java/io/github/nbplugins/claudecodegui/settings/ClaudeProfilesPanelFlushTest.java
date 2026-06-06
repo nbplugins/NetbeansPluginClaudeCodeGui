@@ -4,9 +4,11 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import javax.swing.JComboBox;
 import javax.swing.JPasswordField;
 import javax.swing.JRadioButton;
+import javax.swing.JTextField;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -62,6 +64,79 @@ class ClaudeProfilesPanelFlushTest {
                 "Work profile must retain apiKey after flush");
         assertEquals("", defaultProfile.getApiKey(),
                 "Default profile must not receive Work's apiKey");
+    }
+
+    /**
+     * Regression for stale model aliases after profile type switch:
+     * when a profile had model aliases set under "Claude Compatible API" and then
+     * the user switches to "Managed by Claude", flushFormToCurrentProfile must
+     * clear the stored modelAliases and customModels so they don't appear in the
+     * model combo box in the next session.
+     */
+    @Test
+    void flush_clearsModelAliasesWhenSwitchingToManaged() throws Exception {
+        ClaudeProfile work = ClaudeProfile.createNamed("Work");
+        work.setApiKey("sk-old");
+        work.setBaseUrl("https://old.example.com");
+        work.setModelAliases(Map.of("sonnet", "old-model"));
+        work.setCustomModels(List.of("old-custom-1", "old-custom-2"));
+
+        ClaudeProfilesPanel panel = new ClaudeProfilesPanel();
+        setField(panel, "profiles", new ArrayList<>(List.of(ClaudeProfile.createDefault(), work)));
+        rebuildCombo(panel);
+        invoke(panel, "loadProfileIntoForm", ClaudeProfile.class, work);
+
+        // Switch to "Managed by Claude" — clear API key and base URL
+        JPasswordField apiKeyField = getField(panel, "apiKeyField", JPasswordField.class);
+        apiKeyField.setText("");
+        JTextField baseUrlField = getField(panel, "baseUrlField", JTextField.class);
+        baseUrlField.setText("");
+        JRadioButton rbManaged = getField(panel, "rbManaged", JRadioButton.class);
+        rbManaged.setSelected(true);
+        // deselect others
+        for (String rb : new String[]{"rbSubscription", "rbClaudeApi", "rbOtherApi", "rbOpenAIProxy"}) {
+            getField(panel, rb, JRadioButton.class).setSelected(false);
+        }
+
+        invoke(panel, "flushFormToCurrentProfile");
+
+        assertTrue(work.getModelAliases().isEmpty(),
+                "modelAliases must be cleared when switching to Managed by Claude");
+        assertTrue(work.getCustomModels().isEmpty(),
+                "customModels must be cleared when switching to Managed by Claude");
+    }
+
+    @Test
+    void flush_keepsModelAliasesForOtherApiConnection() throws Exception {
+        ClaudeProfile work = ClaudeProfile.createNamed("Work");
+        work.setApiKey("sk-test");
+        work.setBaseUrl("https://example.com");
+        work.setModelAliases(Map.of("sonnet", "my-sonnet"));
+        work.setCustomModels(List.of("custom-1"));
+
+        ClaudeProfilesPanel panel = new ClaudeProfilesPanel();
+        setField(panel, "profiles", new ArrayList<>(List.of(ClaudeProfile.createDefault(), work)));
+        rebuildCombo(panel);
+        invoke(panel, "loadProfileIntoForm", ClaudeProfile.class, work);
+
+        // Keep "Other API" selected
+        JPasswordField apiKeyField = getField(panel, "apiKeyField", JPasswordField.class);
+        apiKeyField.setText("sk-test");
+        JTextField baseUrlField = getField(panel, "baseUrlField", JTextField.class);
+        baseUrlField.setText("https://example.com");
+        JRadioButton rbOtherApi = getField(panel, "rbOtherApi", JRadioButton.class);
+        rbOtherApi.setSelected(true);
+        for (String rb : new String[]{"rbManaged", "rbSubscription", "rbClaudeApi", "rbOpenAIProxy"}) {
+            getField(panel, rb, JRadioButton.class).setSelected(false);
+        }
+
+        invoke(panel, "flushFormToCurrentProfile");
+
+        // Model aliases must NOT be cleared when staying on Other API
+        assertFalse(work.getModelAliases().isEmpty(),
+                "modelAliases must be kept when connection type supports them");
+        assertFalse(work.getCustomModels().isEmpty(),
+                "customModels must be kept when connection type supports them");
     }
 
     // -------------------------------------------------------------------------

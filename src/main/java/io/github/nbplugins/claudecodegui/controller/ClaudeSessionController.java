@@ -108,6 +108,14 @@ public class ClaudeSessionController {
     /** {@code true} while a shift-tab thread is actively switching the CC edit mode. */
     private volatile boolean modeSwitchInProgress = false;
 
+    /** Poll interval (ms) per read attempt inside {@link #trySendShiftTabsUntilMode}; 1 in tests. */
+    int modeSwitchPollMs = 100;
+    /**
+     * Max polls waiting for a concrete mode change after each Shift+Tab.
+     * 15 × 100 ms = 1 500 ms — enough for CC to process a buffered keystroke during WORKING.
+     */
+    int modeSwitchPollCount = 15;
+
     /**
      * Set to {@code true} when model discovery starts to prevent re-entry;
      * reset to {@code false} if the result is empty (to allow a retry).
@@ -754,28 +762,80 @@ public class ClaudeSessionController {
     /**
      * Inner loop: sends up to 5 Shift+Tab presses and returns {@code true} when
      * {@code targetMode} is detected on screen, {@code false} if not reached.
+     *
+     * <p>Key design: after each Shift+Tab press the loop waits for a
+     * <em>concrete mode change</em> (a non-empty {@link EditMode} that differs from
+     * the last known mode) rather than polling for a fixed number of intervals.
+     * This prevents tab accumulation — the next tab is only sent once the current
+     * tab's effect has been observed, so CC never receives multiple buffered
+     * keystrokes that it processes in rapid succession (which would cause PLAN to
+     * flash for 0 ms and be immediately overridden by the next tab).
+     *
+     * <p>If no concrete change is seen within {@link #modeSwitchPollCount} ×
+     * {@link #modeSwitchPollMs} ms (default 1 500 ms), the tab is assumed to have
+     * been processed into a mode that produces no on-screen marker (e.g. DEFAULT
+     * during WORKING state), and the next tab is sent.
      */
-    private boolean trySendShiftTabsUntilMode(EditMode targetMode)
+    boolean trySendShiftTabsUntilMode(EditMode targetMode)
             throws IOException, InterruptedException {
+        Optional<EditMode> initial = detectCurrentMode();
+        LOG.fine("trySendShiftTabsUntilMode: target=" + targetMode
+                + " initial=" + initial.map(EditMode::key).orElse("(empty)"));
+        if (isModeAtTarget(initial, targetMode)) return true;
+
+        Optional<EditMode> lastConcrete = initial;
         for (int attempt = 0; attempt < 5; attempt++) {
-            connector.write(new byte[]{0x1b, '[', 'Z'});
-            Thread.sleep(200);
-            Optional<EditMode> detected =
-                    screenContentDetector.detectEditMode(screenLines.get());
-            LOG.fine("trySendShiftTabsUntilMode: target=" + targetMode + " attempt=" + attempt
-                    + " detected=" + detected.map(EditMode::key).orElse("(empty)"));
-            if (detected.isPresent() && detected.get() == targetMode) {
-                LOG.fine("trySendShiftTabsUntilMode: reached " + targetMode + " on attempt=" + attempt);
-                return true;
+            sendOneShiftTab();
+            Optional<EditMode> next = waitForConcreteModeChange(lastConcrete);
+            LOG.fine("trySendShiftTabsUntilMode: target=" + targetMode
+                    + " attempt=" + attempt
+                    + " before=" + lastConcrete.map(EditMode::key).orElse("(empty)")
+                    + " after=" + next.map(EditMode::key).orElse("(timeout)"));
+            if (isModeAtTarget(next, targetMode)) return true;
+            if (next.isPresent()) {
+                lastConcrete = next;
             }
-            // DEFAULT mode has no idle-screen marker — empty detection means we are in default
-            if (targetMode == EditMode.DEFAULT && detected.isEmpty()) {
-                LOG.fine("trySendShiftTabsUntilMode: no mode marker → treating as default on attempt=" + attempt);
-                return true;
-            }
+            // next.isEmpty() = timed out: tab was processed but result is invisible
+            // (e.g. DEFAULT during WORKING). Proceed to next tab.
         }
         LOG.warning("trySendShiftTabsUntilMode: did not reach " + targetMode + " after 5 attempts");
         return false;
+    }
+
+    /**
+     * Polls the screen up to {@link #modeSwitchPollCount} times, returning as soon
+     * as a concrete (non-empty) mode that differs from {@code before} is detected.
+     * Returns {@link Optional#empty()} on timeout.
+     */
+    private Optional<EditMode> waitForConcreteModeChange(Optional<EditMode> before)
+            throws InterruptedException {
+        for (int poll = 0; poll < modeSwitchPollCount; poll++) {
+            Thread.sleep(modeSwitchPollMs);
+            Optional<EditMode> detected = detectCurrentMode();
+            LOG.fine("trySendShiftTabsUntilMode poll=" + poll
+                    + " detected=" + detected.map(EditMode::key).orElse("(empty)"));
+            if (detected.isPresent() && !detected.equals(before)) {
+                return detected;
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** Returns {@code true} if {@code detected} corresponds to {@code target}. */
+    private boolean isModeAtTarget(Optional<EditMode> detected, EditMode target) {
+        if (detected.isPresent() && detected.get() == target) return true;
+        // DEFAULT has no on-screen marker; empty detection = in default.
+        return target == EditMode.DEFAULT && detected.isEmpty();
+    }
+
+    /** Package-private for testing: reads the current edit mode from the terminal screen. */
+    Optional<EditMode> detectCurrentMode() {
+        return screenContentDetector.detectEditMode(screenLines.get());
+    }
+
+    /** Package-private for testing: sends one Shift+Tab (ESC [ Z) to the PTY. */
+    void sendOneShiftTab() throws IOException {
+        connector.write(new byte[]{0x1b, '[', 'Z'});
     }
 
     // -------------------------------------------------------------------------

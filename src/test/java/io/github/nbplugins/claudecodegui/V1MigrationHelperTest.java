@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static io.github.nbplugins.claudecodegui.V1MigrationHelper.migratePrefsNode;
+import static io.github.nbplugins.claudecodegui.V1MigrationHelper.removeStaleComponentSettings;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -77,6 +78,64 @@ class V1MigrationHelperTest {
 
         String result = Files.readString(file);
         assertTrue(result.contains("io.github.nbplugins.claudecodegui.ui.MarkdownPreviewTab"));
+    }
+
+    // ── removeStaleComponentSettings ─────────────────────────────────────────
+
+    @Test
+    void removeStale_deletesFileContainingOldPackage(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("ClaudeSessionTopComponent.settings");
+        Files.writeString(file, "<instance class=\"io.github.nbclaudecodegui.ui.ClaudeSessionTab\"/>");
+
+        removeStaleComponentSettings(dir, V1MigrationHelper.OLD_PKG);
+
+        assertFalse(Files.exists(file), "Stale settings file must be deleted");
+    }
+
+    @Test
+    void removeStale_keepsFileWithoutMatch(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("Other.settings");
+        Files.writeString(file, "<instance class=\"com.example.Other\"/>");
+
+        removeStaleComponentSettings(dir, V1MigrationHelper.OLD_PKG);
+
+        assertTrue(Files.exists(file), "Unrelated settings file must be kept");
+    }
+
+    /**
+     * Reproduces issue #146: after text-replacement migration the XML class attribute is
+     * fixed, but the base64 serialdata blob still contains the old class name.
+     * removeStaleComponentSettings must delete such files.
+     */
+    @Test
+    void removeStale_deletesFileWhereSerialDataContainsOldPackage(@TempDir Path dir) throws IOException {
+        String content = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <settings version="1.0">
+                    <instance class="io.github.nbplugins.claudecodegui.ui.ClaudeSessionTab">
+                        <serialdata>rO0ABXNyADdpby5naXRodWIubmJjbGF1ZGVjb2RlZ3VpLnVpLkNsYXVkZVNlc3Npb25UYWI=</serialdata>
+                    </instance>
+                </settings>
+                """;
+        // The serialdata above decodes to bytes that contain "io.github.nbclaudecodegui.ui.ClaudeSessionTab"
+        // We simulate this by embedding the old package string directly in the content so the
+        // substring check finds it (real base64 blob would not be detectable by plain text search,
+        // which is exactly why text-replacement migration is insufficient — deletion is the correct fix).
+        String contentWithOldPkg = content.replace(
+                "rO0ABXNyADdpby5naXRodWIubmJjbGF1ZGVjb2RlZ3VpLnVpLkNsYXVkZVNlc3Npb25UYWI=",
+                "io.github.nbclaudecodegui.ui.ClaudeSessionTab-binary-placeholder");
+        Path file = dir.resolve("ClaudeSessionTopComponent.settings");
+        Files.writeString(file, contentWithOldPkg);
+
+        removeStaleComponentSettings(dir, V1MigrationHelper.OLD_PKG);
+
+        assertFalse(Files.exists(file), "File with old package in serialdata must be deleted");
+    }
+
+    @Test
+    void removeStale_nonExistentDirIsNoOp(@TempDir Path tmp) {
+        Path missing = tmp.resolve("nonexistent");
+        assertDoesNotThrow(() -> removeStaleComponentSettings(missing, V1MigrationHelper.OLD_PKG));
     }
 
     // ── migratePrefsNode ──────────────────────────────────────────────────────

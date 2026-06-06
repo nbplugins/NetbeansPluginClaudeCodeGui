@@ -615,6 +615,13 @@ public final class ClaudeProfilesPanel extends JPanel {
             p.setOpenaiProxy(false);
         }
 
+        // Clear model aliases/custom models when switching to a connection type that does not
+        // support them — prevents stale aliases from the old type appearing in the model combo box.
+        if (!rbOtherApi.isSelected() && !rbOpenAIProxy.isSelected()) {
+            p.setModelAliases(null);
+            p.setCustomModels(null);
+        }
+
         // Proxy
         if (rbProxyNone.isSelected()) {
             p.setProxyMode(ProxyMode.NO_PROXY);
