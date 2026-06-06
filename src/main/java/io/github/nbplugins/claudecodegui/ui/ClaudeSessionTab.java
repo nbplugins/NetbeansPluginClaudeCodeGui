@@ -227,6 +227,8 @@ public class ClaudeSessionTab extends TopComponent
     /** Cached lifecycle so {@link #onModelListChanged} can correctly enable the combo. */
     private volatile SessionLifecycle currentLifecycle;
 
+    /** True once the startup prompt has been auto-sent for the current session. */
+    private boolean startupPromptSent = false;
     /** True once BYPASS_PERMISSIONS mode was detected; keeps the 4th combo entry visible. */
     private boolean bypassPermissionsAvailable = false;
     /** Guards programmatic combo updates to prevent feedback through the action listener. */
@@ -579,7 +581,16 @@ public class ClaudeSessionTab extends TopComponent
         boolean ready = s == SessionLifecycle.READY;
         modelCombo.setEnabled(ready && modelCombo.getItemCount() > 0);
         promptPanel.setReadyState(ready);
-        if (ready) promptPanel.requestFocusOnInputArea();
+        if (ready) {
+            promptPanel.requestFocusOnInputArea();
+            if (!startupPromptSent) {
+                startupPromptSent = true;
+                String startupPrompt = ClaudeCodePreferences.getStartupPrompt();
+                if (!startupPrompt.isBlank()) {
+                    sendPrompt(startupPrompt);
+                }
+            }
+        }
     }
 
     /** Shows / hides the choice-menu using the card layout. */
@@ -801,6 +812,7 @@ public class ClaudeSessionTab extends TopComponent
                                SessionMode mode, String resumeSessionId) {
         selectorPanel.lock();
         this.activeResumeSessionId = resumeSessionId;
+        startupPromptSent = false;
         Path configDir = null;
         if (!ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
             ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);

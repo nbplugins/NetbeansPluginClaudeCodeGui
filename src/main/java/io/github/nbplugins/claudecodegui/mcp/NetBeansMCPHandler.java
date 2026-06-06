@@ -441,6 +441,13 @@ public class NetBeansMCPHandler {
             resources.add(resource);
         }
 
+        ObjectNode formGuide = responseBuilder.objectNode();
+        formGuide.put("uri", "resource://netbeans-form-guide");
+        formGuide.put("name", "NetBeans Form Design Guide");
+        formGuide.put("description", "Rules for creating valid NetBeans .form + .java pairs (GEN markers, color encoding, JComboBox, JMenuBar, ButtonGroup, JScrollPane, JTabbedPane, layouts, event handlers, etc.)");
+        formGuide.put("mimeType", "text/markdown");
+        resources.add(formGuide);
+
         ObjectNode result = responseBuilder.objectNode();
         result.set("resources", resources);
         return result;
@@ -451,6 +458,28 @@ public class NetBeansMCPHandler {
      */
     private JsonNode handleResourcesRead(JsonNode params) {
         String uri = params.get("uri").asText();
+
+        if ("resource://netbeans-form-guide".equals(uri)) {
+            try {
+                InputStream is = getClass().getResourceAsStream(
+                    "/io/github/nbplugins/claudecodegui/resources/netbeans-form-guide.md");
+                if (is == null) {
+                    throw new IllegalStateException("netbeans-form-guide.md not found in JAR");
+                }
+                String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                ObjectNode result = responseBuilder.objectNode();
+                ArrayNode contents = responseBuilder.arrayNode();
+                ObjectNode item = responseBuilder.objectNode();
+                item.put("uri", uri);
+                item.put("mimeType", "text/markdown");
+                item.put("text", content);
+                contents.add(item);
+                result.set("contents", contents);
+                return result;
+            } catch (IOException ex) {
+                throw new IllegalStateException("Failed to read netbeans-form-guide.md", ex);
+            }
+        }
 
         if (uri.startsWith("project://")) {
             String projectPath = uri.substring("project://".length());

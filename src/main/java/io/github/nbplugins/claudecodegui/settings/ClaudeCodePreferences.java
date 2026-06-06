@@ -176,6 +176,36 @@ public final class ClaudeCodePreferences {
     }
 
     // -------------------------------------------------------------------------
+    // startupPrompt
+    // -------------------------------------------------------------------------
+
+    /** Preference key: prompt auto-sent once when a session first becomes ready. */
+    public static final String KEY_STARTUP_PROMPT = "startupPrompt";
+    /** Default startup prompt — instructs the AI to read the NetBeans form guide resource. */
+    public static final String DEFAULT_STARTUP_PROMPT =
+            "Before creating any NetBeans files, read the resource resource://netbeans-form-guide";
+
+    /**
+     * Returns the startup prompt text, or the default if not set.
+     *
+     * @return startup prompt string (never {@code null}); empty string means disabled
+     */
+    public static String getStartupPrompt() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .get(KEY_STARTUP_PROMPT, DEFAULT_STARTUP_PROMPT);
+    }
+
+    /**
+     * Persists the startup prompt text.
+     *
+     * @param value prompt text, or empty string to disable
+     */
+    public static void setStartupPrompt(String value) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .put(KEY_STARTUP_PROMPT, value == null ? DEFAULT_STARTUP_PROMPT : value);
+    }
+
+    // -------------------------------------------------------------------------
     // debugMode
     // -------------------------------------------------------------------------
 
