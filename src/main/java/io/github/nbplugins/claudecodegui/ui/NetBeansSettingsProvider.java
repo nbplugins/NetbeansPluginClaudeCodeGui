@@ -70,4 +70,18 @@ final class NetBeansSettingsProvider extends DefaultSettingsProvider {
     public com.jediterm.terminal.emulator.ColorPalette getTerminalColorPalette() {
         return ColorPaletteImpl.XTERM_PALETTE;
     }
+
+    /**
+     * Forces JediTerm to treat mouse drags as local actions even when the
+     * running TUI (Claude Code) has enabled mouse reporting (DECSET 1000/1006).
+     * Without this, plain left-button drag is forwarded to the application
+     * instead of creating a text selection, so the right-click "Copy" menu item
+     * is permanently disabled (it is enabled iff {@code TerminalPanel.mySelection != null}).
+     * Claude Code's TUI does not rely on click-forwarding — option menus are
+     * handled separately by {@code ScreenContentDetector}/{@code ChoiceMenuPanel}.
+     */
+    @Override
+    public boolean forceActionOnMouseReporting() {
+        return true;
+    }
 }
