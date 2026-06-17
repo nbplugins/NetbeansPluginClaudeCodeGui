@@ -29,6 +29,29 @@ The plugin code was written entirely by [Claude Code](https://claude.ai/code) us
 
 ---
 
+## How to use this plugin
+
+There are two ways to use the plugin, and which one is available to you depends on whether the AI CLI is installed:
+
+### 1. Embedded terminal inside NetBeans (requires a CLI)
+
+To run the AI as a full interactive terminal session **inside NetBeans** (the main feature — diffs, choice menus, prompt history, session management, etc.), you must **install the IDE's CLI first**:
+
+- **Claude Code** → install the [`claude`](https://docs.anthropic.com/en/docs/claude-code/getting-started) CLI
+- **Devin** → install the [`devin`](#devin-cli-setup) CLI
+
+The chosen CLI must be on your system `PATH` (or its absolute path configured in **Tools → Options → Claude Code**). Without the CLI installed, the embedded terminal cannot launch.
+
+> **In short:** if you prefer to drive the AI from inside NetBeans, the corresponding CLI (Devin CLI, Claude Code, etc.) **must be installed first**.
+
+### 2. NetBeans as an MCP server (no CLI required)
+
+If you do **not** install a CLI, you can still use the plugin: NetBeans runs a built-in MCP server (default port **28991**) that any external MCP-capable IDE can connect to. In this mode you drive the AI from another IDE (Cursor, Windsurf, VS Code, or the Devin desktop app) and it uses NetBeans' tools over MCP.
+
+> **In short:** without a CLI installed, you can **only** use the plugin via MCP from another IDE — see [Use NetBeans as an MCP Server](#use-netbeans-as-an-mcp-server-from-windsurf-cursor-or-vs-code).
+
+---
+
 ## Download
 
 Download the latest `.nbm` file from [GitHub Releases](https://github.com/nipunanirmal/NetbeansPlugin-IDE-Devin-ClaudeCode/releases/latest).
