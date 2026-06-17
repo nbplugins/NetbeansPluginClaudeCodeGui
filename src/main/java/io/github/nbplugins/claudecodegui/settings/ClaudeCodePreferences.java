@@ -86,7 +86,7 @@ public final class ClaudeCodePreferences {
             return found;
         }
         if (isDevinCli()) return "devin";
-        if (isAntigravityCli()) return "antigravity";
+        if (isAntigravityCli()) return "agy";
         if (isCursorCli()) return "cursor-agent";
         return "claude";
     }
@@ -107,8 +107,8 @@ public final class ClaudeCodePreferences {
                     : new String[]{"devin"};
         } else if (isAntigravityCli()) {
             candidates = isWindows
-                    ? new String[]{"antigravity.exe", "antigravity.cmd", "antigravity"}
-                    : new String[]{"antigravity"};
+                    ? new String[]{"agy.exe", "agy.cmd", "agy"}
+                    : new String[]{"agy"};
         } else if (isCursorCli()) {
             // Cursor's installer creates two symlinks to the same binary:
             // 'cursor-agent' (legacy) and 'agent' (primary). Prefer the
@@ -881,7 +881,7 @@ public final class ClaudeCodePreferences {
     public static final String CLI_TYPE_CLAUDE = "claude";
     /** Value: use Devin CLI ({@code devin}). */
     public static final String CLI_TYPE_DEVIN  = "devin";
-    /** Value: use Google Antigravity CLI ({@code antigravity}). */
+    /** Value: use Google Antigravity CLI ({@code agy}). */
     public static final String CLI_TYPE_ANTIGRAVITY = "antigravity";
     /** Value: use Cursor CLI ({@code cursor-agent} / {@code agent}). */
     public static final String CLI_TYPE_CURSOR = "cursor";

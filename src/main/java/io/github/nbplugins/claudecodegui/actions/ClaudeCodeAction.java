@@ -29,10 +29,10 @@ import org.openide.util.NbBundle.Messages;
 @Messages("CTL_ClaudeCodeAction=Claude Code")
 public final class ClaudeCodeAction extends AbstractAction {
 
-    private static final String ICON_CLAUDE      = "io/github/nbplugins/claudecodegui/icons/claude-icon-32.png";
-    private static final String ICON_DEVIN       = "io/github/nbplugins/claudecodegui/icons/devin-icon-32.png";
-    private static final String ICON_ANTIGRAVITY = "io/github/nbplugins/claudecodegui/icons/antigravity-icon-32.png";
-    private static final String ICON_CURSOR      = "io/github/nbplugins/claudecodegui/icons/cursor-icon-32.png";
+    private static final String ICON_CLAUDE      = "io/github/nbplugins/claudecodegui/icons/claude-icon.png";
+    private static final String ICON_DEVIN       = "io/github/nbplugins/claudecodegui/icons/devin-icon.png";
+    private static final String ICON_ANTIGRAVITY = "io/github/nbplugins/claudecodegui/icons/antigravity-icon.png";
+    private static final String ICON_CURSOR      = "io/github/nbplugins/claudecodegui/icons/cursor-icon.png";
 
     /** Constructs the action and sets the toolbar icon based on the configured CLI type. */
     public ClaudeCodeAction() {
