@@ -1,3 +1,5 @@
+- Added Cursor CLI (`cursor-agent` / `agent`) as a selectable CLI type in Tools → Options → Claude Code → Advanced, with its own toolbar and session-tab icon
+- Added a dedicated Google Antigravity toolbar and session-tab icon, which is now shown when the Antigravity CLI is selected (previously the Claude icon was used)
 - Improved README with a "How to use this plugin" section clarifying that the IDE's CLI (Devin CLI, Claude Code, etc.) must be installed first to use the embedded terminal, and that without a CLI the plugin can only be used via MCP from another IDE
 - Fixed Copy menu item being disabled in the terminal context menu when text was selected by mouse drag while Claude Code's TUI had mouse reporting enabled
 

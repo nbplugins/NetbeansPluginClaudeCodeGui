@@ -6,7 +6,7 @@
 
     <groupId>io.github.nbplugins</groupId>
     <artifactId>netbeans-plugin-claude-code-gui</artifactId>
-    <version>1.2.21-SNAPSHOT</version>
+    <version>1.2.22-SNAPSHOT</version>
     <packaging>nbm</packaging>
     <name>NetBeans IDE AI Plugin — Full Swing UI Support</name>
     <description>NetBeans plugin for Claude Code, Devin, Windsurf, Cursor — with AI-powered Swing GUI form generation that creates 100% working .form + .java files.</description>

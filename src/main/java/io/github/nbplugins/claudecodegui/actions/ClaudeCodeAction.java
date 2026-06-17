@@ -29,14 +29,28 @@ import org.openide.util.NbBundle.Messages;
 @Messages("CTL_ClaudeCodeAction=Claude Code")
 public final class ClaudeCodeAction extends AbstractAction {
 
-    private static final String ICON_CLAUDE = "io/github/nbplugins/claudecodegui/icons/claude-icon-32.png";
-    private static final String ICON_DEVIN  = "io/github/nbplugins/claudecodegui/icons/devin-icon-32.png";
+    private static final String ICON_CLAUDE      = "io/github/nbplugins/claudecodegui/icons/claude-icon-32.png";
+    private static final String ICON_DEVIN       = "io/github/nbplugins/claudecodegui/icons/devin-icon-32.png";
+    private static final String ICON_ANTIGRAVITY = "io/github/nbplugins/claudecodegui/icons/antigravity-icon-32.png";
+    private static final String ICON_CURSOR      = "io/github/nbplugins/claudecodegui/icons/cursor-icon-32.png";
 
     /** Constructs the action and sets the toolbar icon based on the configured CLI type. */
     public ClaudeCodeAction() {
-        boolean devin = ClaudeCodePreferences.isDevinCli();
-        String iconPath = devin ? ICON_DEVIN : ICON_CLAUDE;
-        String label    = devin ? "Devin" : "Claude Code";
+        String iconPath;
+        String label;
+        if (ClaudeCodePreferences.isDevinCli()) {
+            iconPath = ICON_DEVIN;
+            label    = "Devin";
+        } else if (ClaudeCodePreferences.isAntigravityCli()) {
+            iconPath = ICON_ANTIGRAVITY;
+            label    = "Google Antigravity";
+        } else if (ClaudeCodePreferences.isCursorCli()) {
+            iconPath = ICON_CURSOR;
+            label    = "Cursor";
+        } else {
+            iconPath = ICON_CLAUDE;
+            label    = "Claude Code";
+        }
         putValue("iconBase", iconPath);
         putValue(SMALL_ICON, ImageUtilities.loadImageIcon(iconPath, false));
         putValue(SHORT_DESCRIPTION, label);

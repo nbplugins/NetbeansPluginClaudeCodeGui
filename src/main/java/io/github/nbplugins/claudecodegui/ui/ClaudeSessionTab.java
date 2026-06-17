@@ -115,6 +115,20 @@ public class ClaudeSessionTab extends TopComponent
 
     private static final String ICON =
             "io/github/nbplugins/claudecodegui/icons/claude-icon.png";
+    private static final String ICON_DEVIN =
+            "io/github/nbplugins/claudecodegui/icons/devin-icon.png";
+    private static final String ICON_ANTIGRAVITY =
+            "io/github/nbplugins/claudecodegui/icons/antigravity-icon.png";
+    private static final String ICON_CURSOR =
+            "io/github/nbplugins/claudecodegui/icons/cursor-icon.png";
+
+    /** Returns the 16px tab icon resource path for the active CLI type. */
+    private static String iconForCli() {
+        if (ClaudeCodePreferences.isDevinCli())       return ICON_DEVIN;
+        if (ClaudeCodePreferences.isAntigravityCli()) return ICON_ANTIGRAVITY;
+        if (ClaudeCodePreferences.isCursorCli())      return ICON_CURSOR;
+        return ICON;
+    }
 
     // -------------------------------------------------------------------------
     // Edit mode constants
@@ -333,7 +347,7 @@ public class ClaudeSessionTab extends TopComponent
         add(selectorPanel, BorderLayout.CENTER);
         add(statusBar,     BorderLayout.SOUTH);
 
-        setIcon(ImageUtilities.loadImage(ICON, true));
+        setIcon(ImageUtilities.loadImage(iconForCli(), true));
         updateDisplayName(dir);
         model.addListener(this);
     }

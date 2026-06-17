@@ -194,7 +194,8 @@ public final class ClaudeProcess {
 
         boolean devinCli = io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isDevinCli();
         boolean antigravityCli = io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isAntigravityCli();
-        boolean externalCli = devinCli || antigravityCli;
+        boolean cursorCli = io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isCursorCli();
+        boolean externalCli = devinCli || antigravityCli || cursorCli;
 
         List<String> cmd = new ArrayList<>();
         cmd.add(executable);
@@ -207,11 +208,12 @@ public final class ClaudeProcess {
             int port = mcp.getServerPort();
             if (io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isMcpEnabled()) {
                 if (externalCli) {
-                    // Devin and Antigravity register MCP servers persistently via their own CLI
-                    // (e.g. 'devin mcp add' / 'antigravity mcp add'). Passing a --config flag
-                    // would replace the entire user config, so we must NOT do that here.
+                    // Devin, Antigravity and Cursor register MCP servers persistently via
+                    // their own config (e.g. 'devin mcp add' / 'antigravity mcp add' /
+                    // Cursor's ~/.cursor/mcp.json). Passing a --config flag would replace
+                    // the entire user config, so we must NOT do that here.
                     // The user registers the netbeans server once manually.
-                    String cliName = devinCli ? "Devin" : "Antigravity";
+                    String cliName = devinCli ? "Devin" : antigravityCli ? "Antigravity" : "Cursor";
                     LOG.info(cliName + " CLI: MCP is registered persistently; skipping config flag. Port: " + port);
                 } else {
                     // Claude uses --mcp-config <PATH>.
@@ -299,12 +301,14 @@ public final class ClaudeProcess {
             LOG.info("Extra CLI args appended: " + extra);
         }
 
-        boolean isDevin = io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isDevinCli();
+        boolean selfManagedSessions =
+                io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isDevinCli()
+                || io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences.isCursorCli();
         if (mode == SessionMode.CONTINUE_LAST) {
-            if (isDevin) {
-                // Devin manages its own session store; skip the Claude session check.
+            if (selfManagedSessions) {
+                // Devin and Cursor manage their own session store; skip the Claude session check.
                 cmd.add("--continue");
-                LOG.fine("Session mode: --continue (devin, no session check)");
+                LOG.fine("Session mode: --continue (self-managed sessions, no session check)");
             } else {
                 String configDirStr = env.get("CLAUDE_CONFIG_DIR");
                 Path claudeConfigDir = configDirStr != null
