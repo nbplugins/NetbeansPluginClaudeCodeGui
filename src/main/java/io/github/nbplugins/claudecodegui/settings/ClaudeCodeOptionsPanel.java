@@ -316,8 +316,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
 
         // --- CLI type ---
         form.add(new JLabel("CLI type:"), gbc(0, row, false));
-        cliTypeCombo = new javax.swing.JComboBox<>(new String[]{"Claude Code (claude)", "Devin (devin)", "Google Antigravity (antigravity)"});
-        cliTypeCombo.setToolTipText("Select the AI CLI to use: Claude Code, Devin, or Google Antigravity");
+        cliTypeCombo = new javax.swing.JComboBox<>(new String[]{"Claude Code (claude)", "Devin (devin)", "Google Antigravity (antigravity)", "Cursor (cursor-agent)"});
+        cliTypeCombo.setToolTipText("Select the AI CLI to use: Claude Code, Devin, Google Antigravity, or Cursor");
         form.add(cliTypeCombo, gbc(1, row, false));
         row++;
 
@@ -501,7 +501,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         hangTimeoutSpinner.setValue(ClaudeCodePreferences.getHangTimeoutSeconds());
         mcpEnabledCheckBox.setSelected(ClaudeCodePreferences.isMcpEnabled());
         int cliIdx = ClaudeCodePreferences.isDevinCli() ? 1
-                : ClaudeCodePreferences.isAntigravityCli() ? 2 : 0;
+                : ClaudeCodePreferences.isAntigravityCli() ? 2
+                : ClaudeCodePreferences.isCursorCli() ? 3 : 0;
         cliTypeCombo.setSelectedIndex(cliIdx);
 
         String sendVal    = ClaudeCodePreferences.getSendKey();
@@ -553,6 +554,8 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         ? ClaudeCodePreferences.CLI_TYPE_DEVIN
                         : cliTypeCombo.getSelectedIndex() == 2
                         ? ClaudeCodePreferences.CLI_TYPE_ANTIGRAVITY
+                        : cliTypeCombo.getSelectedIndex() == 3
+                        ? ClaudeCodePreferences.CLI_TYPE_CURSOR
                         : ClaudeCodePreferences.CLI_TYPE_CLAUDE;
         if (!newCliType.equals(ClaudeCodePreferences.getCliType())) {
             ClaudeCodePreferences.setClaudeExecutablePath("");

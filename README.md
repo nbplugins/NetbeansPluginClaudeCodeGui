@@ -39,6 +39,8 @@ To run the AI as a full interactive terminal session **inside NetBeans** (the ma
 
 - **Claude Code** → install the [`claude`](https://docs.anthropic.com/en/docs/claude-code/getting-started) CLI
 - **Devin** → install the [`devin`](#devin-cli-setup) CLI
+- **Google Antigravity** → install the [`antigravity`](https://antigravity.google/docs/cli-overview) CLI
+- **Cursor** → install the [`cursor-agent`](#cursor-cli-setup) CLI
 
 The chosen CLI must be on your system `PATH` (or its absolute path configured in **Tools → Options → Claude Code**). Without the CLI installed, the embedded terminal cannot launch.
 
@@ -87,7 +89,7 @@ Then install `target/nbm/netbeans-plugin-claude-code-gui-*.nbm` via **Tools → 
 
 ### 3. Register the NetBeans MCP server with Devin (once only)
 
-Unlike Claude Code (which accepts `--mcp-config` at startup), Devin stores MCP servers persistently. Run this once in a terminal — replace the port if you changed it from the default:
+Unlike Claude Code (which accepts `--mcp-config` at startup), Devin, Antigravity and Cursor store MCP servers persistently. Run this once in a terminal — replace the port if you changed it from the default:
 
 ```
 devin mcp add netbeans http://127.0.0.1:28991/sse
@@ -100,6 +102,45 @@ Verify with `devin mcp list` — you should see `netbeans` listed.
 Click the **Devin** toolbar button (or open the session tab) — `devin` will launch in the embedded terminal with the MCP server already connected.
 
 > **Note:** The MCP port (default `28991`) must match what the plugin is using. Check **Tools → Claude Code Status** to confirm the server is running and note the port.
+
+---
+
+## Cursor CLI Setup
+
+The plugin can also embed the **Cursor CLI** (`cursor-agent`) as an interactive terminal session inside NetBeans.
+
+### 1. Install the Cursor CLI
+
+```
+curl https://cursor.com/install -fsS | bash
+```
+
+The installer creates both `agent` (primary) and `cursor-agent` (legacy) on your `PATH`. Verify with `cursor-agent --version` (or `agent --version`).
+
+### 2. Switch to Cursor CLI in settings
+
+1. Open **Tools → Options → Claude Code → Advanced**
+2. Set **CLI type** to **Cursor (cursor-agent)**
+3. Leave **CLI executable path** blank — the plugin auto-detects `cursor-agent` (falling back to `agent`) from your PATH
+4. Click **OK** and restart if prompted
+
+### 3. Register the NetBeans MCP server with Cursor (once only)
+
+Cursor reads MCP servers from `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project). Add the `netbeans` server — replace the port if you changed it from the default:
+
+```json
+{
+  "mcpServers": {
+    "netbeans": {
+      "url": "http://localhost:28991/sse"
+    }
+  }
+}
+```
+
+### 4. Start a session
+
+Click the **Cursor** toolbar button (or open the session tab) — `cursor-agent` will launch in the embedded terminal with the MCP server already connected.
 
 ---
 

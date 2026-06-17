@@ -87,6 +87,7 @@ public final class ClaudeCodePreferences {
         }
         if (isDevinCli()) return "devin";
         if (isAntigravityCli()) return "antigravity";
+        if (isCursorCli()) return "cursor-agent";
         return "claude";
     }
 
@@ -108,6 +109,15 @@ public final class ClaudeCodePreferences {
             candidates = isWindows
                     ? new String[]{"antigravity.exe", "antigravity.cmd", "antigravity"}
                     : new String[]{"antigravity"};
+        } else if (isCursorCli()) {
+            // Cursor's installer creates two symlinks to the same binary:
+            // 'cursor-agent' (legacy) and 'agent' (primary). Prefer the
+            // unambiguous 'cursor-agent' name to avoid clashing with any
+            // unrelated 'agent' executable on PATH.
+            candidates = isWindows
+                    ? new String[]{"cursor-agent.exe", "cursor-agent.cmd", "cursor-agent",
+                                   "agent.exe", "agent.cmd", "agent"}
+                    : new String[]{"cursor-agent", "agent"};
         } else {
             candidates = isWindows
                     ? new String[]{"claude.cmd", "claude.exe", "claude"}
@@ -873,6 +883,8 @@ public final class ClaudeCodePreferences {
     public static final String CLI_TYPE_DEVIN  = "devin";
     /** Value: use Google Antigravity CLI ({@code antigravity}). */
     public static final String CLI_TYPE_ANTIGRAVITY = "antigravity";
+    /** Value: use Cursor CLI ({@code cursor-agent} / {@code agent}). */
+    public static final String CLI_TYPE_CURSOR = "cursor";
     /** Default: Claude Code. */
     public static final String DEFAULT_CLI_TYPE = CLI_TYPE_CLAUDE;
 
@@ -894,6 +906,7 @@ public final class ClaudeCodePreferences {
     public static void setCliType(String type) {
         String resolved = CLI_TYPE_DEVIN.equals(type) ? CLI_TYPE_DEVIN
                 : CLI_TYPE_ANTIGRAVITY.equals(type) ? CLI_TYPE_ANTIGRAVITY
+                : CLI_TYPE_CURSOR.equals(type) ? CLI_TYPE_CURSOR
                 : CLI_TYPE_CLAUDE;
         NbPreferences.forModule(ClaudeCodePreferences.class).put(KEY_CLI_TYPE, resolved);
     }
@@ -914,6 +927,15 @@ public final class ClaudeCodePreferences {
      */
     public static boolean isAntigravityCli() {
         return CLI_TYPE_ANTIGRAVITY.equals(getCliType());
+    }
+
+    /**
+     * Convenience method: returns {@code true} when the active CLI is Cursor.
+     *
+     * @return {@code true} if Cursor CLI is selected
+     */
+    public static boolean isCursorCli() {
+        return CLI_TYPE_CURSOR.equals(getCliType());
     }
 
     private static String validated(String value, String fallback) {
