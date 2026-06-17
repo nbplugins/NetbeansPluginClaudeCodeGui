@@ -1,3 +1,5 @@
+# 1.2
+
 - Fixed Copy menu item being disabled in the terminal context menu when text was selected by mouse drag while Claude Code's TUI had mouse reporting enabled
 
 # 1.2.14 (2026-06-01)
