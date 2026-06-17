@@ -316,8 +316,17 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
 
         // --- CLI type ---
         form.add(new JLabel("CLI type:"), gbc(0, row, false));
-        cliTypeCombo = new javax.swing.JComboBox<>(new String[]{"Claude Code (claude)", "Devin (devin)", "Google Antigravity (antigravity)", "Cursor (cursor-agent)"});
-        cliTypeCombo.setToolTipText("Select the AI CLI to use: Claude Code, Devin, Google Antigravity, or Cursor");
+        cliTypeCombo = new javax.swing.JComboBox<>(new String[]{
+            "Claude Code (claude)",
+            "Devin (devin)",
+            "Google Antigravity (agy)",
+            "Cursor (cursor-agent)",
+            "Aider (aider)",
+            "OpenAI Codex (codex)",
+            "Qwen Code (qwen)",
+            "Koder (koder)"
+        });
+        cliTypeCombo.setToolTipText("Select the AI CLI to use: Claude Code, Devin, Google Antigravity, Cursor, Aider, OpenAI Codex, Qwen Code, or Koder");
         form.add(cliTypeCombo, gbc(1, row, false));
         row++;
 
@@ -502,7 +511,11 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         mcpEnabledCheckBox.setSelected(ClaudeCodePreferences.isMcpEnabled());
         int cliIdx = ClaudeCodePreferences.isDevinCli() ? 1
                 : ClaudeCodePreferences.isAntigravityCli() ? 2
-                : ClaudeCodePreferences.isCursorCli() ? 3 : 0;
+                : ClaudeCodePreferences.isCursorCli() ? 3
+                : ClaudeCodePreferences.isAiderCli() ? 4
+                : ClaudeCodePreferences.isCodexCli() ? 5
+                : ClaudeCodePreferences.isQwenCli() ? 6
+                : ClaudeCodePreferences.isKoderCli() ? 7 : 0;
         cliTypeCombo.setSelectedIndex(cliIdx);
 
         String sendVal    = ClaudeCodePreferences.getSendKey();
@@ -556,6 +569,14 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         ? ClaudeCodePreferences.CLI_TYPE_ANTIGRAVITY
                         : cliTypeCombo.getSelectedIndex() == 3
                         ? ClaudeCodePreferences.CLI_TYPE_CURSOR
+                        : cliTypeCombo.getSelectedIndex() == 4
+                        ? ClaudeCodePreferences.CLI_TYPE_AIDER
+                        : cliTypeCombo.getSelectedIndex() == 5
+                        ? ClaudeCodePreferences.CLI_TYPE_CODEX
+                        : cliTypeCombo.getSelectedIndex() == 6
+                        ? ClaudeCodePreferences.CLI_TYPE_QWEN
+                        : cliTypeCombo.getSelectedIndex() == 7
+                        ? ClaudeCodePreferences.CLI_TYPE_KODER
                         : ClaudeCodePreferences.CLI_TYPE_CLAUDE;
         // Save CLI type FIRST, then clear path if changed.
         // This ensures resolveClaudeExecutable() auto-detects using the NEW CLI type.

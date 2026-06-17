@@ -88,6 +88,10 @@ public final class ClaudeCodePreferences {
         if (isDevinCli()) return "devin";
         if (isAntigravityCli()) return "agy";
         if (isCursorCli()) return "cursor-agent";
+        if (isAiderCli()) return "aider";
+        if (isCodexCli()) return "codex";
+        if (isQwenCli()) return "qwen";
+        if (isKoderCli()) return "koder";
         return "claude";
     }
 
@@ -118,6 +122,26 @@ public final class ClaudeCodePreferences {
                     ? new String[]{"cursor-agent.exe", "cursor-agent.cmd", "cursor-agent",
                                    "agent.exe", "agent.cmd", "agent"}
                     : new String[]{"cursor-agent", "agent"};
+        } else if (isAiderCli()) {
+            // Aider can be installed via pipx, uv, or pip
+            candidates = isWindows
+                    ? new String[]{"aider.exe", "aider.cmd", "aider"}
+                    : new String[]{"aider"};
+        } else if (isCodexCli()) {
+            // OpenAI Codex is typically installed via npm or standalone
+            candidates = isWindows
+                    ? new String[]{"codex.exe", "codex.cmd", "codex"}
+                    : new String[]{"codex"};
+        } else if (isQwenCli()) {
+            // Qwen Code is installed via npm as @qwen-code/qwen-code
+            candidates = isWindows
+                    ? new String[]{"qwen.exe", "qwen.cmd", "qwen"}
+                    : new String[]{"qwen"};
+        } else if (isKoderCli()) {
+            // Koder is installed via uv or pip
+            candidates = isWindows
+                    ? new String[]{"koder.exe", "koder.cmd", "koder"}
+                    : new String[]{"koder"};
         } else {
             candidates = isWindows
                     ? new String[]{"claude.cmd", "claude.exe", "claude"}
@@ -885,6 +909,14 @@ public final class ClaudeCodePreferences {
     public static final String CLI_TYPE_ANTIGRAVITY = "antigravity";
     /** Value: use Cursor CLI ({@code cursor-agent} / {@code agent}). */
     public static final String CLI_TYPE_CURSOR = "cursor";
+    /** Value: use Aider CLI ({@code aider}). */
+    public static final String CLI_TYPE_AIDER = "aider";
+    /** Value: use OpenAI Codex CLI ({@code codex}). */
+    public static final String CLI_TYPE_CODEX = "codex";
+    /** Value: use Qwen Code CLI ({@code qwen}). */
+    public static final String CLI_TYPE_QWEN = "qwen";
+    /** Value: use Koder CLI ({@code koder}). */
+    public static final String CLI_TYPE_KODER = "koder";
     /** Default: Claude Code. */
     public static final String DEFAULT_CLI_TYPE = CLI_TYPE_CLAUDE;
 
@@ -907,6 +939,10 @@ public final class ClaudeCodePreferences {
         String resolved = CLI_TYPE_DEVIN.equals(type) ? CLI_TYPE_DEVIN
                 : CLI_TYPE_ANTIGRAVITY.equals(type) ? CLI_TYPE_ANTIGRAVITY
                 : CLI_TYPE_CURSOR.equals(type) ? CLI_TYPE_CURSOR
+                : CLI_TYPE_AIDER.equals(type) ? CLI_TYPE_AIDER
+                : CLI_TYPE_CODEX.equals(type) ? CLI_TYPE_CODEX
+                : CLI_TYPE_QWEN.equals(type) ? CLI_TYPE_QWEN
+                : CLI_TYPE_KODER.equals(type) ? CLI_TYPE_KODER
                 : CLI_TYPE_CLAUDE;
         NbPreferences.forModule(ClaudeCodePreferences.class).put(KEY_CLI_TYPE, resolved);
     }
@@ -936,6 +972,42 @@ public final class ClaudeCodePreferences {
      */
     public static boolean isCursorCli() {
         return CLI_TYPE_CURSOR.equals(getCliType());
+    }
+
+    /**
+     * Convenience method: returns {@code true} when the active CLI is Aider.
+     *
+     * @return {@code true} if Aider CLI is selected
+     */
+    public static boolean isAiderCli() {
+        return CLI_TYPE_AIDER.equals(getCliType());
+    }
+
+    /**
+     * Convenience method: returns {@code true} when the active CLI is OpenAI Codex.
+     *
+     * @return {@code true} if Codex CLI is selected
+     */
+    public static boolean isCodexCli() {
+        return CLI_TYPE_CODEX.equals(getCliType());
+    }
+
+    /**
+     * Convenience method: returns {@code true} when the active CLI is Qwen Code.
+     *
+     * @return {@code true} if Qwen CLI is selected
+     */
+    public static boolean isQwenCli() {
+        return CLI_TYPE_QWEN.equals(getCliType());
+    }
+
+    /**
+     * Convenience method: returns {@code true} when the active CLI is Koder.
+     *
+     * @return {@code true} if Koder CLI is selected
+     */
+    public static boolean isKoderCli() {
+        return CLI_TYPE_KODER.equals(getCliType());
     }
 
     private static String validated(String value, String fallback) {
