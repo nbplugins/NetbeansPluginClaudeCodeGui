@@ -132,7 +132,7 @@ jobs:
             --metadata title="Claude Code GUI for NetBeans — User Manual" \
             --embed-resources --standalone \
             --resource-path=docs \
-            -o "target/netbeans-claude-code-gui-${VERSION}-docs.html" \
+            -o "target/netbeans-plugin-claude-code-gui-${VERSION}-docs.html" \
             docs/installation.md \
             docs/user-manual.md
       - name: Upload artifact and release asset
