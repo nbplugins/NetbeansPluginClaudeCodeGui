@@ -1,3 +1,5 @@
+# 1.2
+
 - Fixed documentation artifact name in GitHub Releases to match the plugin artifact name
 
 # 1.2.17 (2026-06-17)
