@@ -1,3 +1,5 @@
+- Fixed session becoming permanently unresponsive when the working directory is on a git branch whose name contains dots (e.g. `feature/e9.5-refactor`)
+
 # 1.2.20 (2026-06-22)
 
 - Fixed documentation artifact name in GitHub Releases to match the plugin artifact name

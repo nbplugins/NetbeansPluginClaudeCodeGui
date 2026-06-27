@@ -1083,10 +1083,15 @@ public class ClaudeSessionController {
         // Sending /model while Claude is blocked by such a dialog causes the
         // model menu to appear only after the dialog is dismissed, by which
         // time discovery has already timed out and given up.
+        // Also defer when the screen shows "esc to interrupt": detectInputPromptReady
+        // returns true even while Claude is WORKING (the ❯ area is always visible),
+        // so without this guard, discoverModels() would fire immediately, send /model
+        // to a busy Claude, time out, and leave the session permanently stuck in WORKING.
         if (model.getLifecycle() == SessionLifecycle.READY
                 && !modelComboPopulated && !modelDiscoveryInProgress
                 && model.getActiveChoiceMenu() == null
-                && screenContentDetector.detectChoiceMenu(lines).isEmpty()) {
+                && screenContentDetector.detectChoiceMenu(lines).isEmpty()
+                && screenContentDetector.detectSessionState(lines) != ScreenContentDetector.DetectedSessionState.WORKING) {
             discoverModels();
             detectAndApplyInitialEditMode(lines);
         }
