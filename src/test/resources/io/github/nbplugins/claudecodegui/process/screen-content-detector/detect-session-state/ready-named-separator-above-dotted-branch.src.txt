@@ -1,0 +1,6 @@
+✻ Cogitated for 12m 3s
+
+──────────────────────── refactor-menu-reorder-e9.5-e9.8 ──
+❯
+────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

@@ -355,6 +355,92 @@ class ClaudeSessionControllerTest {
     }
 
     // -------------------------------------------------------------------------
+    // pollScreenState — model discovery deferred while screen shows WORKING
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression: when --continue resumes a session where Claude is still actively
+     * working, detectInputPromptReady() returns true (❯ is always visible), causing
+     * STARTING → READY, and then discoverModels() fires immediately. discoverModels()
+     * sets lifecycle back to WORKING and sends /model to a busy Claude, which times
+     * out and leaves the session stuck permanently in WORKING.
+     *
+     * Fix: model discovery must be deferred when detectSessionState returns WORKING
+     * (i.e. "esc to interrupt" is visible in the footer).
+     */
+    @Test
+    void pollScreenState_doesNotTriggerModelDiscovery_whileScreenShowsWorking() throws Exception {
+        List<String> workingScreen = Arrays.asList(
+                "Some previous Claude output here",
+                "────────────────",
+                "❯",
+                "────────────────",
+                "  esc to interrupt"
+        );
+        AtomicReference<Integer> discoveryCalls = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, () -> workingScreen) {
+            @Override void discoverModels() { discoveryCalls.set(discoveryCalls.get() + 1); }
+        };
+
+        // Session starts in STARTING; first poll: STARTING→READY (❯ visible),
+        // then READY→WORKING (esc to interrupt); discovery must be deferred
+        c.pollScreenState();
+
+        assertEquals(SessionLifecycle.WORKING, m.getLifecycle(),
+                "lifecycle must be WORKING: STARTING→READY then READY→WORKING (esc to interrupt)");
+        assertEquals(0, (int) discoveryCalls.get(),
+                "discoverModels must NOT fire while screen shows 'esc to interrupt'");
+    }
+
+    /**
+     * Verifies that model discovery IS triggered once the screen transitions to
+     * truly idle state (❯ visible, no "esc to interrupt").
+     */
+    @Test
+    void pollScreenState_triggersModelDiscovery_whenScreenBecomesReady() throws Exception {
+        List<String> workingScreen = Arrays.asList(
+                "Some previous Claude output here",
+                "────────────────",
+                "❯",
+                "────────────────",
+                "  esc to interrupt"
+        );
+        List<String> readyScreen = Arrays.asList(
+                "Some previous Claude output here",
+                "────────────────",
+                "❯",
+                "────────────────",
+                "  ⏸ plan mode on  ·  ? for shortcuts"
+        );
+        AtomicReference<List<String>> screenRef = new AtomicReference<>(workingScreen);
+        AtomicReference<Integer> discoveryCalls = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, screenRef::get) {
+            @Override void discoverModels() { discoveryCalls.set(discoveryCalls.get() + 1); }
+        };
+
+        // First poll: STARTING → READY → WORKING; discovery deferred
+        c.pollScreenState();
+        assertEquals(SessionLifecycle.WORKING, m.getLifecycle());
+        assertEquals(0, (int) discoveryCalls.get(), "no discovery while screen shows WORKING");
+
+        // Screen transitions to idle
+        screenRef.set(readyScreen);
+
+        // Second poll: WORKING → READY (screen sync fires at end of poll);
+        // model discovery guard runs before the sync, so discovery not yet triggered
+        c.pollScreenState();
+        assertEquals(SessionLifecycle.READY, m.getLifecycle(),
+                "lifecycle must be READY once screen shows idle state");
+
+        // Third poll: lifecycle is READY, screen is READY → discovery fires
+        c.pollScreenState();
+        assertEquals(1, (int) discoveryCalls.get(),
+                "discoverModels must fire once the screen becomes truly idle");
+    }
+
+    // -------------------------------------------------------------------------
     // custom model list — appended after standard models in discoverModels
     // -------------------------------------------------------------------------
 
