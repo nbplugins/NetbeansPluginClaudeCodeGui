@@ -71,6 +71,8 @@ public class ModelMenuParser {
                 String leftPart = trimmed.split("[·\u00b7]", 2)[0];
                 Matcher descMatcher = DESC_PAT.matcher(leftPart);
                 if (descMatcher.find()) {
+                    String namePart = leftPart.substring(0, descMatcher.start()).trim();
+                    if (namePart.toLowerCase().contains("(disabled)")) continue;
                     String desc = descMatcher.group(1).trim()
                             .replaceFirst("^\u2714\\s*", "").trim();
                     // Format 2: "(currently X)"

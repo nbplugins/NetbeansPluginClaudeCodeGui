@@ -1,3 +1,4 @@
+- Fixed disabled models (e.g. `Fable (disabled)`) appearing in the model selector combo with an error message as their name
 - Fixed session becoming permanently unresponsive when the working directory is on a git branch whose name contains dots (e.g. `feature/e9.5-refactor`)
 
 # 1.2.20 (2026-06-22)
