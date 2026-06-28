@@ -1,3 +1,5 @@
+# 1.2
+
 - Fixed choice menu not appearing when option descriptions span more than 3 terminal lines
 - Fixed disabled models (e.g. `Fable (disabled)`) appearing in the model selector combo with an error message as their name
 - Fixed session becoming permanently unresponsive when the working directory is on a git branch whose name contains dots (e.g. `feature/e9.5-refactor`)
