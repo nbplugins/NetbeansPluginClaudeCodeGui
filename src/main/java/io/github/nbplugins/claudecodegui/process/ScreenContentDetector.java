@@ -156,11 +156,13 @@ public final class ScreenContentDetector {
                 continuationCount = 0;
                 // Option "1" is always the first — stop collecting here
                 if ("1".equals(opt.response())) break;
+            } else if (isSeparatorLine(trimmed)) {
+                // structural separator between option groups — don't count toward continuationCount
             } else if (!trimmed.isBlank()) {
                 continuationCount++;
-                if (continuationCount > 3) {
+                if (continuationCount > 8) {
                     LOG.fine(tag + "[ScreenContentDetector] stopped upward scan at row " + i
-                            + " (continuationCount>3): " + trimmed);
+                            + " (continuationCount>8): " + trimmed);
                     break;
                 }
             }
