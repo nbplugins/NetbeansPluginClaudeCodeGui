@@ -1,0 +1,11 @@
+{
+  "text": "The IDEA engine's UsageInfo machinery needs a live Document the standalone session can't maintain. How should I resolve the multi-declaration path?",
+  "options": [
+    {"display": "Stub MoveRenameUsageInfo", "response": "1", "description": "Add a JVM-linkage stub of com.intellij.refactoring.util.MoveRenameUsageInfo (extends the real UsageInfo) whose ctor skips the document-length assertion"},
+    {"display": "Engine wired, env-degraded", "response": "2", "description": "After add(), commit the target document so PSI/document agree (this reparses and drops the copyable-usage marks the engine reads, so retargetUsages becomes a no-op)."},
+    {"display": "Whole-file copy + prune", "response": "3", "description": "For multi-declaration, follow IDEA's file-copy path: copy the entire source file, then delete the other top-level declarations from the copy. Robust for multi-decl."},
+    {"display": "Type something.", "response": "4"},
+    {"display": "Chat about this", "response": "5"}
+  ],
+  "defaultOptionIndex": 0
+}

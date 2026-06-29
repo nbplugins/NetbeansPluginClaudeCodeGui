@@ -1,0 +1,21 @@
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Engine vs env
+
+The IDEA engine's UsageInfo machinery needs a live Document the standalone session can't maintain. How should I resolve the multi-declaration path?
+
+❯ 1. Stub MoveRenameUsageInfo
+     Add a JVM-linkage stub of com.intellij.refactoring.util.MoveRenameUsageInfo (extends the real UsageInfo) whose ctor skips the document-length assertion
+     — same pattern as the existing BaseRefactoringProcessor/Registry stubs. Keeps the real engine algorithm fully working (retarget + shorten + import insertion). Risk: it
+     must shadow the copy already present in the bundled analysis jar (classloader order), which is less certain than stubbing a class absent at runtime; may need stripping
+     it from the jar.
+  2. Engine wired, env-degraded
+     After add(), commit the target document so PSI/document agree (this reparses and drops the copyable-usage marks the engine reads, so retargetUsages becomes a no-op).
+     The declaration is copied correctly but with no import retargeting for the multi-decl case — matches the no extra import synthesis behavior you already approved.
+     Lowest risk; the engine is present but effectively inert for multi-decl.
+  3. Whole-file copy + prune
+     For multi-declaration, follow IDEA's file-copy path: copy the entire source file, then delete the other top-level declarations from the copy. Robust for multi-decl.
+  4. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
