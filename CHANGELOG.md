@@ -1,3 +1,5 @@
+- Fixed a "Warning" dialog showing raw XML content sometimes appearing at IDE startup after using a diff view
+
 # 1.2.25 (2026-06-29)
 
 - Fixed choice menu not appearing when option descriptions span more than 3 terminal lines

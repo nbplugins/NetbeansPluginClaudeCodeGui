@@ -221,13 +221,7 @@ public class OpenDiff implements Tool<OpenDiffParams, AsyncResponse<OpenDiffResu
                         // Override componentClosed() so that closing the tab without clicking
                         // Approve or Reject sends FILE_REJECTED — preventing Claude from hanging.
                         final String finalDiffTabName = diffTabName;
-                        TopComponent diffTC = new TopComponent() {
-                            @Override
-                            public void componentClosed() {
-                                super.componentClosed();
-                                DiffTabTracker.setRejected(finalDiffTabName);
-                            }
-                        };
+                        TopComponent diffTC = new DiffTopComponent(finalDiffTabName);
                         diffTC.setDisplayName(diffTabName);
                         diffTC.setLayout(new java.awt.BorderLayout());
 
@@ -303,6 +297,30 @@ public class OpenDiff implements Tool<OpenDiffParams, AsyncResponse<OpenDiffResu
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Error opening diff", e);
             return createAsyncResponse(createErrorResult("Error opening diff: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Ephemeral diff-viewer tab. Must never be persisted across IDE restarts — its toolbar
+     * button listeners close over per-request state (file contents, async response handler)
+     * that is not meaningfully serializable.
+     */
+    static final class DiffTopComponent extends TopComponent {
+        private final String diffTabName;
+
+        DiffTopComponent(String diffTabName) {
+            this.diffTabName = diffTabName;
+        }
+
+        @Override
+        public int getPersistenceType() {
+            return TopComponent.PERSISTENCE_NEVER;
+        }
+
+        @Override
+        public void componentClosed() {
+            super.componentClosed();
+            DiffTabTracker.setRejected(diffTabName);
         }
     }
 }
