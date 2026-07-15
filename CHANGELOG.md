@@ -1,3 +1,5 @@
+# 1.2
+
 - Fixed a "Warning" dialog showing raw XML content sometimes appearing at IDE startup after using a diff view
 
 # 1.2.25 (2026-06-29)
