@@ -1,3 +1,6 @@
+- Renamed the "Subscription" connection type to "Claude Subscription" in Profile settings, to distinguish it from the new "ChatGPT Subscription" connection type
+- Added support for signing in with a ChatGPT Plus/Pro/Team subscription as a new profile connection type, routing sessions through OpenAI's Codex backend instead of requiring an OpenAI API key; click "Copy sign in link" to copy the sign-in URL, open it in your own browser, then paste the resulting code back to complete sign-in — the plugin never opens a browser or waits on it automatically. Once signed in, "Model Aliases…" is available for this profile and fetches the live list of models available to your account instead of a fixed list; if the fetch fails, the upstream error is shown in the dialog's status line
+
 # 1.2.28 (2026-07-15)
 
 - Fixed a "Warning" dialog showing raw XML content sometimes appearing at IDE startup after using a diff view

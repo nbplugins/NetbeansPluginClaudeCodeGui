@@ -77,6 +77,12 @@ public final class ClaudeProfileStore {
                 def.setModelAliases(stored.getModelAliases());
                 def.setCustomModels(stored.getCustomModels());
                 def.setStorageDir(stored.getStorageDir());
+                def.setOpenaiSubscription(stored.isOpenaiSubscription());
+                def.setChatgptAccessToken(stored.getChatgptAccessToken());
+                def.setChatgptRefreshToken(stored.getChatgptRefreshToken());
+                def.setChatgptAccountId(stored.getChatgptAccountId());
+                def.setChatgptTokenExpiresAt(stored.getChatgptTokenExpiresAt());
+                def.setChatgptEmail(stored.getChatgptEmail());
             } catch (Exception e) {
                 LOG.warning("Could not parse stored Default profile JSON, using defaults. Cause: " + e);
                 def.setExtraCliArgs(ClaudeCodePreferences.getDefaultExtraCliArgs());
@@ -128,6 +134,24 @@ public final class ClaudeProfileStore {
         }
         return getProfiles().stream().filter(p -> p.getName().equals(name)).findFirst()
                 .orElseGet(ClaudeProfileStore::getDefaultProfile);
+    }
+
+    /**
+     * Looks up a profile by id.
+     *
+     * <p>Unlike {@link #findByName}, this does not fall back to the Default
+     * profile on a miss — callers that need to distinguish "not found" from
+     * "found the Default profile" (e.g. token-refresh persistence) should use
+     * this method.
+     *
+     * @param id profile id, or {@code ""} for Default
+     * @return the matching profile, or {@code null} if no profile has this id
+     */
+    public static ClaudeProfile findById(String id) {
+        if (id == null || id.isBlank()) {
+            return getDefaultProfile();
+        }
+        return getProfiles().stream().filter(p -> p.getId().equals(id)).findFirst().orElse(null);
     }
 
     // -------------------------------------------------------------------------

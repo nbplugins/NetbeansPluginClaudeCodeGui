@@ -1,0 +1,9 @@
+{
+  "model": "gpt-5-codex",
+  "max_tokens": 512,
+  "messages": [{"role": "user", "content": "search the web"}],
+  "tools": [{
+    "type": "web_search_20250305",
+    "name": "web_search"
+  }]
+}

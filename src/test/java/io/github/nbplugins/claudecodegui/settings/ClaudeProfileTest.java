@@ -125,6 +125,67 @@ class ClaudeProfileTest {
         assertEquals(ConnectionType.CLAUDE_API, p.computeConnectionType());
     }
 
+    @Test
+    void computeConnectionType_openaiSubscription_isOpenaiSubscription() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setOpenaiSubscription(true);
+        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.computeConnectionType());
+    }
+
+    @Test
+    void computeConnectionType_openaiSubscriptionTakesPrecedenceOverOpenaiProxy() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setOpenaiProxy(true);
+        p.setOpenaiSubscription(true);
+        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.computeConnectionType());
+    }
+
+    // -------------------------------------------------------------------------
+    // ChatGPT OAuth state
+    // -------------------------------------------------------------------------
+
+    @Test
+    void isSignedIntoChatgpt_falseByDefault() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        assertFalse(p.isSignedIntoChatgpt());
+    }
+
+    @Test
+    void isSignedIntoChatgpt_trueWhenAccessAndRefreshTokenPresent() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setChatgptAccessToken("access");
+        p.setChatgptRefreshToken("refresh");
+        assertTrue(p.isSignedIntoChatgpt());
+    }
+
+    @Test
+    void isSignedIntoChatgpt_falseWhenOnlyAccessTokenPresent() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setChatgptAccessToken("access");
+        assertFalse(p.isSignedIntoChatgpt());
+    }
+
+    @Test
+    void clearChatgptAuth_clearsAllTokenFieldsButNotFlag() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setOpenaiSubscription(true);
+        p.setChatgptAccessToken("access");
+        p.setChatgptRefreshToken("refresh");
+        p.setChatgptAccountId("acct-1");
+        p.setChatgptTokenExpiresAt("2026-01-01T00:00:00Z");
+        p.setChatgptEmail("user@example.com");
+
+        p.clearChatgptAuth();
+
+        assertFalse(p.isSignedIntoChatgpt());
+        assertEquals("", p.getChatgptAccessToken());
+        assertEquals("", p.getChatgptRefreshToken());
+        assertEquals("", p.getChatgptAccountId());
+        assertEquals("", p.getChatgptTokenExpiresAt());
+        assertEquals("", p.getChatgptEmail());
+        assertTrue(p.isOpenaiSubscription(), "clearChatgptAuth must not change the connection-type flag");
+    }
+
     // -------------------------------------------------------------------------
     // toEnvVars — auth
     // -------------------------------------------------------------------------
@@ -156,6 +217,16 @@ class ClaudeProfileTest {
         assertFalse(env.containsKey("ANTHROPIC_API_KEY"),
                 "CLAUDE_API must not inject ANTHROPIC_API_KEY as env var");
         assertFalse(env.containsKey("ANTHROPIC_BASE_URL"));
+    }
+
+    @Test
+    void toEnvVars_openaiSubscription_noAuthVars() {
+        ClaudeProfile p = ClaudeProfile.createNamed("P");
+        p.setOpenaiSubscription(true);
+        Map<String, String> env = p.toEnvVars();
+        assertFalse(env.containsKey("ANTHROPIC_AUTH_TOKEN"));
+        assertFalse(env.containsKey("ANTHROPIC_BASE_URL"));
+        assertFalse(env.containsKey("CLAUDE_CODE_OAUTH_TOKEN"));
     }
 
     @Test

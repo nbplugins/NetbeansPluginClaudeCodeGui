@@ -57,7 +57,15 @@ public final class ClaudeProfile {
          * The proxy is started by {@code ClaudeProcess} and injects its own
          * {@code ANTHROPIC_BASE_URL}; no env vars are set here.
          */
-        OPENAI_PROXY
+        OPENAI_PROXY,
+        /**
+         * ChatGPT Plus/Pro/Team subscription (OAuth login), routed through the
+         * internal proxy to OpenAI's Codex Responses API at
+         * {@code chatgpt.com/backend-api/codex/responses}. Like
+         * {@link #OPENAI_PROXY}, the proxy is started by {@code ClaudeProcess}
+         * and injects its own {@code ANTHROPIC_BASE_URL}; no env vars are set here.
+         */
+        OPENAI_SUBSCRIPTION
     }
 
     /**
@@ -170,6 +178,56 @@ public final class ClaudeProfile {
      */
     private boolean openaiProxy;
 
+    /**
+     * When {@code true}, this profile uses a ChatGPT Plus/Pro/Team subscription
+     * (OAuth login) routed through the internal proxy to OpenAI's Codex backend.
+     * {@link #computeConnectionType()} returns {@link ConnectionType#OPENAI_SUBSCRIPTION}.
+     * The {@code chatgpt*} fields hold the OAuth token set obtained via
+     * {@code io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient}.
+     */
+    private boolean openaiSubscription;
+
+    /**
+     * ChatGPT OAuth access token. Short-lived (hours); refreshed automatically
+     * by {@code ChatGptTokenManager} using {@link #chatgptRefreshToken}.
+     *
+     * <p>Stored as plain text via {@link ClaudeProfileStore}, same as
+     * {@link #apiKey} and {@link #token} — this codebase has no OS keychain
+     * integration, so no OAuth credential here receives stronger protection
+     * than any other credential field.
+     */
+    private String chatgptAccessToken;
+
+    /**
+     * ChatGPT OAuth refresh token, used to obtain new access tokens once
+     * {@link #chatgptAccessToken} expires. OpenAI's token endpoint may rotate
+     * this value on refresh, in which case the new value replaces this field.
+     * Same plaintext-storage caveat as {@link #chatgptAccessToken}.
+     */
+    private String chatgptRefreshToken;
+
+    /**
+     * {@code chatgpt_account_id} claim extracted from the OAuth {@code id_token},
+     * sent as the {@code ChatGPT-Account-Id} header on every Codex request.
+     */
+    private String chatgptAccountId;
+
+    /**
+     * Expiry instant of {@link #chatgptAccessToken}, as an ISO-8601 string
+     * (see {@link java.time.Instant#toString()}). Stored as a string rather
+     * than a raw {@code long} for human-debuggability of the persisted JSON,
+     * consistent with this class's plain-String field convention. Blank when
+     * not signed in.
+     */
+    private String chatgptTokenExpiresAt;
+
+    /**
+     * {@code email} claim extracted from the OAuth {@code id_token}, if present.
+     * Used only for the "Signed in as ..." status label; falls back to
+     * {@link #chatgptAccountId} when blank.
+     */
+    private String chatgptEmail;
+
     // -------------------------------------------------------------------------
     // No-arg constructor (Jackson)
     // -------------------------------------------------------------------------
@@ -190,6 +248,11 @@ public final class ClaudeProfile {
         this.customModels  = new ArrayList<>();
         this.extraCliArgs  = "";
         this.storageDir    = "";
+        this.chatgptAccessToken    = "";
+        this.chatgptRefreshToken   = "";
+        this.chatgptAccountId      = "";
+        this.chatgptTokenExpiresAt = "";
+        this.chatgptEmail          = "";
     }
 
     // -------------------------------------------------------------------------
@@ -248,6 +311,9 @@ public final class ClaudeProfile {
      * @return the connection type inferred from current field values
      */
     public ConnectionType computeConnectionType() {
+        if (openaiSubscription) {
+            return ConnectionType.OPENAI_SUBSCRIPTION;
+        }
         if (openaiProxy) {
             return ConnectionType.OPENAI_PROXY;
         }
@@ -288,7 +354,8 @@ public final class ClaudeProfile {
                 env.put("ANTHROPIC_AUTH_TOKEN", blankToEmpty(apiKey));
                 env.put("ANTHROPIC_BASE_URL", blankToEmpty(baseUrl));
             }
-            case OPENAI_PROXY  -> { /* ANTHROPIC_BASE_URL is injected by ClaudeProcess after proxy start */ }
+            case OPENAI_PROXY, OPENAI_SUBSCRIPTION ->
+                    { /* ANTHROPIC_BASE_URL is injected by ClaudeProcess after proxy start */ }
             default            -> { /* CLAUDE_MANAGED — nothing to inject */ }
         }
 
@@ -609,6 +676,67 @@ public final class ClaudeProfile {
 
     /** Sets whether this profile uses the internal OpenAI-compatible proxy. */
     public void setOpenaiProxy(boolean openaiProxy) { this.openaiProxy = openaiProxy; }
+
+    /** Returns {@code true} if this profile uses a ChatGPT subscription (OAuth) via the internal proxy. */
+    public boolean isOpenaiSubscription() { return openaiSubscription; }
+
+    /** Sets whether this profile uses a ChatGPT subscription (OAuth) via the internal proxy. */
+    public void setOpenaiSubscription(boolean openaiSubscription) { this.openaiSubscription = openaiSubscription; }
+
+    /** Returns the ChatGPT OAuth access token; blank when not signed in. */
+    public String getChatgptAccessToken() { return blankToEmpty(chatgptAccessToken); }
+
+    /** Sets the ChatGPT OAuth access token. */
+    public void setChatgptAccessToken(String chatgptAccessToken) { this.chatgptAccessToken = chatgptAccessToken; }
+
+    /** Returns the ChatGPT OAuth refresh token; blank when not signed in. */
+    public String getChatgptRefreshToken() { return blankToEmpty(chatgptRefreshToken); }
+
+    /** Sets the ChatGPT OAuth refresh token. */
+    public void setChatgptRefreshToken(String chatgptRefreshToken) { this.chatgptRefreshToken = chatgptRefreshToken; }
+
+    /** Returns the {@code chatgpt_account_id} claim, sent as the {@code ChatGPT-Account-Id} header. */
+    public String getChatgptAccountId() { return blankToEmpty(chatgptAccountId); }
+
+    /** Sets the {@code chatgpt_account_id} claim. */
+    public void setChatgptAccountId(String chatgptAccountId) { this.chatgptAccountId = chatgptAccountId; }
+
+    /** Returns the access-token expiry instant as an ISO-8601 string; blank when not signed in. */
+    public String getChatgptTokenExpiresAt() { return blankToEmpty(chatgptTokenExpiresAt); }
+
+    /** Sets the access-token expiry instant as an ISO-8601 string. */
+    public void setChatgptTokenExpiresAt(String chatgptTokenExpiresAt) { this.chatgptTokenExpiresAt = chatgptTokenExpiresAt; }
+
+    /** Returns the {@code email} claim from the OAuth id_token, if present. */
+    public String getChatgptEmail() { return blankToEmpty(chatgptEmail); }
+
+    /** Sets the {@code email} claim from the OAuth id_token. */
+    public void setChatgptEmail(String chatgptEmail) { this.chatgptEmail = chatgptEmail; }
+
+    /**
+     * Returns {@code true} when this profile holds a usable ChatGPT OAuth
+     * token set (access + refresh token both present).
+     *
+     * @return {@code true} if signed in to ChatGPT
+     */
+    @JsonIgnore
+    public boolean isSignedIntoChatgpt() {
+        return !getChatgptAccessToken().isBlank() && !getChatgptRefreshToken().isBlank();
+    }
+
+    /**
+     * Clears all ChatGPT OAuth token fields (access token, refresh token,
+     * account id, expiry, email), leaving {@link #openaiSubscription} untouched.
+     * Used by the "Sign out" action and when switching away from the
+     * {@link ConnectionType#OPENAI_SUBSCRIPTION} connection type.
+     */
+    public void clearChatgptAuth() {
+        this.chatgptAccessToken    = "";
+        this.chatgptRefreshToken   = "";
+        this.chatgptAccountId      = "";
+        this.chatgptTokenExpiresAt = "";
+        this.chatgptEmail          = "";
+    }
 
     // -------------------------------------------------------------------------
     // Object

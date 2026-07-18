@@ -25,7 +25,9 @@ public class BasicTextContextMenu {
 
     /**
      * Creates a read-only JPopupMenu with Select All and Copy.
-     * Copy is enabled only when text is selected (checked when menu opens).
+     * If nothing is selected, Copy copies the whole text (handy for status/error
+     * fields where the user right-clicks without first dragging a selection).
+     * Copy is enabled when the component has non-blank content.
      *
      * @param tc the text component whose actions the menu items delegate to
      * @return the configured popup menu
@@ -39,11 +41,17 @@ public class BasicTextContextMenu {
 
         JMenuItem copy = new JMenuItem("Copy");
         copy.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK));
-        copy.addActionListener(e -> tc.copy());
+        copy.addActionListener(e -> {
+            if (tc.getSelectionStart() == tc.getSelectionEnd()) {
+                tc.selectAll();
+            }
+            tc.copy();
+        });
 
         menu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
             @Override public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) {
-                copy.setEnabled(tc.getSelectionStart() != tc.getSelectionEnd());
+                String text = tc.getText();
+                copy.setEnabled(text != null && !text.isBlank());
             }
             @Override public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) {}
             @Override public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) {}

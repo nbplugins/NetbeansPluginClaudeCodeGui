@@ -50,6 +50,19 @@ public interface ClaudeCodeStatusService {
     void registerOpenAIProxy(String uuid, String baseUrl, String apiKey, ProxyConfiguration proxy);
 
     /**
+     * Registers a ChatGPT-subscription proxy session, routed to OpenAI's
+     * Codex Responses API. Called by {@code ClaudeProcess} at session start.
+     *
+     * @param uuid        unique session identifier
+     * @param profileId   owning profile id, used to re-fetch the live profile for token refresh
+     * @param accessToken ChatGPT OAuth access token
+     * @param accountId   {@code chatgpt_account_id} claim
+     * @param proxy       proxy settings from the profile
+     */
+    void registerChatgptSubscriptionProxy(String uuid, String profileId, String accessToken,
+            String accountId, ProxyConfiguration proxy);
+
+    /**
      * Deregisters an OpenAI-compatible proxy session.
      * Called by {@code ClaudeProcess} at session stop.
      *

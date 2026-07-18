@@ -179,8 +179,38 @@ public final class ClaudeProcess {
             }
         }
 
+        // ChatGPT subscription: pre-emptively refresh the OAuth token, register the
+        // session, and inject ANTHROPIC_BASE_URL pointing to the internal Codex proxy.
+        if (profile != null
+                && profile.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
+            ClaudeCodeStatusService mcpSvc = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
+            if (mcpSvc != null && mcpSvc.isServerRunning()) {
+                try {
+                    String accessToken = new io.github.nbplugins.claudecodegui.chatgptauth.ChatGptTokenManager()
+                            .getValidAccessToken(profile);
+                    String uuid = UUID.randomUUID().toString();
+                    mcpSvc.registerChatgptSubscriptionProxy(uuid, profile.getId(), accessToken,
+                            profile.getChatgptAccountId(),
+                            io.github.nbplugins.claudecodegui.settings.ProxyConfiguration.from(profile));
+                    openAIProxyUuid = uuid;
+                    env.put("ANTHROPIC_BASE_URL",
+                            "http://127.0.0.1:" + mcpSvc.getServerPort() + "/openai-proxy/" + uuid);
+                    env.put("ANTHROPIC_AUTH_TOKEN", "sk-proxy-internal");
+                    LOG.info("ChatGPT subscription proxy registered: uuid=" + uuid
+                            + ", profile=" + profile.getName());
+                } catch (io.github.nbplugins.claudecodegui.chatgptauth.OAuthException e) {
+                    LOG.warning("ChatGPT subscription auth failed at session start: " + e.getMessage());
+                    throw new IOException("ChatGPT sign-in expired — please re-authenticate in Profile settings: "
+                            + e.getMessage(), e);
+                }
+            } else {
+                LOG.warning("ChatGPT subscription proxy: MCP server not running — proxy cannot be started");
+            }
+        }
+
         boolean apiKeyHelper = profile != null && !profile.getApiKey().isBlank() && profile.getBaseUrl().isBlank()
-                && profile.computeConnectionType() != ClaudeProfile.ConnectionType.OPENAI_PROXY;
+                && profile.computeConnectionType() != ClaudeProfile.ConnectionType.OPENAI_PROXY
+                && profile.computeConnectionType() != ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION;
         LOG.info("Starting Claude: profile=" + (profile != null ? profile.getName() + " (" + profile.computeConnectionType() + ")" : "Default")
                 + ", apiKeyHelper=" + (apiKeyHelper ? "SET" : "NOT SET")
                 + ", ANTHROPIC_AUTH_TOKEN=" + (!env.getOrDefault("ANTHROPIC_AUTH_TOKEN", "").isBlank() ? "SET" : "NOT SET")
