@@ -1,0 +1,18 @@
+{
+  "id": "resp_def456",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {
+      "type": "reasoning",
+      "summary": [{"type": "summary_text", "text": "thinking about it..."}]
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_9",
+      "name": "read_file",
+      "arguments": "{\"path\":\"/tmp/test.txt\"}"
+    }
+  ],
+  "usage": {"input_tokens": 20, "output_tokens": 8}
+}

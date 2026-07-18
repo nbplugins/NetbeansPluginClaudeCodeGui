@@ -1,0 +1,13 @@
+{
+  "id": "resp_abc123",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "output_text", "text": "Hello from Codex"}]
+    }
+  ],
+  "usage": {"input_tokens": 12, "output_tokens": 5}
+}

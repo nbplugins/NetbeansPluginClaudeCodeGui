@@ -170,6 +170,23 @@ public class MCPSseServer {
     }
 
     /**
+     * Registers a ChatGPT-subscription proxy session, routed to OpenAI's
+     * Codex Responses API instead of the generic Chat Completions API.
+     *
+     * @param uuid        unique session identifier
+     * @param profileId   owning profile id, used to re-fetch the live profile for token refresh
+     * @param accessToken ChatGPT OAuth access token
+     * @param accountId   {@code chatgpt_account_id} claim
+     * @param proxy       proxy settings from the profile (used by the servlet's HttpClient)
+     */
+    public void registerChatgptSubscriptionProxy(String uuid, String profileId, String accessToken,
+            String accountId, ProxyConfiguration proxy) {
+        openAIProxies.put(uuid, new OpenAIProxyConfig(OpenAIProxyConfig.Mode.CHATGPT_CODEX,
+                "https://chatgpt.com/backend-api/codex", accessToken, proxy, profileId, accessToken, accountId));
+        LOGGER.log(Level.FINE, "ChatGPT subscription proxy registered: uuid={0}", uuid);
+    }
+
+    /**
      * Deregisters an OpenAI-compatible proxy session.
      *
      * @param uuid unique session identifier

@@ -264,6 +264,14 @@ public class ClaudeCodeInstaller extends ModuleInstall implements PropertyChange
     }
 
     @Override
+    public void registerChatgptSubscriptionProxy(String uuid, String profileId, String accessToken,
+            String accountId, io.github.nbplugins.claudecodegui.settings.ProxyConfiguration proxy) {
+        if (mcpServer != null) {
+            mcpServer.registerChatgptSubscriptionProxy(uuid, profileId, accessToken, accountId, proxy);
+        }
+    }
+
+    @Override
     public void deregisterOpenAIProxy(String uuid) {
         if (mcpServer != null) {
             mcpServer.deregisterOpenAIProxy(uuid);

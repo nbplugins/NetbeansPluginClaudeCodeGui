@@ -69,6 +69,7 @@ public final class ClaudeProfilesPanel extends JPanel {
     private static final String CONN_CLAUDE_API  = "Claude API";
     private static final String CONN_OTHER_API   = "Claude-compatible API";
     private static final String CONN_OPENAI_PROXY = "OpenAI-compatible API";
+    private static final String CONN_CHATGPT_SUBSCRIPTION = "ChatGPT Subscription";
 
     private static final String PROXY_CARD_NONE   = "proxy_none";
     private static final String PROXY_CARD_CUSTOM = "proxy_custom";
@@ -109,6 +110,20 @@ public final class ClaudeProfilesPanel extends JPanel {
     private JRadioButton rbOtherApi;
     /** Radio button for OpenAI-compatible proxy connection. */
     private JRadioButton rbOpenAIProxy;
+    /** Radio button for ChatGPT subscription (OAuth) connection. */
+    private JRadioButton rbChatgptSubscription;
+    /** Status label showing ChatGPT sign-in state ("Not signed in" / "Signed in as ..."). */
+    private JLabel chatgptStatusLabel;
+    /** Button that generates a sign-in link and copies it to the clipboard. Always enabled. */
+    private JButton chatgptSignInBtn;
+    /** Button that clears the stored ChatGPT OAuth tokens. */
+    private JButton chatgptSignOutBtn;
+    /** Field for pasting back the authorization code (or full redirect URL) after signing in in the browser. */
+    private JTextField chatgptCodeField;
+    /** Button that redeems {@link #chatgptCodeField}'s contents for tokens. */
+    private JButton chatgptSubmitCodeBtn;
+    /** The in-progress sign-in attempt, or {@code null} if none. Cancelled/replaced on each "Copy sign in link" click. */
+    private io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient.PendingSignIn currentChatgptSignIn;
     /** Info label shown when OpenAI proxy is selected. */
     /** Password field for the OAuth token. */
     private JPasswordField tokenField;
@@ -295,8 +310,10 @@ public final class ClaudeProfilesPanel extends JPanel {
         rbClaudeApi    = new JRadioButton(CONN_CLAUDE_API);
         rbOtherApi     = new JRadioButton(CONN_OTHER_API);
         rbOpenAIProxy  = new JRadioButton(CONN_OPENAI_PROXY);
+        rbChatgptSubscription = new JRadioButton(CONN_CHATGPT_SUBSCRIPTION);
         ButtonGroup bg = new ButtonGroup();
-        for (JRadioButton rb : new JRadioButton[]{rbManaged, rbSubscription, rbClaudeApi, rbOtherApi, rbOpenAIProxy}) {
+        for (JRadioButton rb : new JRadioButton[]{
+                rbManaged, rbSubscription, rbClaudeApi, rbOtherApi, rbOpenAIProxy, rbChatgptSubscription}) {
             bg.add(rb);
         }
 
@@ -345,6 +362,21 @@ public final class ClaudeProfilesPanel extends JPanel {
         rbClaudeApi.addActionListener(e    -> updateFieldEnablement());
         rbOtherApi.addActionListener(e     -> updateFieldEnablement());
         rbOpenAIProxy.addActionListener(e  -> updateFieldEnablement());
+        rbChatgptSubscription.addActionListener(e -> updateFieldEnablement());
+
+        chatgptStatusLabel = new JLabel("Not signed in");
+        chatgptSignInBtn  = new JButton("Copy sign in link");
+        chatgptSignOutBtn = new JButton("Sign out");
+        chatgptSignInBtn.addActionListener(e -> onChatgptSignIn());
+        chatgptSignOutBtn.addActionListener(e -> onChatgptSignOut());
+
+        // Hidden until a sign-in link has been generated; user pastes back the code
+        // (or the full redirect URL) they get after completing sign-in in their own browser.
+        chatgptCodeField = new JTextField(18);
+        chatgptCodeField.setVisible(false);
+        chatgptSubmitCodeBtn = new JButton("Complete Sign-in");
+        chatgptSubmitCodeBtn.setVisible(false);
+        chatgptSubmitCodeBtn.addActionListener(e -> onChatgptSubmitCode());
 
         // Grid: col0=radio, col1=label, col2=field(fill), col3=button
         JPanel grid = new JPanel(new GridBagLayout());
@@ -384,6 +416,16 @@ public final class ClaudeProfilesPanel extends JPanel {
         // row 4: rbOpenAIProxy — fields (baseUrlField, apiKeyField) are shared with rows 2-3
         grid.add(rbOpenAIProxy, inlineRbGbc(0, 4));
 
+        // row 5: rbChatgptSubscription + status label + [Sign in] + [Sign out]
+        grid.add(rbChatgptSubscription, inlineRbGbc(0, 5));
+        grid.add(chatgptStatusLabel, inlineLblGbc(1, 5));
+        grid.add(chatgptSignInBtn, inlineBtnGbc(2, 5));
+        grid.add(chatgptSignOutBtn, inlineBtnGbc(3, 5));
+
+        // row 6: pasted code field + Complete Sign-in button, hidden until a link is generated
+        grid.add(chatgptCodeField, inlineFieldGbc(1, 6));
+        grid.add(chatgptSubmitCodeBtn, inlineBtnGbc(2, 6));
+
         JPanel outer = new JPanel(new BorderLayout(0, 4));
         outer.add(new JLabel("Connection Type:"), BorderLayout.NORTH);
         outer.add(grid, BorderLayout.CENTER);
@@ -391,18 +433,33 @@ public final class ClaudeProfilesPanel extends JPanel {
     }
 
     private void updateFieldEnablement() {
-        boolean sub       = rbSubscription.isSelected();
-        boolean api       = rbClaudeApi.isSelected() || rbOtherApi.isSelected() || rbOpenAIProxy.isSelected();
-        boolean otherApi  = rbOtherApi.isSelected();
-        boolean openai    = rbOpenAIProxy.isSelected();
+        boolean sub          = rbSubscription.isSelected();
+        boolean chatgptSub    = rbChatgptSubscription.isSelected();
+        boolean api          = rbClaudeApi.isSelected() || rbOtherApi.isSelected() || rbOpenAIProxy.isSelected();
+        boolean otherApi     = rbOtherApi.isSelected();
+        boolean openai       = rbOpenAIProxy.isSelected();
         tokenField.setEnabled(sub);
         tokenShowBtn.setEnabled(sub);
-        apiKeyField.setEnabled(api);
-        apiKeyShowBtn.setEnabled(api);
-        baseUrlField.setEditable(otherApi || openai);
+        apiKeyField.setEnabled(api && !chatgptSub);
+        apiKeyShowBtn.setEnabled(api && !chatgptSub);
+        baseUrlField.setEditable((otherApi || openai) && !chatgptSub);
         if (claudeAiBtn != null) {
             claudeAiBtn.setVisible(sub);
             consoleAnthropicBtn.setVisible(rbClaudeApi.isSelected());
+        }
+        chatgptStatusLabel.setVisible(chatgptSub);
+        chatgptSignInBtn.setVisible(chatgptSub);
+        chatgptSignOutBtn.setVisible(chatgptSub);
+        if (!chatgptSub) {
+            chatgptCodeField.setVisible(false);
+            chatgptSubmitCodeBtn.setVisible(false);
+            if (currentChatgptSignIn != null) {
+                currentChatgptSignIn.close();
+                currentChatgptSignIn = null;
+            }
+        }
+        if (chatgptSub) {
+            refreshChatgptStatusLabel(currentFormProfile);
         }
         updateModelAliasesBtn();
     }
@@ -411,7 +468,111 @@ public final class ClaudeProfilesPanel extends JPanel {
         boolean other  = rbOtherApi.isSelected() || rbOpenAIProxy.isSelected();
         boolean hasKey = !new String(apiKeyField.getPassword()).isBlank();
         boolean hasUrl = !baseUrlField.getText().isBlank();
-        modelAliasesBtn.setEnabled(other && hasKey && hasUrl);
+        if (rbChatgptSubscription.isSelected()) {
+            modelAliasesBtn.setEnabled(currentFormProfile != null && currentFormProfile.isSignedIntoChatgpt());
+        } else {
+            modelAliasesBtn.setEnabled(other && hasKey && hasUrl);
+        }
+    }
+
+    private void refreshChatgptStatusLabel(ClaudeProfile p) {
+        if (p == null) return;
+        if (p.isSignedIntoChatgpt()) {
+            String who = !p.getChatgptEmail().isBlank() ? p.getChatgptEmail() : p.getChatgptAccountId();
+            chatgptStatusLabel.setText("Signed in as " + who);
+        } else {
+            chatgptStatusLabel.setText("Not signed in");
+        }
+        chatgptSignOutBtn.setEnabled(p.isSignedIntoChatgpt());
+    }
+
+    private void onChatgptSignIn() {
+        ClaudeProfile p = currentFormProfile;
+        if (p == null) return;
+
+        // Regenerating cancels whatever attempt was pending — no timeout to wait out.
+        if (currentChatgptSignIn != null) {
+            currentChatgptSignIn.close();
+            currentChatgptSignIn = null;
+        }
+
+        try {
+            currentChatgptSignIn = new io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient()
+                    .beginSignIn();
+        } catch (io.github.nbplugins.claudecodegui.chatgptauth.OAuthException ex) {
+            JOptionPane.showMessageDialog(this,
+                    "Could not start ChatGPT sign-in: " + ex.getMessage(),
+                    "Sign-in Failed", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new java.awt.datatransfer.StringSelection(currentChatgptSignIn.authorizeUrl()), null);
+        chatgptStatusLabel.setText(
+                "Sign-in link copied — open it in your browser, sign in, then paste the code below.");
+        chatgptCodeField.setText("");
+        chatgptCodeField.setVisible(true);
+        chatgptSubmitCodeBtn.setVisible(true);
+    }
+
+    private void onChatgptSubmitCode() {
+        ClaudeProfile p = currentFormProfile;
+        if (p == null || currentChatgptSignIn == null) return;
+        String pasted = chatgptCodeField.getText();
+        ProxyConfiguration proxyConfig = new ProxyConfiguration(
+                rbProxyCustom.isSelected() ? ClaudeProfile.ProxyMode.CUSTOM
+                        : rbProxyNone.isSelected() ? ClaudeProfile.ProxyMode.NO_PROXY
+                        : ClaudeProfile.ProxyMode.SYSTEM_MANAGED,
+                httpProxyField.getText().trim(), httpsProxyField.getText().trim(), noProxyField.getText().trim());
+        io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient.PendingSignIn pendingSignIn =
+                currentChatgptSignIn;
+
+        chatgptSubmitCodeBtn.setEnabled(false);
+        new javax.swing.SwingWorker<io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient.TokenSet,
+                Void>() {
+            @Override
+            protected io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient.TokenSet doInBackground()
+                    throws Exception {
+                return pendingSignIn.completeWithCode(pasted, proxyConfig);
+            }
+
+            @Override
+            protected void done() {
+                chatgptSubmitCodeBtn.setEnabled(true);
+                try {
+                    io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient.TokenSet tokens = get();
+                    p.setChatgptAccessToken(tokens.accessToken());
+                    p.setChatgptRefreshToken(tokens.refreshToken());
+                    p.setChatgptAccountId(tokens.accountId());
+                    p.setChatgptEmail(tokens.email());
+                    p.setChatgptTokenExpiresAt(tokens.expiresAt().toString());
+                    pendingSignIn.close();
+                    if (currentChatgptSignIn == pendingSignIn) {
+                        currentChatgptSignIn = null;
+                    }
+                    chatgptCodeField.setText("");
+                    chatgptCodeField.setVisible(false);
+                    chatgptSubmitCodeBtn.setVisible(false);
+                    refreshChatgptStatusLabel(p);
+                    updateModelAliasesBtn();
+                } catch (Exception ex) {
+                    // Leave the pending attempt and code field open — user may just have a typo to fix.
+                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                    LOG.warning("ChatGPT sign-in code exchange failed: " + cause.getMessage());
+                    JOptionPane.showMessageDialog(ClaudeProfilesPanel.this,
+                            "Could not complete ChatGPT sign-in: " + cause.getMessage(),
+                            "Sign-in Failed", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void onChatgptSignOut() {
+        ClaudeProfile p = currentFormProfile;
+        if (p == null) return;
+        p.clearChatgptAuth();
+        refreshChatgptStatusLabel(p);
+        updateModelAliasesBtn();
     }
 
     private JPanel buildProxySection() {
@@ -593,31 +754,45 @@ public final class ClaudeProfilesPanel extends JPanel {
             p.setApiKey("");
             p.setBaseUrl("");
             p.setOpenaiProxy(false);
+            p.setOpenaiSubscription(false);
         } else if (rbClaudeApi.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setToken("");
             p.setBaseUrl("");
             p.setOpenaiProxy(false);
+            p.setOpenaiSubscription(false);
         } else if (rbOtherApi.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setBaseUrl(baseUrlField.getText().trim());
             p.setToken("");
             p.setOpenaiProxy(false);
+            p.setOpenaiSubscription(false);
         } else if (rbOpenAIProxy.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setBaseUrl(baseUrlField.getText().trim());
             p.setToken("");
             p.setOpenaiProxy(true);
+            p.setOpenaiSubscription(false);
+        } else if (rbChatgptSubscription.isSelected()) {
+            // chatgpt* token fields are written directly by the sign-in/sign-out button
+            // handlers, not by this text-field flush — they are opaque credentials, not
+            // user-editable text, so they don't round-trip through a visible field.
+            p.setToken("");
+            p.setApiKey("");
+            p.setBaseUrl("");
+            p.setOpenaiProxy(false);
+            p.setOpenaiSubscription(true);
         } else {
             p.setToken("");
             p.setApiKey("");
             p.setBaseUrl("");
             p.setOpenaiProxy(false);
+            p.setOpenaiSubscription(false);
         }
 
         // Clear model aliases/custom models when switching to a connection type that does not
         // support them — prevents stale aliases from the old type appearing in the model combo box.
-        if (!rbOtherApi.isSelected() && !rbOpenAIProxy.isSelected()) {
+        if (!rbOtherApi.isSelected() && !rbOpenAIProxy.isSelected() && !rbChatgptSubscription.isSelected()) {
             p.setModelAliases(null);
             p.setCustomModels(null);
         }
@@ -689,9 +864,11 @@ public final class ClaudeProfilesPanel extends JPanel {
                 apiKeyField.setText(p.getApiKey());
                 baseUrlField.setText(p.getBaseUrl());
             }
+            case OPENAI_SUBSCRIPTION -> rbChatgptSubscription.setSelected(true);
             default -> rbManaged.setSelected(true);
         }
         updateFieldEnablement();
+        refreshChatgptStatusLabel(p);
 
         // Proxy
         switch (p.getProxyMode()) {
@@ -814,11 +991,21 @@ public final class ClaudeProfilesPanel extends JPanel {
         for (String id : p.getCustomModels()) {
             existing.add(new ModelAlias(id, null, "custom"));
         }
-        ModelAliasesDialog dlg = new ModelAliasesDialog(
-                this,
-                p.getBaseUrl(),
-                p.getApiKey(),
-                existing);
+        ModelAliasesDialog dlg;
+        if (p.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
+            ModelAliasesDialog.ModelFetcher fetcher = () -> {
+                String token = new io.github.nbplugins.claudecodegui.chatgptauth.ChatGptTokenManager()
+                        .getValidAccessToken(p);
+                java.net.http.HttpClient httpClient = ProxyConfiguration.from(p).applyTo(
+                        java.net.http.HttpClient.newBuilder()
+                                .connectTimeout(java.time.Duration.ofSeconds(30))).build();
+                return new io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient()
+                        .fetchModels(httpClient, token, p.getChatgptAccountId());
+            };
+            dlg = new ModelAliasesDialog(this, fetcher, existing);
+        } else {
+            dlg = new ModelAliasesDialog(this, p.getBaseUrl(), p.getApiKey(), existing);
+        }
         dlg.setVisible(true);
         java.util.List<ModelAlias> chosen = dlg.getModels();
         if (chosen != null) {

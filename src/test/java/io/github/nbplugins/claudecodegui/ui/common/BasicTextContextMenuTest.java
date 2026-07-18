@@ -30,10 +30,8 @@ class BasicTextContextMenuTest {
     }
 
     @Test
-    void createReadOnly_copyDisabledWhenNoSelection() {
-        JTextComponent tc = new JTextField("hello");
-        tc.setSelectionStart(0);
-        tc.setSelectionEnd(0);
+    void createReadOnly_copyDisabledWhenTextIsBlank() {
+        JTextComponent tc = new JTextField("");
         JPopupMenu menu = BasicTextContextMenu.createReadOnly(tc);
 
         // Simulate menu becoming visible
@@ -47,6 +45,31 @@ class BasicTextContextMenuTest {
                 .map(c -> (JMenuItem) c)
                 .findFirst().orElseThrow();
         assertFalse(copy.isEnabled());
+    }
+
+    /**
+     * Regression: earlier this required a selection to enable Copy. It now copies
+     * the whole text when nothing is selected — handy for read-only status/error
+     * fields (e.g. {@code ModelAliasesDialog}'s fetch-error area) where the user
+     * right-clicks without first dragging a selection.
+     */
+    @Test
+    void createReadOnly_copyEnabledWithoutSelection_whenTextPresent() {
+        JTextComponent tc = new JTextField("hello");
+        tc.setSelectionStart(0);
+        tc.setSelectionEnd(0);
+        JPopupMenu menu = BasicTextContextMenu.createReadOnly(tc);
+
+        javax.swing.event.PopupMenuEvent evt = new javax.swing.event.PopupMenuEvent(menu);
+        for (javax.swing.event.PopupMenuListener l : menu.getPopupMenuListeners()) {
+            l.popupMenuWillBecomeVisible(evt);
+        }
+
+        JMenuItem copy = Arrays.stream(menu.getComponents())
+                .filter(c -> c instanceof JMenuItem && "Copy".equals(((JMenuItem) c).getText()))
+                .map(c -> (JMenuItem) c)
+                .findFirst().orElseThrow();
+        assertTrue(copy.isEnabled());
     }
 
     @Test

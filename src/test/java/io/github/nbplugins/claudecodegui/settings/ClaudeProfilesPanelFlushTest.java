@@ -139,6 +139,77 @@ class ClaudeProfilesPanelFlushTest {
                 "customModels must be kept when connection type supports them");
     }
 
+    @Test
+    void flush_chatgptSubscription_setsFlagAndClearsOtherAuthFields() throws Exception {
+        ClaudeProfile work = ClaudeProfile.createNamed("Work");
+        work.setApiKey("sk-old");
+        work.setBaseUrl("https://old.example.com");
+
+        ClaudeProfilesPanel panel = new ClaudeProfilesPanel();
+        setField(panel, "profiles", new ArrayList<>(List.of(ClaudeProfile.createDefault(), work)));
+        rebuildCombo(panel);
+        invoke(panel, "loadProfileIntoForm", ClaudeProfile.class, work);
+
+        JRadioButton rbChatgptSubscription = getField(panel, "rbChatgptSubscription", JRadioButton.class);
+        rbChatgptSubscription.setSelected(true);
+
+        invoke(panel, "flushFormToCurrentProfile");
+
+        assertTrue(work.isOpenaiSubscription());
+        assertFalse(work.isOpenaiProxy());
+        assertEquals("", work.getApiKey());
+        assertEquals("", work.getBaseUrl());
+        assertEquals("", work.getToken());
+    }
+
+    /**
+     * Regression: {@code flushFormToCurrentProfile()} used to force-set
+     * {@code customModels} to a hardcoded Codex model list on switching to
+     * ChatGPT Subscription. Model discovery is now live (via "Model
+     * Aliases…" → Fetch), so the flush must leave {@code customModels}
+     * untouched.
+     */
+    @Test
+    void flush_chatgptSubscription_doesNotAutoPopulateCustomModels() throws Exception {
+        ClaudeProfile work = ClaudeProfile.createNamed("Work");
+
+        ClaudeProfilesPanel panel = new ClaudeProfilesPanel();
+        setField(panel, "profiles", new ArrayList<>(List.of(ClaudeProfile.createDefault(), work)));
+        rebuildCombo(panel);
+        invoke(panel, "loadProfileIntoForm", ClaudeProfile.class, work);
+
+        JRadioButton rbChatgptSubscription = getField(panel, "rbChatgptSubscription", JRadioButton.class);
+        rbChatgptSubscription.setSelected(true);
+
+        invoke(panel, "flushFormToCurrentProfile");
+
+        assertTrue(work.getCustomModels().isEmpty(),
+                "customModels must not be auto-populated with a hardcoded list");
+    }
+
+    @Test
+    void flush_switchingAwayFromChatgptSubscription_clearsFlag() throws Exception {
+        ClaudeProfile work = ClaudeProfile.createNamed("Work");
+        work.setOpenaiSubscription(true);
+        work.setChatgptAccessToken("access");
+        work.setChatgptRefreshToken("refresh");
+
+        ClaudeProfilesPanel panel = new ClaudeProfilesPanel();
+        setField(panel, "profiles", new ArrayList<>(List.of(ClaudeProfile.createDefault(), work)));
+        rebuildCombo(panel);
+        invoke(panel, "loadProfileIntoForm", ClaudeProfile.class, work);
+
+        JRadioButton rbManaged = getField(panel, "rbManaged", JRadioButton.class);
+        rbManaged.setSelected(true);
+
+        invoke(panel, "flushFormToCurrentProfile");
+
+        assertFalse(work.isOpenaiSubscription());
+        // Switching connection type does not sign the user out — chatgpt* tokens
+        // are only cleared explicitly via the "Sign out" button.
+        assertTrue(work.isSignedIntoChatgpt());
+    }
+
     // -------------------------------------------------------------------------
     // Reflection helpers
     // -------------------------------------------------------------------------
