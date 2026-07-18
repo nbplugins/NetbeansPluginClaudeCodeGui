@@ -65,7 +65,7 @@ public final class ClaudeProfilesPanel extends JPanel {
     // -------------------------------------------------------------------------
 
     private static final String CONN_MANAGED     = "Claude managed";
-    private static final String CONN_SUBSCRIPTION = "Subscription";
+    private static final String CONN_SUBSCRIPTION = "Claude Subscription";
     private static final String CONN_CLAUDE_API  = "Claude API";
     private static final String CONN_OTHER_API   = "Claude-compatible API";
     private static final String CONN_OPENAI_PROXY = "OpenAI-compatible API";
