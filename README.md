@@ -14,7 +14,7 @@ NetBeans Claude Code GUI is a NetBeans IDE plugin that embeds the Claude Code CL
 - **File attachments** — attach files via `@path` tokens with auto-completion popup, drag-and-drop, and clipboard paste support
 - **Multiple profiles** — run Claude Code under separate accounts or API keys for different projects, each with an isolated config directory, authentication, proxy, and model settings
 - **OpenAI-compatible proxy** — route Claude Code through any OpenAI-compatible provider (OpenAI, Azure OpenAI, Groq, DeepSeek, Ollama, LM Studio, and others) via a built-in translation proxy; no changes to Claude Code CLI required
-- **ChatGPT subscription sign-in** — route Claude Code through OpenAI's Codex backend using your ChatGPT Plus/Pro/Team subscription instead of an API key; sign in via a copy-link/paste-code flow, then pick from your account's live model list
+- **ChatGPT subscription sign-in** — route Claude Code through OpenAI's Codex backend using your ChatGPT Free, Go, Plus, Pro, or Team subscription instead of an API key; sign in via a copy-link/paste-code flow, then pick from your account's live model list
 - **Session management** — start new sessions, continue the last session, or resume a specific past session; sessions persist across IDE restarts
 - **Markdown Preview** — live-rendered markdown tab for plan files and MCP-initiated previews; includes a find bar (Ctrl+F) and font zoom (Alt+Scroll)
 - **Auto Plan Preview** — when Claude writes a plan file, a live preview tab opens automatically as soon as you accept the diff
