@@ -191,9 +191,12 @@ public class ClaudeSessionTab extends TopComponent
         boolean ctrl = (e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0;
         if (!ctrl) return false;
         switch (e.getKeyCode()) {
-            case KeyEvent.VK_0:      SwingUtilities.invokeLater(this::resetZoom); return true;
-            case KeyEvent.VK_MINUS:  SwingUtilities.invokeLater(this::zoomOut);   return true;
-            case KeyEvent.VK_EQUALS: SwingUtilities.invokeLater(this::zoomIn);    return true;
+            case KeyEvent.VK_0:
+            case KeyEvent.VK_NUMPAD0:  SwingUtilities.invokeLater(this::resetZoom); return true;
+            case KeyEvent.VK_MINUS:
+            case KeyEvent.VK_SUBTRACT: SwingUtilities.invokeLater(this::zoomOut);   return true;
+            case KeyEvent.VK_EQUALS:
+            case KeyEvent.VK_ADD:      SwingUtilities.invokeLater(this::zoomIn);    return true;
             default: return false;
         }
     };

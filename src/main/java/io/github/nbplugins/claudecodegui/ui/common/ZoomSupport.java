@@ -138,9 +138,12 @@ public final class ZoomSupport {
      * populated so the shortcuts work whether the component itself or a child has focus.
      */
     public static void bindZoomKeys(JComponent comp, Zoomable zoomable) {
-        bindKey(comp, KeyEvent.VK_0,      "zoom-reset", zoomable::resetZoom);
-        bindKey(comp, KeyEvent.VK_MINUS,  "zoom-out",   zoomable::zoomOut);
-        bindKey(comp, KeyEvent.VK_EQUALS, "zoom-in",    zoomable::zoomIn);
+        bindKey(comp, KeyEvent.VK_0,        "zoom-reset", zoomable::resetZoom);
+        bindKey(comp, KeyEvent.VK_NUMPAD0,  "zoom-reset", zoomable::resetZoom);
+        bindKey(comp, KeyEvent.VK_MINUS,    "zoom-out",   zoomable::zoomOut);
+        bindKey(comp, KeyEvent.VK_SUBTRACT, "zoom-out",   zoomable::zoomOut);
+        bindKey(comp, KeyEvent.VK_EQUALS,   "zoom-in",    zoomable::zoomIn);
+        bindKey(comp, KeyEvent.VK_ADD,      "zoom-in",    zoomable::zoomIn);
     }
 
     /** Returns a MouseAdapter that resets zoom on Alt+middle-click (button 2). */
