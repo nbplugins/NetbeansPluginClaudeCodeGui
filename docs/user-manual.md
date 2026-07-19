@@ -489,7 +489,7 @@ Select the authentication type using the radio buttons:
 | **Claude API** | API key | Obtain the key at [console.anthropic.com](https://console.anthropic.com) (requires an Anthropic Console account with API access). |
 | **Claude-compatible API** | API key + Base URL | Use the API key and base URL provided by your third-party provider (Anthropic-compatible endpoint). |
 | **OpenAI-compatible API** | API key + Base URL | Route Claude Code through any OpenAI-compatible provider. The plugin starts an internal proxy that translates Anthropic API calls to OpenAI Chat Completions format. See [OpenAI-compatible API](#openai-compatible-api) below. |
-| **ChatGPT Subscription** | Sign in via browser | Route Claude Code through OpenAI's Codex backend using a ChatGPT Plus/Pro/Team subscription instead of an API key. See [ChatGPT Subscription](#chatgpt-subscription) below. |
+| **ChatGPT Subscription** | Sign in via browser | Route Claude Code through OpenAI's Codex backend using a ChatGPT Free, Go, Plus, Pro, or Team subscription instead of an API key. See [ChatGPT Subscription](#chatgpt-subscription) below. |
 
 > **Note:** Changes to connection parameters (API key, Base URL) take effect only after restarting the session.
 
@@ -595,7 +595,7 @@ Without model aliases, Claude Code will send Anthropic model names (e.g. `claude
 
 ### ChatGPT Subscription
 
-Routes Claude Code through OpenAI's own Codex backend using your ChatGPT Plus/Pro/Team subscription, instead of an OpenAI API key. Like **OpenAI-compatible API**, this works via the plugin's internal proxy — no changes to Claude Code CLI are required.
+Routes Claude Code through OpenAI's own Codex backend using your ChatGPT Free, Go, Plus, Pro, or Team subscription, instead of an OpenAI API key. Like **OpenAI-compatible API**, this works via the plugin's internal proxy — no changes to Claude Code CLI are required.
 
 **How it works:**
 
