@@ -1,4 +1,4 @@
-# 1.3
+# 1.3.5 (2026-07-19)
 
 - Fixed Ctrl++/− terminal and Markdown Preview zoom shortcuts not working when using the numpad +/− keys
 - Renamed the "Subscription" connection type to "Claude Subscription" in Profile settings, to distinguish it from the new "ChatGPT Subscription" connection type
