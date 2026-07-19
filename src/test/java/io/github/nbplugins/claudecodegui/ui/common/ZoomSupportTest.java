@@ -251,6 +251,40 @@ class ZoomSupportTest {
         assertEquals(1, ins[0]);
     }
 
+    @Test
+    void bindZoomKeys_registersNumpadPlusMinusAndZeroInBothMaps() {
+        int[] resets = {0}, outs = {0}, ins = {0};
+        Zoomable z = new Zoomable() {
+            @Override public void zoomIn()    { ins[0]++; }
+            @Override public void zoomOut()   { outs[0]++; }
+            @Override public void resetZoom() { resets[0]++; }
+            @Override public int getZoomDelta() { return 0; }
+            @Override public int getMinDelta()  { return -8; }
+            @Override public int getMaxDelta()  { return 20; }
+        };
+        JLabel comp = new JLabel();
+        ZoomSupport.bindZoomKeys(comp, z);
+
+        int ctrl = InputEvent.CTRL_DOWN_MASK;
+        KeyStroke ctrlNumpad0 = KeyStroke.getKeyStroke(KeyEvent.VK_NUMPAD0,  ctrl);
+        KeyStroke ctrlNumMinus = KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, ctrl);
+        KeyStroke ctrlNumPlus  = KeyStroke.getKeyStroke(KeyEvent.VK_ADD,      ctrl);
+
+        for (int map : new int[]{JComponent.WHEN_FOCUSED, JComponent.WHEN_IN_FOCUSED_WINDOW}) {
+            assertEquals("zoom-reset", comp.getInputMap(map).get(ctrlNumpad0));
+            assertEquals("zoom-out",   comp.getInputMap(map).get(ctrlNumMinus));
+            assertEquals("zoom-in",    comp.getInputMap(map).get(ctrlNumPlus));
+        }
+
+        comp.getActionMap().get("zoom-reset").actionPerformed(null);
+        comp.getActionMap().get("zoom-out").actionPerformed(null);
+        comp.getActionMap().get("zoom-in").actionPerformed(null);
+
+        assertEquals(1, resets[0]);
+        assertEquals(1, outs[0]);
+        assertEquals(1, ins[0]);
+    }
+
     // --- createClickListener ---------------------------------------------------
 
     private static MouseEvent mouseButton(java.awt.Component src, int button, int modifiers) {
