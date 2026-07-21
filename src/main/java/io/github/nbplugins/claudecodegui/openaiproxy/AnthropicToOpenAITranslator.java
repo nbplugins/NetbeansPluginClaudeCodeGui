@@ -36,11 +36,48 @@ import java.util.Map;
  */
 public final class AnthropicToOpenAITranslator {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(AnthropicToOpenAITranslator.class.getName());
+
     static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static final int MAX_TOKENS_NON_CLAUDE = 16384;
 
     private AnthropicToOpenAITranslator() {}
+
+    /**
+     * Text substituted for a response that finished with no text and no tool
+     * calls — otherwise Claude Code silently returns to its idle prompt with
+     * no indication anything went wrong. See {@code AnthropicToCodexTranslator}'s
+     * identical helper for the Codex-path counterpart of this issue.
+     * {@code requestMessageCount}/{@code requestSizeBytes} describe the request
+     * that produced this empty response (0 when unknown), to help judge whether
+     * context length is the likely cause without needing to dig through logs.
+     */
+    static String emptyResponseNotice(String finishReason, int requestMessageCount, long requestSizeBytes) {
+        StringBuilder sb = new StringBuilder(
+                "[Proxy] The provider returned an empty response (no text, no tool calls)");
+        if (finishReason != null && !finishReason.isBlank()) {
+            sb.append(", finish_reason=").append(finishReason);
+        }
+        if (requestMessageCount > 0 || requestSizeBytes > 0) {
+            sb.append(". Last request: ").append(requestMessageCount).append(" messages, ")
+                    .append(formatBytes(requestSizeBytes));
+        }
+        sb.append(". This usually means the request was too large for the model's context/output"
+                + " limit. Try /compact, or start a new session.");
+        return sb.toString();
+    }
+
+    static String formatBytes(long bytes) {
+        if (bytes >= 1024 * 1024) {
+            return String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0));
+        }
+        if (bytes >= 1024) {
+            return String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        }
+        return bytes + " bytes";
+    }
 
     // -------------------------------------------------------------------------
     // Request translation
@@ -48,12 +85,48 @@ public final class AnthropicToOpenAITranslator {
 
     /**
      * Translates an Anthropic {@code POST /v1/messages} request body to an
-     * OpenAI {@code POST /chat/completions} request body.
+     * OpenAI {@code POST /chat/completions} request body, without a
+     * {@code prompt_cache_key} (see the two-arg overload).
      *
      * @param anthropicRequest parsed Anthropic request JSON
      * @return OpenAI-format request JSON
      */
     public static ObjectNode translateRequest(JsonNode anthropicRequest) {
+        return translateRequest(anthropicRequest, null);
+    }
+
+    /**
+     * Translates an Anthropic {@code POST /v1/messages} request body to an
+     * OpenAI {@code POST /chat/completions} request body, without experimental
+     * explicit prompt caching (see the three-arg overload).
+     *
+     * @param anthropicRequest parsed Anthropic request JSON
+     * @param promptCacheKey   stable per-conversation cache-routing key, sent
+     *                         as {@code prompt_cache_key}; {@code null}/blank
+     *                         omits the field
+     * @return OpenAI-format request JSON
+     */
+    public static ObjectNode translateRequest(JsonNode anthropicRequest, String promptCacheKey) {
+        return translateRequest(anthropicRequest, promptCacheKey, false);
+    }
+
+    /**
+     * Translates an Anthropic {@code POST /v1/messages} request body to an
+     * OpenAI {@code POST /chat/completions} request body.
+     *
+     * @param anthropicRequest         parsed Anthropic request JSON
+     * @param promptCacheKey           stable per-conversation cache-routing key, sent
+     *                                 as {@code prompt_cache_key}; {@code null}/blank
+     *                                 omits the field
+     * @param explicitPromptCaching    experimental (see {@link io.github.nbplugins.claudecodegui.settings.ModelAlias}):
+     *                                 when the resolved model parses as a GPT-family id, sends
+     *                                 {@code prompt_cache_options}/{@code prompt_cache_breakpoint}
+     *                                 (GPT-&ge;5.6) or {@code prompt_cache_retention: "24h"} (older
+     *                                 GPT models); no-op for non-GPT/unparseable model ids
+     * @return OpenAI-format request JSON
+     */
+    public static ObjectNode translateRequest(JsonNode anthropicRequest, String promptCacheKey,
+            boolean explicitPromptCaching) {
         ObjectNode openai = MAPPER.createObjectNode();
 
         // Model — pass as-is; user configures ANTHROPIC_DEFAULT_*_MODEL aliases
@@ -85,6 +158,27 @@ public final class AnthropicToOpenAITranslator {
             }
         }
 
+        // prompt_cache_key — stable per-conversation key improving cache-hit routing.
+        // Confirmed as a cross-provider convention (not OpenAI-exclusive): xAI's own
+        // /v1/chat/completions reference documents this identical field/purpose, so
+        // it's sent unconditionally regardless of which OpenAI-compatible backend
+        // the profile targets.
+        if (promptCacheKey != null && !promptCacheKey.isBlank()) {
+            openai.put("prompt_cache_key", promptCacheKey);
+        }
+
+        // Experimental explicit prompt caching (see ModelAlias#explicitPromptCaching).
+        // gptVersion is null for non-GPT/unparseable model ids — those are always a no-op here,
+        // regardless of the flag, since these are GPT-specific fields.
+        Double gptVersion = explicitPromptCaching
+                ? io.github.nbplugins.claudecodegui.settings.ModelAlias.parseGptVersion(model) : null;
+        boolean explicitBreakpoint = gptVersion != null && gptVersion >= 5.6;
+        if (explicitBreakpoint) {
+            openai.putObject("prompt_cache_options").put("mode", "explicit").put("ttl", "30m");
+        } else if (gptVersion != null) {
+            openai.put("prompt_cache_retention", "24h");
+        }
+
         // Messages
         ArrayNode messages = openai.putArray("messages");
 
@@ -95,7 +189,18 @@ public final class AnthropicToOpenAITranslator {
             if (!systemText.isBlank()) {
                 ObjectNode sysMsg = messages.addObject();
                 sysMsg.put("role", "system");
-                sysMsg.put("content", systemText);
+                if (explicitBreakpoint) {
+                    // Mark the end of the stable prefix (system prompt) with an explicit
+                    // breakpoint, per OpenAI's documented Chat Completions content-part
+                    // shape: {"type":"text","text":"...","prompt_cache_breakpoint":{"mode":"explicit"}}
+                    ArrayNode contentParts = sysMsg.putArray("content");
+                    ObjectNode part = contentParts.addObject();
+                    part.put("type", "text");
+                    part.put("text", systemText);
+                    part.putObject("prompt_cache_breakpoint").put("mode", "explicit");
+                } else {
+                    sysMsg.put("content", systemText);
+                }
             }
         }
 
@@ -331,13 +436,31 @@ public final class AnthropicToOpenAITranslator {
     // -------------------------------------------------------------------------
 
     /**
-     * Translates an OpenAI Chat Completions response to Anthropic Messages response format.
+     * Translates an OpenAI Chat Completions response to Anthropic Messages
+     * response format, without request-size context for the empty-response
+     * notice (see the four-arg overload).
      *
      * @param openaiResponse parsed OpenAI response JSON
      * @param model          model name to include in response
      * @return Anthropic-format response JSON
      */
     public static ObjectNode translateResponse(JsonNode openaiResponse, String model) {
+        return translateResponse(openaiResponse, model, 0, 0);
+    }
+
+    /**
+     * Translates an OpenAI Chat Completions response to Anthropic Messages response format.
+     *
+     * @param openaiResponse       parsed OpenAI response JSON
+     * @param model                model name to include in response
+     * @param requestMessageCount  number of messages in the request that produced this
+     *                             response, for the empty-response notice; 0 if unknown
+     * @param requestSizeBytes     size in bytes of the request that produced this
+     *                             response, for the empty-response notice; 0 if unknown
+     * @return Anthropic-format response JSON
+     */
+    public static ObjectNode translateResponse(JsonNode openaiResponse, String model,
+            int requestMessageCount, long requestSizeBytes) {
         ObjectNode anthropic = MAPPER.createObjectNode();
 
         anthropic.put("id",   openaiResponse.path("id").asText("msg_proxy"));
@@ -394,6 +517,15 @@ public final class AnthropicToOpenAITranslator {
             stopReason = mapFinishReason(choice.path("finish_reason").asText("stop"));
         }
 
+        if (content.isEmpty()) {
+            String finishReason = choices.isArray() && !choices.isEmpty()
+                    ? choices.get(0).path("finish_reason").asText(null) : null;
+            LOG.warning("OpenAI response had no content: finish_reason=" + finishReason
+                    + " raw=" + openaiResponse);
+            content.addObject().put("type", "text").put("text",
+                    emptyResponseNotice(finishReason, requestMessageCount, requestSizeBytes));
+        }
+
         anthropic.put("stop_reason",    stopReason);
         anthropic.putNull("stop_sequence");
 
@@ -430,13 +562,18 @@ public final class AnthropicToOpenAITranslator {
         private boolean thinkingBlockOpen = false;
         private int     thinkingBlockIndex = -1;
         private boolean textBlockOpen     = false;
+        private boolean hadContent        = false;
         private int     textBlockIndex    = -1;
         private int     nextBlockIndex    = 0;
         private String  stopReason        = "end_turn";
         private int     outputTokens      = 0;
         private int     inputTokens       = 0;
+        private int     cachedTokens      = 0;
+        private int     cacheWriteTokens  = 0;
         private String  messageId         = "msg_proxy";
         private String  model             = "";
+        private final int  requestMessageCount;
+        private final long requestSizeBytes;
 
         // Per OpenAI tool_call index: {id, name, started}
         private final java.util.Map<Integer, ToolCallState> toolCalls = new java.util.LinkedHashMap<>();
@@ -448,8 +585,28 @@ public final class AnthropicToOpenAITranslator {
             int blockIndex;
         }
 
+        /** Creates a state with no request-size context for the empty-response notice. */
+        public StreamingState() {
+            this(0, 0);
+        }
+
+        /**
+         * @param requestMessageCount number of messages in the request being streamed, for
+         *                             the empty-response notice; 0 if unknown
+         * @param requestSizeBytes    size in bytes of the request being streamed, for the
+         *                             empty-response notice; 0 if unknown
+         */
+        public StreamingState(int requestMessageCount, long requestSizeBytes) {
+            this.requestMessageCount = requestMessageCount;
+            this.requestSizeBytes = requestSizeBytes;
+        }
+
         public boolean isMessageStarted() { return messageStarted; }
         public boolean isDoneReceived()   { return doneReceived; }
+        public int getInputTokens()       { return inputTokens; }
+        public int getOutputTokens()      { return outputTokens; }
+        public int getCachedTokens()      { return cachedTokens; }
+        public int getCacheWriteTokens()  { return cacheWriteTokens; }
 
         /**
          * Process one OpenAI SSE data line and return zero or more Anthropic SSE events.
@@ -460,7 +617,18 @@ public final class AnthropicToOpenAITranslator {
         public String processChunk(String dataLine) {
             if ("[DONE]".equals(dataLine)) {
                 doneReceived = true;
-                return buildDoneEvents();
+                StringBuilder out = new StringBuilder();
+                if (messageStarted && !hadContent) {
+                    LOG.warning("OpenAI stream completed with no content: stop_reason=" + stopReason);
+                    textBlockIndex = nextBlockIndex++;
+                    out.append(sseEvent("content_block_start", buildTextBlockStart(textBlockIndex)));
+                    out.append(sseEvent("content_block_delta",
+                            buildTextDelta(textBlockIndex,
+                                    emptyResponseNotice(stopReason, requestMessageCount, requestSizeBytes))));
+                    textBlockOpen = true;
+                }
+                out.append(buildDoneEvents());
+                return out.toString();
             }
 
             JsonNode chunk;
@@ -487,6 +655,8 @@ public final class AnthropicToOpenAITranslator {
                 if (!usage.isMissingNode()) {
                     outputTokens = usage.path("completion_tokens").asInt(outputTokens);
                     inputTokens  = usage.path("prompt_tokens").asInt(inputTokens);
+                    cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(cachedTokens);
+                    cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
                 }
                 return out.toString();
             }
@@ -505,6 +675,8 @@ public final class AnthropicToOpenAITranslator {
             if (!usage.isMissingNode()) {
                 outputTokens = usage.path("completion_tokens").asInt(outputTokens);
                 inputTokens  = usage.path("prompt_tokens").asInt(inputTokens);
+                cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(cachedTokens);
+                cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
             }
 
             // Reasoning (thinking) delta — DeepSeek/OpenCode style
@@ -528,6 +700,7 @@ public final class AnthropicToOpenAITranslator {
             if (!contentNode.isNull() && !contentNode.isMissingNode()) {
                 String text = contentNode.asText();
                 if (!text.isEmpty()) {
+                    hadContent = true;
                     // Close thinking block before opening text block
                     if (thinkingBlockOpen) {
                         out.append(sseEvent("content_block_delta",
@@ -560,6 +733,7 @@ public final class AnthropicToOpenAITranslator {
                     if (tcName != null) state.name = tcName;
 
                     if (!state.started && state.id != null && state.name != null) {
+                        hadContent = true;
                         // Close thinking block if open
                         if (thinkingBlockOpen) {
                             out.append(sseEvent("content_block_delta",

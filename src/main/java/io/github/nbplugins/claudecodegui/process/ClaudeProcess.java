@@ -165,8 +165,16 @@ public final class ClaudeProcess {
             ClaudeCodeStatusService mcpSvc = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
             if (mcpSvc != null && mcpSvc.isServerRunning()) {
                 String uuid = UUID.randomUUID().toString();
-                mcpSvc.registerOpenAIProxy(uuid, profile.getBaseUrl(), profile.getApiKey(),
-                        io.github.nbplugins.claudecodegui.settings.ProxyConfiguration.from(profile));
+                io.github.nbplugins.claudecodegui.settings.ProxyConfiguration proxyConfig =
+                        io.github.nbplugins.claudecodegui.settings.ProxyConfiguration.from(profile);
+                if (mcpSvc instanceof io.github.nbplugins.claudecodegui.ClaudeCodeInstaller installer) {
+                    // Prefer the profile-id-aware overload so the proxy can look up
+                    // per-model experimental prompt-caching settings.
+                    installer.registerOpenAIProxy(uuid, profile.getBaseUrl(), profile.getApiKey(),
+                            proxyConfig, profile.getId());
+                } else {
+                    mcpSvc.registerOpenAIProxy(uuid, profile.getBaseUrl(), profile.getApiKey(), proxyConfig);
+                }
                 openAIProxyUuid = uuid;
                 env.put("ANTHROPIC_BASE_URL",
                         "http://127.0.0.1:" + mcpSvc.getServerPort() + "/openai-proxy/" + uuid);
@@ -293,6 +301,14 @@ public final class ClaudeProcess {
 
     /** Returns the last command attempted to start, as a space-joined string. */
     public String getLastCommand() { return lastCommand; }
+
+    /**
+     * Returns the UUID of the active OpenAI-compatible proxy session (see
+     * {@code /openai-proxy/{uuid}/...}), or {@code null} if the current session
+     * isn't using the OpenAI-compatible or ChatGPT Subscription connection type.
+     * Used by the Session Statistics dialog to look up cumulative usage stats.
+     */
+    public String getOpenAIProxyUuid() { return openAIProxyUuid; }
 
     /**
      * Appends extra CLI args and session-mode flags to {@code cmd}.

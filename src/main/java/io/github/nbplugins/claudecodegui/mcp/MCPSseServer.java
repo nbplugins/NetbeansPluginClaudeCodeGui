@@ -165,7 +165,24 @@ public class MCPSseServer {
      * @param proxy   proxy settings from the profile (used by the servlet's HttpClient)
      */
     public void registerOpenAIProxy(String uuid, String baseUrl, String apiKey, ProxyConfiguration proxy) {
-        openAIProxies.put(uuid, new OpenAIProxyConfig(baseUrl, apiKey, proxy));
+        registerOpenAIProxy(uuid, baseUrl, apiKey, proxy, null);
+    }
+
+    /**
+     * Registers an OpenAI-compatible proxy session, additionally recording the
+     * owning profile id so the servlet can look up per-model experimental
+     * prompt-caching settings ({@link io.github.nbplugins.claudecodegui.settings.ClaudeProfile#isExplicitPromptCachingEnabled}).
+     *
+     * @param uuid      unique session identifier
+     * @param baseUrl   provider base URL
+     * @param apiKey    provider API key
+     * @param proxy     proxy settings from the profile (used by the servlet's HttpClient)
+     * @param profileId owning profile id, or {@code null}
+     */
+    public void registerOpenAIProxy(String uuid, String baseUrl, String apiKey, ProxyConfiguration proxy,
+            String profileId) {
+        openAIProxies.put(uuid, new OpenAIProxyConfig(OpenAIProxyConfig.Mode.CHAT_COMPLETIONS,
+                baseUrl, apiKey, proxy, profileId, null, null));
         LOGGER.log(Level.FINE, "OpenAI proxy registered: uuid={0}", uuid);
     }
 
