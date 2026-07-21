@@ -39,7 +39,7 @@ class ClaudePromptPanelSendTest {
         Runnable               noop = () -> {};
 
         SwingUtilities.invokeAndWait(() -> {
-            panel = new ClaudePromptPanel(send, noop, noop, hist, wd, null, null);
+            panel = new ClaudePromptPanel(send, noop, noop, hist, wd, null, null, noop, () -> false);
         });
     }
 

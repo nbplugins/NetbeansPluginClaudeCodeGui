@@ -501,13 +501,16 @@ Click **Model Aliases…** to open the Model Aliases dialog.
 
 ![Model Aliases dialog](screenshots/model-aliases.png)
 
-The dialog shows a table with three columns:
+The dialog shows a table with four columns:
 
 | Column | Description |
 |--------|-------------|
 | **ID** | The model identifier as returned by the provider |
 | **Available** | ✓ if the model was found at the endpoint during the last Fetch; ✗ otherwise |
 | **Alias** | The standard alias to map this model to: `sonnet`, `opus`, `haiku`, `custom`, or blank (no alias) |
+| **Explicit Cache** | Experimental: send explicit prompt-cache control to the provider for this model (see below) |
+
+**Explicit Cache column (experimental):** GPT-5.6-family models changed how automatic prompt caching works, making it unreliable for long conversations with a stable system prompt and a growing message history — exactly the pattern of an ongoing coding session (see [ChatGPT Subscription rate limits](#chatgpt-subscription) below for background). Checking this column sends explicit cache-control fields to the provider for that model: GPT-5.6+ models get an explicit cache breakpoint (limited to a 30-minute cache lifetime by the provider); older GPT models get a 24-hour cache retention hint instead. It's checked by default for GPT-5.6-family model IDs and has no effect for non-GPT models (e.g. Grok, Gemini) — their own caching, if any, is unaffected. Since this relies on provider behavior that isn't fully documented, treat it as experimental — uncheck it for a model if you notice no improvement or unexpected errors.
 
 **Buttons:**
 
@@ -617,7 +620,8 @@ You can click **Copy sign in link** again at any time to cancel a stuck attempt 
 **Limitations:**
 
 - Only models Codex actually supports for a ChatGPT-subscription login work — arbitrary model IDs will be rejected by OpenAI's backend.
-- Usage is subject to your ChatGPT subscription's own rate limits, shared across all Codex/ChatGPT clients on that account.
+- Usage is subject to your ChatGPT subscription's own rate limits, shared across all Codex/ChatGPT clients on that account. When the limit is reached, Claude Code now reports it immediately as a rate-limit error instead of retrying; the message doesn't currently include the exact reset time reported by the backend.
+- The `/usage` command shows only local, per-session statistics (tokens/cost for the current conversation) — it does not query any live account-wide usage or quota endpoint, so it never reflects your ChatGPT subscription's remaining quota or reset time, for any connection type.
 - Sign-in tokens are refreshed automatically while a session is running; if a refresh fails (e.g. the session was revoked from your OpenAI account), sign in again from the Profiles tab.
 
 ### Extra environment variables

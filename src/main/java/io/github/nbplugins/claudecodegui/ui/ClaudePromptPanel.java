@@ -80,6 +80,10 @@ public final class ClaudePromptPanel extends JPanel {
     private final Runnable               onStartNewSession;
     /** Callback for "Switch to Session…" context menu item; may be {@code null}. */
     private final Runnable               onSwitchSession;
+    /** Callback for the "Session Statistics…" context menu item. */
+    private final Runnable               onShowSessionStatistics;
+    /** Returns whether Session Statistics is available for the current session's connection type. */
+    private final Supplier<Boolean>      sessionStatisticsAvailable;
 
     /** Current position in the history list; {@code -1} = newest (empty field). */
     private int historyIndex = -1;
@@ -108,6 +112,12 @@ public final class ClaudePromptPanel extends JPanel {
      *                               may be {@code null}
      * @param onSwitchSession        called when "Switch to Session…" context menu item is clicked;
      *                               may be {@code null}
+     * @param onShowSessionStatistics       called when the "Session Statistics…" context menu item
+     *                                       is clicked, to show the Session Statistics dialog
+     *                                       (cache/usage stats)
+     * @param sessionStatisticsAvailable     returns whether Session Statistics is available for the
+     *                                       current session (only OpenAI-compatible/ChatGPT
+     *                                       Subscription connection types); queried on demand
      */
     public ClaudePromptPanel(Consumer<String> onSend,
                              Runnable onCancel,
@@ -115,7 +125,9 @@ public final class ClaudePromptPanel extends JPanel {
                              Supplier<List<String>> promptHistorySupplier,
                              Supplier<String> workingDirSupplier,
                              Runnable onStartNewSession,
-                             Runnable onSwitchSession) {
+                             Runnable onSwitchSession,
+                             Runnable onShowSessionStatistics,
+                             Supplier<Boolean> sessionStatisticsAvailable) {
         super(new BorderLayout());
         this.onSend                = onSend;
         this.onCancel              = onCancel;
@@ -124,6 +136,8 @@ public final class ClaudePromptPanel extends JPanel {
         this.workingDirSupplier    = workingDirSupplier;
         this.onStartNewSession     = onStartNewSession;
         this.onSwitchSession       = onSwitchSession;
+        this.onShowSessionStatistics     = onShowSessionStatistics;
+        this.sessionStatisticsAvailable  = sessionStatisticsAvailable;
 
         inputArea = new DecoratedTextArea(3, 40, workingDirSupplier);
         inputArea.setLineWrap(true);
@@ -348,6 +362,9 @@ public final class ClaudePromptPanel extends JPanel {
         JMenuItem switchItem = new JMenuItem("Switch to Session\u2026");
         switchItem.addActionListener(e -> { if (onSwitchSession != null) onSwitchSession.run(); });
 
+        JMenuItem sessionStatsItem = new JMenuItem("Session Statistics\u2026");
+        sessionStatsItem.addActionListener(e -> { if (onShowSessionStatistics != null) onShowSessionStatistics.run(); });
+
         menu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
             @Override public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) {
                 List<String> h = promptHistorySupplier.get();
@@ -355,6 +372,9 @@ public final class ClaudePromptPanel extends JPanel {
                 nextPrompt.setEnabled(historyIndex > -1);
                 startNewItem.setEnabled(onStartNewSession != null);
                 switchItem.setEnabled(onSwitchSession != null);
+                sessionStatsItem.setEnabled(onShowSessionStatistics != null
+                        && sessionStatisticsAvailable != null
+                        && Boolean.TRUE.equals(sessionStatisticsAvailable.get()));
             }
             @Override public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) {}
             @Override public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) {}
@@ -366,6 +386,8 @@ public final class ClaudePromptPanel extends JPanel {
         menu.addSeparator();
         menu.add(startNewItem);
         menu.add(switchItem);
+        menu.addSeparator();
+        menu.add(sessionStatsItem);
     }
 
     // -------------------------------------------------------------------------

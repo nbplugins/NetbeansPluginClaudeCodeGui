@@ -795,6 +795,7 @@ public final class ClaudeProfilesPanel extends JPanel {
         if (!rbOtherApi.isSelected() && !rbOpenAIProxy.isSelected() && !rbChatgptSubscription.isSelected()) {
             p.setModelAliases(null);
             p.setCustomModels(null);
+            p.setExplicitPromptCachingModels(null);
         }
 
         // Proxy
@@ -986,10 +987,12 @@ public final class ClaudeProfilesPanel extends JPanel {
         // Reconstruct display list from stored alias map (sonnet/opus/haiku) and custom list
         java.util.List<ModelAlias> existing = new ArrayList<>();
         for (java.util.Map.Entry<String, String> e : p.getModelAliases().entrySet()) {
-            existing.add(new ModelAlias(e.getValue(), null, e.getKey()));
+            existing.add(new ModelAlias(e.getValue(), null, e.getKey())
+                    .withExplicitPromptCaching(p.isExplicitPromptCachingEnabled(e.getValue())));
         }
         for (String id : p.getCustomModels()) {
-            existing.add(new ModelAlias(id, null, "custom"));
+            existing.add(new ModelAlias(id, null, "custom")
+                    .withExplicitPromptCaching(p.isExplicitPromptCachingEnabled(id)));
         }
         ModelAliasesDialog dlg;
         if (p.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
@@ -1011,15 +1014,18 @@ public final class ClaudeProfilesPanel extends JPanel {
         if (chosen != null) {
             java.util.Map<String, String> aliasMap = new java.util.LinkedHashMap<>();
             java.util.List<String> customList = new ArrayList<>();
+            java.util.Map<String, Boolean> cachingFlags = new java.util.LinkedHashMap<>();
             for (ModelAlias m : chosen) {
                 if ("custom".equals(m.alias())) {
                     customList.add(m.id());
                 } else if (m.alias() != null && !m.alias().isBlank()) {
                     aliasMap.put(m.alias(), m.id());
                 }
+                cachingFlags.put(m.id(), m.explicitPromptCaching());
             }
             p.setModelAliases(aliasMap);
             p.setCustomModels(customList);
+            p.setExplicitPromptCachingModels(cachingFlags);
         }
     }
 

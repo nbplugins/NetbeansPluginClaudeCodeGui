@@ -40,9 +40,41 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  */
 public final class AnthropicToCodexTranslator {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(AnthropicToCodexTranslator.class.getName());
+
     static final com.fasterxml.jackson.databind.ObjectMapper MAPPER = AnthropicToOpenAITranslator.MAPPER;
 
     private AnthropicToCodexTranslator() {}
+
+    /**
+     * Text substituted for a response that finished with no text and no tool
+     * calls (e.g. Codex hit a context/output-length limit and returned nothing
+     * usable) — otherwise Claude Code silently returns to its idle prompt with
+     * no indication anything went wrong. {@code reason} and {@code status} are
+     * whatever Codex reported, when available; {@code requestMessageCount}/
+     * {@code requestSizeBytes} describe the request that produced this empty
+     * response (0 when unknown), to help judge whether context length is the
+     * likely cause without needing to dig through logs.
+     */
+    static String emptyResponseNotice(String status, String reason,
+            int requestMessageCount, long requestSizeBytes) {
+        StringBuilder sb = new StringBuilder(
+                "[Proxy] The provider returned an empty response (no text, no tool calls)");
+        if (status != null && !status.isBlank()) {
+            sb.append(", status=").append(status);
+        }
+        if (reason != null && !reason.isBlank()) {
+            sb.append(", reason=").append(reason);
+        }
+        if (requestMessageCount > 0 || requestSizeBytes > 0) {
+            sb.append(". Last request: ").append(requestMessageCount).append(" messages, ")
+                    .append(AnthropicToOpenAITranslator.formatBytes(requestSizeBytes));
+        }
+        sb.append(". This usually means the request was too large for the model's context/output"
+                + " limit. Try /compact, or start a new session.");
+        return sb.toString();
+    }
 
     // -------------------------------------------------------------------------
     // Request translation
@@ -57,6 +89,36 @@ public final class AnthropicToCodexTranslator {
      * @return Responses-API-format request JSON
      */
     public static ObjectNode translateRequest(JsonNode anthropicRequest, String sessionId) {
+        return translateRequest(anthropicRequest, sessionId, false);
+    }
+
+    /**
+     * Translates an Anthropic {@code POST /v1/messages} request body to an
+     * OpenAI Responses API request body targeting the Codex backend.
+     *
+     * @param anthropicRequest      parsed Anthropic request JSON
+     * @param sessionId             session/conversation identifier, used as {@code prompt_cache_key}
+     * @param explicitPromptCaching experimental (see {@link io.github.nbplugins.claudecodegui.settings.ModelAlias}):
+     *                              when the resolved model parses as a GPT-family id older than
+     *                              5.6, sends {@code prompt_cache_retention: "24h"}. GPT-&ge;5.6
+     *                              explicit breakpoints ({@code prompt_cache_options}/
+     *                              {@code prompt_cache_breakpoint}) are intentionally NOT
+     *                              implemented here yet: unlike the Chat Completions API's
+     *                              well-documented {@code text} content-part shape, whether the
+     *                              Responses API's {@code instructions} field (a plain top-level
+     *                              string, separate from {@code input[]} items) accepts the same
+     *                              content-part-array structuring needed to attach a breakpoint is
+     *                              unverified — even {@code openai/codex}'s own client doesn't do
+     *                              this yet (see the ChatGPT-subscription rate-limit
+     *                              investigation). Sending {@code prompt_cache_options.mode:
+     *                              "explicit"} without a matching breakpoint would disable
+     *                              automatic breakpoint placement without providing a replacement,
+     *                              which risks making caching *worse*, not better — so this is
+     *                              deliberately left as a follow-up pending live verification.
+     * @return Responses-API-format request JSON
+     */
+    public static ObjectNode translateRequest(JsonNode anthropicRequest, String sessionId,
+            boolean explicitPromptCaching) {
         ObjectNode responses = MAPPER.createObjectNode();
 
         String model = anthropicRequest.path("model").asText("");
@@ -97,6 +159,15 @@ public final class AnthropicToCodexTranslator {
 
         if (sessionId != null && !sessionId.isBlank()) {
             responses.put("prompt_cache_key", sessionId);
+        }
+
+        // Experimental explicit prompt caching (see the Javadoc above for why only the
+        // pre-5.6 prompt_cache_retention path is implemented here, not explicit breakpoints).
+        if (explicitPromptCaching) {
+            Double gptVersion = io.github.nbplugins.claudecodegui.settings.ModelAlias.parseGptVersion(model);
+            if (gptVersion != null && gptVersion < 5.6) {
+                responses.put("prompt_cache_retention", "24h");
+            }
         }
 
         // Messages → flat input[] items
@@ -305,13 +376,31 @@ public final class AnthropicToCodexTranslator {
     // -------------------------------------------------------------------------
 
     /**
-     * Translates a Codex Responses API response to Anthropic Messages response format.
+     * Translates a Codex Responses API response to Anthropic Messages response
+     * format, without request-size context for the empty-response notice (see
+     * the four-arg overload).
      *
      * @param codexResponse parsed Responses-API response JSON
      * @param model         model name to include in response
      * @return Anthropic-format response JSON
      */
     public static ObjectNode translateResponse(JsonNode codexResponse, String model) {
+        return translateResponse(codexResponse, model, 0, 0);
+    }
+
+    /**
+     * Translates a Codex Responses API response to Anthropic Messages response format.
+     *
+     * @param codexResponse        parsed Responses-API response JSON
+     * @param model                model name to include in response
+     * @param requestMessageCount  number of messages in the request that produced this
+     *                             response, for the empty-response notice; 0 if unknown
+     * @param requestSizeBytes     size in bytes of the request that produced this
+     *                             response, for the empty-response notice; 0 if unknown
+     * @return Anthropic-format response JSON
+     */
+    public static ObjectNode translateResponse(JsonNode codexResponse, String model,
+            int requestMessageCount, long requestSizeBytes) {
         ObjectNode anthropic = MAPPER.createObjectNode();
         anthropic.put("id",   codexResponse.path("id").asText("msg_proxy"));
         anthropic.put("type", "message");
@@ -355,6 +444,14 @@ public final class AnthropicToCodexTranslator {
         String status = codexResponse.path("status").asText("completed");
         stopReason = hadToolCall ? "tool_use" : mapStatus(status);
 
+        if (content.isEmpty()) {
+            String reason = codexResponse.path("incomplete_details").path("reason").asText(null);
+            LOG.warning("Codex response had no content: status=" + status
+                    + " reason=" + reason + " raw=" + codexResponse);
+            content.addObject().put("type", "text").put("text",
+                    emptyResponseNotice(status, reason, requestMessageCount, requestSizeBytes));
+        }
+
         anthropic.put("stop_reason", stopReason);
         anthropic.putNull("stop_sequence");
 
@@ -392,13 +489,18 @@ public final class AnthropicToCodexTranslator {
         private boolean messageStarted = false;
         private boolean doneReceived   = false;
         private boolean textBlockOpen  = false;
+        private boolean hadContent     = false;
         private int     textBlockIndex = -1;
         private int     nextBlockIndex = 0;
         private String  stopReason     = "end_turn";
         private int     outputTokens   = 0;
         private int     inputTokens    = 0;
+        private int     cachedTokens   = 0;
+        private int     cacheWriteTokens = 0;
         private String  messageId      = "msg_proxy";
         private String  model          = "";
+        private final int  requestMessageCount;
+        private final long requestSizeBytes;
 
         // Codex output_index -> block state, for function_call items
         private final java.util.Map<Integer, ToolCallState> toolCalls = new java.util.LinkedHashMap<>();
@@ -410,8 +512,28 @@ public final class AnthropicToCodexTranslator {
             int blockIndex;
         }
 
+        /** Creates a state with no request-size context for the empty-response notice. */
+        public StreamingState() {
+            this(0, 0);
+        }
+
+        /**
+         * @param requestMessageCount number of messages in the request being streamed, for
+         *                             the empty-response notice; 0 if unknown
+         * @param requestSizeBytes    size in bytes of the request being streamed, for the
+         *                             empty-response notice; 0 if unknown
+         */
+        public StreamingState(int requestMessageCount, long requestSizeBytes) {
+            this.requestMessageCount = requestMessageCount;
+            this.requestSizeBytes = requestSizeBytes;
+        }
+
         public boolean isMessageStarted() { return messageStarted; }
         public boolean isDoneReceived()   { return doneReceived; }
+        public int getInputTokens()       { return inputTokens; }
+        public int getOutputTokens()      { return outputTokens; }
+        public int getCachedTokens()      { return cachedTokens; }
+        public int getCacheWriteTokens()  { return cacheWriteTokens; }
 
         /**
          * Processes one named Responses-API SSE event and returns zero or more
@@ -436,6 +558,7 @@ public final class AnthropicToCodexTranslator {
                 case "response.output_text.delta" -> {
                     String delta = data.path("delta").asText("");
                     if (!delta.isEmpty()) {
+                        hadContent = true;
                         if (!textBlockOpen) {
                             textBlockIndex = nextBlockIndex++;
                             out.append(AnthropicToOpenAITranslator.sseEvent("content_block_start",
@@ -449,6 +572,7 @@ public final class AnthropicToCodexTranslator {
                 case "response.output_item.added" -> {
                     JsonNode item = data.path("item");
                     if ("function_call".equals(item.path("type").asText())) {
+                        hadContent = true;
                         closeTextBlockIfOpen(out);
                         int outputIndex = data.path("output_index").asInt(0);
                         ToolCallState state = new ToolCallState();
@@ -475,14 +599,40 @@ public final class AnthropicToCodexTranslator {
                     if (!usage.isMissingNode()) {
                         outputTokens = usage.path("output_tokens").asInt(outputTokens);
                         inputTokens  = usage.path("input_tokens").asInt(inputTokens);
+                        cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt(cachedTokens);
+                        cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
                     }
-                    stopReason = !toolCalls.isEmpty() ? "tool_use"
-                            : mapStatus(data.path("response").path("status").asText("completed"));
+                    String statusStr = data.path("response").path("status").asText("completed");
+                    if (!hadContent) {
+                        String reason = data.path("response").path("incomplete_details").path("reason").asText(null);
+                        LOG.warning("Codex stream completed with no content: status=" + statusStr
+                                + " reason=" + reason + " raw=" + dataLine);
+                        String notice = emptyResponseNotice(statusStr, reason, requestMessageCount, requestSizeBytes);
+                        textBlockIndex = nextBlockIndex++;
+                        out.append(AnthropicToOpenAITranslator.sseEvent("content_block_start",
+                                buildTextBlockStart(textBlockIndex)));
+                        out.append(AnthropicToOpenAITranslator.sseEvent("content_block_delta",
+                                buildTextDelta(textBlockIndex, notice)));
+                        textBlockOpen = true;
+                    }
+                    stopReason = !toolCalls.isEmpty() ? "tool_use" : mapStatus(statusStr);
                     doneReceived = true;
                     closeTextBlockIfOpen(out);
                     out.append(buildDoneEvents());
                 }
                 case "response.failed", "error" -> {
+                    LOG.warning("Codex stream " + eventType + " event: raw=" + dataLine);
+                    if (!hadContent) {
+                        String reason = data.path("message").asText(
+                                data.path("error").path("message").asText(null));
+                        String notice = emptyResponseNotice(eventType, reason, requestMessageCount, requestSizeBytes);
+                        textBlockIndex = nextBlockIndex++;
+                        out.append(AnthropicToOpenAITranslator.sseEvent("content_block_start",
+                                buildTextBlockStart(textBlockIndex)));
+                        out.append(AnthropicToOpenAITranslator.sseEvent("content_block_delta",
+                                buildTextDelta(textBlockIndex, notice)));
+                        textBlockOpen = true;
+                    }
                     doneReceived = true;
                     closeTextBlockIfOpen(out);
                     out.append(buildDoneEvents());
@@ -616,6 +766,8 @@ public final class AnthropicToCodexTranslator {
         private String status = "completed";
         private int inputTokens = 0;
         private int outputTokens = 0;
+        private int cachedTokens = 0;
+        private int cacheWriteTokens = 0;
         private final StringBuilder textBuffer = new StringBuilder();
 
         // Codex output_index -> in-progress function call
@@ -667,6 +819,12 @@ public final class AnthropicToCodexTranslator {
                     JsonNode usage = response.path("usage");
                     inputTokens  = usage.path("input_tokens").asInt(inputTokens);
                     outputTokens = usage.path("output_tokens").asInt(outputTokens);
+                    // cached_tokens/cache_write_tokens: not documented in openai/codex's own
+                    // client, best-effort extraction mirroring OpenAI's Responses API usage
+                    // shape (input_tokens_details.cached_tokens, top-level cache_write_tokens)
+                    // for the Session Statistics dialog; default to 0 if absent.
+                    cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt(cachedTokens);
+                    cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
                 }
                 default -> { /* ignore other event types (response.created, response.output_item.done, ...) */ }
             }
@@ -702,6 +860,8 @@ public final class AnthropicToCodexTranslator {
             ObjectNode usage = root.putObject("usage");
             usage.put("input_tokens", inputTokens);
             usage.put("output_tokens", outputTokens);
+            usage.putObject("input_tokens_details").put("cached_tokens", cachedTokens);
+            usage.put("cache_write_tokens", cacheWriteTokens);
             return root;
         }
     }

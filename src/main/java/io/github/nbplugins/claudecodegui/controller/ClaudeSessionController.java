@@ -289,6 +289,13 @@ public class ClaudeSessionController {
     /** Returns the last command attempted to start the process. */
     public String getLastAttemptedCommand() { return claudeProcess.getLastCommand(); }
 
+    /**
+     * Returns the UUID of the active OpenAI-compatible proxy session, or
+     * {@code null} if the current session isn't using the OpenAI-compatible or
+     * ChatGPT Subscription connection type. See {@link io.github.nbplugins.claudecodegui.process.ClaudeProcess#getOpenAIProxyUuid()}.
+     */
+    public String getOpenAIProxyUuid() { return claudeProcess.getOpenAIProxyUuid(); }
+
     public void stopProcess() {
         if (statusTimer != null) {
             statusTimer.stop();

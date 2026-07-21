@@ -46,6 +46,81 @@ class AnthropicToOpenAITranslatorTest {
     }
 
     @Test
+    void translateRequest_noCacheKey_omitsPromptCacheKey() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(load("req_simple_text.json"));
+
+        assertFalse(result.has("prompt_cache_key"));
+    }
+
+    @Test
+    void translateRequest_withCacheKey_setsPromptCacheKey() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(
+                load("req_simple_text.json"), "sess-42");
+
+        assertEquals("sess-42", result.path("prompt_cache_key").asText());
+    }
+
+    // -------------------------------------------------------------------------
+    // explicit prompt caching (experimental)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void translateRequest_explicitCachingDisabled_noExtraFields() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(
+                load("req_system_prompt_gpt56.json"), "sess-1", false);
+
+        assertFalse(result.has("prompt_cache_options"));
+        assertFalse(result.has("prompt_cache_retention"));
+        assertEquals("You are helpful.",
+                result.path("messages").get(0).path("content").asText());
+    }
+
+    @Test
+    void translateRequest_explicitCachingEnabled_gpt56_setsBreakpointOnSystemMessage() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(
+                load("req_system_prompt_gpt56.json"), "sess-1", true);
+
+        assertEquals("explicit", result.path("prompt_cache_options").path("mode").asText());
+        assertEquals("30m", result.path("prompt_cache_options").path("ttl").asText());
+        assertFalse(result.has("prompt_cache_retention"));
+
+        JsonNode sysContent = result.path("messages").get(0).path("content");
+        assertTrue(sysContent.isArray());
+        assertEquals("text", sysContent.get(0).path("type").asText());
+        assertEquals("You are helpful.", sysContent.get(0).path("text").asText());
+        assertEquals("explicit", sysContent.get(0).path("prompt_cache_breakpoint").path("mode").asText());
+    }
+
+    @Test
+    void translateRequest_explicitCachingEnabled_olderGptModel_setsRetentionNotBreakpoint() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(
+                load("req_system_prompt.json"), "sess-1", true); // model=gpt-4o
+
+        assertEquals("24h", result.path("prompt_cache_retention").asText());
+        assertFalse(result.has("prompt_cache_options"));
+        // System message content stays a plain string — no breakpoint restructuring for <5.6.
+        assertEquals("You are helpful.",
+                result.path("messages").get(0).path("content").asText());
+    }
+
+    @Test
+    void translateRequest_explicitCachingEnabled_nonGptModel_noEffect() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(
+                load("req_simple_text.json"), "sess-1", true); // model=claude-sonnet-4-5
+
+        assertFalse(result.has("prompt_cache_options"));
+        assertFalse(result.has("prompt_cache_retention"));
+    }
+
+    @Test
+    void translateRequest_blankCacheKey_omitsPromptCacheKey() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(
+                load("req_simple_text.json"), "  ");
+
+        assertFalse(result.has("prompt_cache_key"));
+    }
+
+    @Test
     void translateRequest_systemPromptPrependedAsFirstMessage() throws Exception {
         ObjectNode result = AnthropicToOpenAITranslator.translateRequest(load("req_system_prompt.json"));
 
@@ -165,6 +240,35 @@ class AnthropicToOpenAITranslatorTest {
         assertEquals("call_abc",  content.get(0).path("id").asText());
         assertEquals("read_file", content.get(0).path("name").asText());
         assertEquals("/tmp/x.txt", content.get(0).path("input").path("path").asText());
+    }
+
+    @Test
+    void translateResponse_emptyOutput_substitutesNoticeInsteadOfSilentSuccess() throws Exception {
+        JsonNode emptyResp = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"id\":\"chatcmpl-1\",\"choices\":[{\"message\":{\"role\":\"assistant\"},"
+                + "\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":900000,\"completion_tokens\":0}}");
+
+        ObjectNode result = AnthropicToOpenAITranslator.translateResponse(emptyResp, "gpt-4o");
+
+        JsonNode content = result.path("content");
+        assertEquals(1, content.size());
+        assertEquals("text", content.get(0).path("type").asText());
+        String text = content.get(0).path("text").asText();
+        assertTrue(text.contains("empty response"), text);
+        assertTrue(text.contains("length"), text);
+    }
+
+    @Test
+    void translateResponse_emptyOutput_withRequestSize_includesItInNotice() throws Exception {
+        JsonNode emptyResp = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"id\":\"chatcmpl-1\",\"choices\":[{\"message\":{\"role\":\"assistant\"},"
+                + "\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":900000,\"completion_tokens\":0}}");
+
+        ObjectNode result = AnthropicToOpenAITranslator.translateResponse(emptyResp, "gpt-4o", 936, 1746582L);
+
+        String text = result.path("content").get(0).path("text").asText();
+        assertTrue(text.contains("936 messages"), text);
+        assertTrue(text.contains("1.7 MB"), text);
     }
 
     @Test
@@ -337,6 +441,61 @@ class AnthropicToOpenAITranslatorTest {
         JsonNode msgDelta = AnthropicToOpenAITranslator.MAPPER.readTree(
                 extractSseDataLine(done, "message_delta"));
         assertEquals(3, msgDelta.path("usage").path("output_tokens").asInt());
+        assertEquals(10, s.getInputTokens());
+        assertEquals(3, s.getOutputTokens());
+    }
+
+    @Test
+    void streaming_finishesWithNoContent_substitutesNoticeInsteadOfSilentSuccess() throws Exception {
+        var s = state();
+
+        // Message starts (role delta) but no text/tool_calls ever arrive before [DONE] —
+        // the exact scenario observed in production for the Codex path (see the
+        // AnthropicToCodexTranslatorTest equivalent), reproduced here for the plain
+        // OpenAI Chat Completions path for consistency.
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},"
+                + "\"finish_reason\":\"length\",\"index\":0}]}");
+
+        String done = s.processChunk("[DONE]");
+
+        assertTrue(done.contains("content_block_start"), done);
+        assertTrue(done.contains("message_stop"), done);
+        assertTrue(done.contains("empty response"), done);
+    }
+
+    @Test
+    void streaming_finishesWithNoContent_withRequestSize_includesItInNotice() {
+        var s = new AnthropicToOpenAITranslator.StreamingState(936, 1746582L);
+
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},"
+                + "\"finish_reason\":\"length\",\"index\":0}]}");
+        String done = s.processChunk("[DONE]");
+
+        assertTrue(done.contains("936 messages"), done);
+        assertTrue(done.contains("1.7 MB"), done);
+    }
+
+    @Test
+    void streaming_finishesWithTextContent_doesNotSubstituteNotice() {
+        var s = state();
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{"
+                + "\"role\":\"assistant\",\"content\":\"Hi\"},\"index\":0}]}");
+
+        String done = s.processChunk("[DONE]");
+
+        assertFalse(done.contains("empty response"), done);
+    }
+
+    @Test
+    void streaming_usageChunk_capturesCachedAndCacheWriteTokens() throws Exception {
+        var s = state();
+
+        s.processChunk("{\"id\":\"c1\",\"model\":\"m\",\"choices\":[]," +
+                "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20," +
+                "\"prompt_tokens_details\":{\"cached_tokens\":30},\"cache_write_tokens\":40}}");
+
+        assertEquals(30, s.getCachedTokens());
+        assertEquals(40, s.getCacheWriteTokens());
     }
 
     @Test

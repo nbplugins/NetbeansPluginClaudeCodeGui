@@ -100,6 +100,49 @@ class AnthropicToCodexTranslatorTest {
         assertEquals("You are helpful.", result.path("instructions").asText());
     }
 
+    // -------------------------------------------------------------------------
+    // explicit prompt caching (experimental) — only prompt_cache_retention for
+    // pre-5.6 GPT models; 5.6+ breakpoints intentionally not implemented (see
+    // the three-arg translateRequest Javadoc).
+    // -------------------------------------------------------------------------
+
+    @Test
+    void translateRequest_explicitCachingDisabled_noRetentionField() throws Exception {
+        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
+                load("req_system_prompt.json"), "s", false); // model=gpt-4o
+
+        assertFalse(result.has("prompt_cache_retention"));
+    }
+
+    @Test
+    void translateRequest_explicitCachingEnabled_olderGptModel_setsRetention() throws Exception {
+        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
+                load("req_system_prompt.json"), "s", true); // model=gpt-4o
+
+        assertEquals("24h", result.path("prompt_cache_retention").asText());
+    }
+
+    @Test
+    void translateRequest_explicitCachingEnabled_gpt56_doesNotSetRetentionOrOptions() throws Exception {
+        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
+                load("req_system_prompt_gpt56.json"), "s", true);
+
+        // Deliberately no prompt_cache_retention (that's the <5.6 mechanism) and no
+        // prompt_cache_options (breakpoints unimplemented for this backend, see Javadoc).
+        assertFalse(result.has("prompt_cache_retention"));
+        assertFalse(result.has("prompt_cache_options"));
+        assertEquals("You are helpful.", result.path("instructions").asText());
+    }
+
+    @Test
+    void translateRequest_explicitCachingEnabled_nonGptModel_noEffect() throws Exception {
+        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
+                load("req_simple_text.json"), "s", true); // model=claude-sonnet-4-5
+
+        assertFalse(result.has("prompt_cache_retention"));
+        assertFalse(result.has("prompt_cache_options"));
+    }
+
     @Test
     void translateRequest_systemAsListOfBlocks_joinedIntoInstructions() throws Exception {
         ObjectNode result = AnthropicToCodexTranslator.translateRequest(load("req_system_as_blocks.json"), "s");
@@ -213,6 +256,39 @@ class AnthropicToCodexTranslatorTest {
         assertEquals("tool_use", result.path("stop_reason").asText());
     }
 
+    @Test
+    void translateResponse_emptyOutput_substitutesNoticeInsteadOfSilentSuccess() throws Exception {
+        JsonNode emptyResp = AnthropicToCodexTranslator.MAPPER.readTree(
+                "{\"id\":\"resp_1\",\"status\":\"incomplete\",\"output\":[],"
+                + "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+                + "\"usage\":{\"input_tokens\":900000,\"output_tokens\":0}}");
+
+        ObjectNode result = AnthropicToCodexTranslator.translateResponse(emptyResp, "gpt-5.6-terra");
+
+        JsonNode content = result.path("content");
+        assertEquals(1, content.size());
+        assertEquals("text", content.get(0).path("type").asText());
+        String text = content.get(0).path("text").asText();
+        assertTrue(text.contains("empty response"), text);
+        assertTrue(text.contains("max_output_tokens"), text);
+        assertTrue(text.contains("incomplete"), text);
+    }
+
+    @Test
+    void translateResponse_emptyOutput_withRequestSize_includesItInNotice() throws Exception {
+        JsonNode emptyResp = AnthropicToCodexTranslator.MAPPER.readTree(
+                "{\"id\":\"resp_1\",\"status\":\"incomplete\",\"output\":[],"
+                + "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+                + "\"usage\":{\"input_tokens\":900000,\"output_tokens\":0}}");
+
+        ObjectNode result = AnthropicToCodexTranslator.translateResponse(
+                emptyResp, "gpt-5.6-terra", 936, 1746582L);
+
+        String text = result.path("content").get(0).path("text").asText();
+        assertTrue(text.contains("936 messages"), text);
+        assertTrue(text.contains("1.7 MB"), text);
+    }
+
     // -------------------------------------------------------------------------
     // Streaming
     // -------------------------------------------------------------------------
@@ -258,6 +334,74 @@ class AnthropicToCodexTranslatorTest {
         assertTrue(events.contains("content_block_stop"));
         assertTrue(events.contains("message_delta"));
         assertTrue(events.contains("message_stop"));
+        assertEquals(3, s.getInputTokens());
+        assertEquals(2, s.getOutputTokens());
+    }
+
+    @Test
+    void streaming_incompleteEvent_noContent_substitutesNoticeInsteadOfSilentSuccess() {
+        AnthropicToCodexTranslator.StreamingState s = state();
+
+        // No output_text.delta or function_call ever arrives before completion — the
+        // exact scenario observed in production (936-message request, Codex returned
+        // an empty stream, Claude Code just idled with no explanation).
+        String events = s.processEvent("response.incomplete",
+                "{\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+                + "\"usage\":{\"input_tokens\":900000,\"output_tokens\":0}}}");
+
+        assertTrue(s.isDoneReceived());
+        assertTrue(events.contains("content_block_start"), events);
+        assertTrue(events.contains("message_stop"), events);
+        assertTrue(events.contains("empty response"), events);
+        assertTrue(events.contains("max_output_tokens"), events);
+    }
+
+    @Test
+    void streaming_incompleteEvent_noContent_withRequestSize_includesItInNotice() {
+        AnthropicToCodexTranslator.StreamingState s =
+                new AnthropicToCodexTranslator.StreamingState(936, 1746582L);
+
+        String events = s.processEvent("response.incomplete",
+                "{\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+                + "\"usage\":{\"input_tokens\":900000,\"output_tokens\":0}}}");
+
+        assertTrue(events.contains("936 messages"), events);
+        assertTrue(events.contains("1.7 MB"), events);
+    }
+
+    @Test
+    void streaming_failedEvent_substitutesNotice() {
+        AnthropicToCodexTranslator.StreamingState s = state();
+
+        String events = s.processEvent("response.failed", "{\"message\":\"internal error\"}");
+
+        assertTrue(s.isDoneReceived());
+        assertTrue(events.contains("empty response"), events);
+        assertTrue(events.contains("internal error"), events);
+    }
+
+    @Test
+    void streaming_completedEvent_withTextContent_doesNotSubstituteNotice() {
+        AnthropicToCodexTranslator.StreamingState s = state();
+        s.processEvent("response.output_text.delta",
+                "{\"response\":{\"id\":\"resp_1\",\"model\":\"m\"},\"delta\":\"Hi\",\"output_index\":0}");
+
+        String events = s.processEvent("response.completed",
+                "{\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}");
+
+        assertFalse(events.contains("empty response"), events);
+    }
+
+    @Test
+    void streaming_completedEvent_capturesCachedAndCacheWriteTokens() {
+        AnthropicToCodexTranslator.StreamingState s = state();
+
+        s.processEvent("response.completed",
+                "{\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20,"
+                + "\"input_tokens_details\":{\"cached_tokens\":30},\"cache_write_tokens\":40}}}");
+
+        assertEquals(30, s.getCachedTokens());
+        assertEquals(40, s.getCacheWriteTokens());
     }
 
     // -------------------------------------------------------------------------

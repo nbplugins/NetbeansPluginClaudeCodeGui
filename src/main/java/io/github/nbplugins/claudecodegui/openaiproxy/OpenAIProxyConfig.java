@@ -3,6 +3,11 @@ package io.github.nbplugins.claudecodegui.openaiproxy;
 import io.github.nbplugins.claudecodegui.settings.ProxyConfiguration;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Snapshot of OpenAI-compatible endpoint configuration taken at session start.
@@ -28,6 +33,44 @@ public final class OpenAIProxyConfig {
     private final String             profileId;
     private final String             accessToken;
     private final String             accountId;
+
+    // Cumulative usage totals, per model, for the life of this proxy session (i.e.
+    // one PTY process) — surfaced via the Session Statistics dialog. Not persisted; reset
+    // to zero on every new session. Keyed by model, since a session can switch
+    // models mid-conversation (via /model) and per-model breakdown is more useful
+    // than one blended total. Insertion order (LinkedHashMap-backed reads via
+    // ModelUsage.snapshot) reflects first-seen order, which is also recency-ish
+    // since models are typically appended, not interleaved.
+    private final Map<String, ModelUsage> usageByModel = new ConcurrentHashMap<>();
+    private volatile String lastModel;
+
+    /** Mutable per-model usage accumulator; not exposed directly — see {@link UsageSnapshot}. */
+    private static final class ModelUsage {
+        final AtomicLong inputTokens     = new AtomicLong();
+        final AtomicLong outputTokens    = new AtomicLong();
+        final AtomicLong cachedTokens    = new AtomicLong();
+        final AtomicLong cacheWriteTokens = new AtomicLong();
+        final AtomicLong requests        = new AtomicLong();
+        // Not cumulative — overwritten on every request, so the Session Statistics dialog
+        // can show the size of the *last* request for this model (useful for judging
+        // whether an empty-response failure was caused by context/output-length limits).
+        volatile int  lastRequestMessageCount = 0;
+        volatile long lastRequestSizeBytes    = 0;
+    }
+
+    /**
+     * Immutable snapshot of one model's cumulative usage, returned by
+     * {@link #getUsageByModel()}.
+     *
+     * @param lastRequestMessageCount number of messages in the most recent request for
+     *                                this model (not cumulative)
+     * @param lastRequestSizeBytes    size in bytes of the most recent request for this
+     *                                model (not cumulative)
+     */
+    public record UsageSnapshot(long inputTokens, long outputTokens,
+                                 long cachedTokens, long cacheWriteTokens, long requests,
+                                 int lastRequestMessageCount, long lastRequestSizeBytes) {
+    }
 
     /**
      * Creates a {@link Mode#CHAT_COMPLETIONS} config for an OpenAI API-key-based provider.
@@ -89,5 +132,69 @@ public final class OpenAIProxyConfig {
         return proxy.applyTo(
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30))
         ).build();
+    }
+
+    /**
+     * Accumulates usage totals from one successful response, keyed by model.
+     * Thread-safe — called from {@link OpenAIProxyServlet}'s request-handling threads.
+     *
+     * @param model            the model id this response was for
+     * @param inputTokens      uncached input tokens billed for this response
+     * @param outputTokens     output tokens generated for this response
+     * @param cachedTokens     input tokens served from cache (0 if not reported)
+     * @param cacheWriteTokens input tokens newly written to cache (0 if not reported)
+     */
+    public void addUsage(String model, long inputTokens, long outputTokens,
+            long cachedTokens, long cacheWriteTokens) {
+        String key = model == null || model.isBlank() ? "(unknown)" : model;
+        ModelUsage usage = usageByModel.computeIfAbsent(key, k -> new ModelUsage());
+        usage.inputTokens.addAndGet(inputTokens);
+        usage.outputTokens.addAndGet(outputTokens);
+        usage.cachedTokens.addAndGet(cachedTokens);
+        usage.cacheWriteTokens.addAndGet(cacheWriteTokens);
+        usage.requests.incrementAndGet();
+        lastModel = key;
+    }
+
+    /**
+     * Records the size of a request about to be sent for {@code model}, so the
+     * Session Statistics dialog can show it even if the request ultimately fails or
+     * returns an empty response (i.e. before {@link #addUsage} would otherwise
+     * be the only place a model gets registered). Thread-safe. Overwrites any
+     * previously recorded size for the same model — this is "last", not cumulative.
+     *
+     * @param model            the model id this request is for
+     * @param messageCount     number of messages in the request
+     * @param requestSizeBytes size of the (translated, upstream-format) request body in bytes
+     */
+    public void recordRequest(String model, int messageCount, long requestSizeBytes) {
+        String key = model == null || model.isBlank() ? "(unknown)" : model;
+        ModelUsage usage = usageByModel.computeIfAbsent(key, k -> new ModelUsage());
+        usage.lastRequestMessageCount = messageCount;
+        usage.lastRequestSizeBytes = requestSizeBytes;
+        lastModel = key;
+    }
+
+    /**
+     * Returns the model id of the most recently recorded usage, or {@code null}
+     * if no usage has been recorded yet.
+     */
+    public String getLastModel() { return lastModel; }
+
+    /**
+     * Returns a snapshot of cumulative usage per model, in first-seen order.
+     *
+     * @return unmodifiable map, model id &rarr; usage snapshot; empty if nothing recorded yet
+     */
+    public Map<String, UsageSnapshot> getUsageByModel() {
+        Map<String, UsageSnapshot> snapshot = new LinkedHashMap<>();
+        for (Map.Entry<String, ModelUsage> e : usageByModel.entrySet()) {
+            ModelUsage u = e.getValue();
+            snapshot.put(e.getKey(), new UsageSnapshot(
+                    u.inputTokens.get(), u.outputTokens.get(),
+                    u.cachedTokens.get(), u.cacheWriteTokens.get(), u.requests.get(),
+                    u.lastRequestMessageCount, u.lastRequestSizeBytes));
+        }
+        return Collections.unmodifiableMap(snapshot);
     }
 }

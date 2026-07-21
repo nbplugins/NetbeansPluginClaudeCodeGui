@@ -171,10 +171,10 @@ public final class ModelAliasesDialog extends JDialog {
         getRootPane().setBorder(javax.swing.BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
         // --- Table ---
-        tableModel = new DefaultTableModel(new String[]{"ID", "Available", "Alias"}, 0) {
-            @Override public boolean isCellEditable(int row, int col) { return col == 2; }
+        tableModel = new DefaultTableModel(new String[]{"ID", "Available", "Alias", "Explicit Cache"}, 0) {
+            @Override public boolean isCellEditable(int row, int col) { return col == 2 || col == 3; }
             @Override public Class<?> getColumnClass(int col) {
-                return col == 1 ? Boolean.class : String.class;
+                return col == 1 || col == 3 ? Boolean.class : String.class;
             }
         };
         table = new JTable(tableModel);
@@ -182,6 +182,7 @@ public final class ModelAliasesDialog extends JDialog {
         table.getColumnModel().getColumn(0).setPreferredWidth(240);
         table.getColumnModel().getColumn(1).setPreferredWidth(70);
         table.getColumnModel().getColumn(2).setPreferredWidth(90);
+        table.getColumnModel().getColumn(3).setPreferredWidth(60);
 
         // Available column renderer: null→"", true→✓ green, false→✗ red
         table.getColumnModel().getColumn(1).setCellRenderer(new DefaultTableCellRenderer() {
@@ -208,6 +209,9 @@ public final class ModelAliasesDialog extends JDialog {
         JComboBox<String> aliasCombo = new JComboBox<>(ALIASES);
         table.getColumnModel().getColumn(2).setCellEditor(new DefaultCellEditor(aliasCombo));
 
+        // Explicit Cache column: experimental explicit prompt caching (GPT-≥5.6: prompt_cache_options/
+        // breakpoint; older GPT models: 24h retention). Auto-enabled for GPT-5.6+ model IDs.
+
         // Drag-and-drop reordering
         table.setDragEnabled(true);
         table.setDropMode(javax.swing.DropMode.INSERT_ROWS);
@@ -215,7 +219,7 @@ public final class ModelAliasesDialog extends JDialog {
 
         // Populate
         for (ModelAlias m : initial) {
-            tableModel.addRow(new Object[]{m.id(), m.available(), m.alias()});
+            tableModel.addRow(new Object[]{m.id(), m.available(), m.alias(), m.explicitPromptCaching()});
         }
 
         JScrollPane scroll = new JScrollPane(table);
@@ -392,7 +396,7 @@ public final class ModelAliasesDialog extends JDialog {
         // Append new rows not already present
         for (String id : fetchedIds) {
             if (!existing.contains(id)) {
-                tableModel.addRow(new Object[]{id, Boolean.TRUE, ""});
+                tableModel.addRow(new Object[]{id, Boolean.TRUE, "", ModelAlias.defaultExplicitPromptCaching(id)});
             }
         }
     }
@@ -421,7 +425,7 @@ public final class ModelAliasesDialog extends JDialog {
         rows.sort((a, b) -> a.id().compareToIgnoreCase(b.id()));
         tableModel.setRowCount(0);
         for (ModelAlias m : rows) {
-            tableModel.addRow(new Object[]{m.id(), m.available(), m.alias()});
+            tableModel.addRow(new Object[]{m.id(), m.available(), m.alias(), m.explicitPromptCaching()});
         }
     }
 
@@ -446,7 +450,7 @@ public final class ModelAliasesDialog extends JDialog {
         id = id.trim();
         String error = validateModelId(id, -1);
         if (error != null) { setStatus(error); return; }
-        tableModel.addRow(new Object[]{id, null, ""});
+        tableModel.addRow(new Object[]{id, null, "", ModelAlias.defaultExplicitPromptCaching(id)});
         int newRow = tableModel.getRowCount() - 1;
         table.setRowSelectionInterval(newRow, newRow);
         table.scrollRectToVisible(table.getCellRect(newRow, 0, true));
@@ -523,8 +527,10 @@ public final class ModelAliasesDialog extends JDialog {
             String id    = (String)  tableModel.getValueAt(i, 0);
             Boolean avail = (Boolean) tableModel.getValueAt(i, 1);
             String alias = (String)  tableModel.getValueAt(i, 2);
+            Boolean cache = (Boolean) tableModel.getValueAt(i, 3);
             if (id != null && !id.isBlank()) {
-                models.add(new ModelAlias(id, avail, alias == null ? "" : alias));
+                models.add(new ModelAlias(id, avail, alias == null ? "" : alias,
+                        Boolean.TRUE.equals(cache)));
             }
         }
         return models;

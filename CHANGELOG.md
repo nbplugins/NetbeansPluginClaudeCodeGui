@@ -1,3 +1,10 @@
+- Fixed the OpenAI-compatible and ChatGPT Subscription connection types silently ending a prompt with no visible response when the provider returned an empty completion (typically because the conversation grew too large for the model's context/output limit) — Claude Code now shows an explanatory message, including the size of the request that triggered it, instead of just returning to the idle prompt
+- Added a "Session Statistics…" context menu item (right-click the prompt area or the terminal) showing cumulative prompt-cache and token-usage statistics plus the size of the last request, broken down per model used during the session; only available for sessions using the OpenAI-compatible or ChatGPT Subscription connection types
+- Added an experimental "Explicit Cache" option per model in the Model Aliases dialog (for the OpenAI-compatible and ChatGPT Subscription connection types), enabled by default for GPT-5.6-family models, to reduce token costs on long conversations where that model family's automatic caching is unreliable; older GPT models get an extended 24-hour cache retention instead
+- Fixed prompt caching for the OpenAI-compatible and ChatGPT Subscription connection types not surviving "Continue last session"/"Resume session", by keying the cache to Claude Code's own session id instead of an internal id that changed on every restart; also enabled prompt caching for the OpenAI-compatible connection type, which previously had none
+- Clarified in the user manual that the `/usage` command shows only local, per-session statistics and never reflects ChatGPT subscription quota, since it does not query any account-wide usage endpoint
+- Fixed the OpenAI-compatible and ChatGPT Subscription connection types not clearly reporting rate-limit/quota errors from the provider — Claude Code now shows the actual cause immediately instead of silently retrying up to 10 times when a ChatGPT subscription's usage limit is exhausted for an extended period
+
 # 1.3.5 (2026-07-19)
 
 - Fixed Ctrl++/− terminal and Markdown Preview zoom shortcuts not working when using the numpad +/− keys

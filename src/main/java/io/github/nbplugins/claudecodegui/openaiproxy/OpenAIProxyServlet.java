@@ -86,6 +86,11 @@ public final class OpenAIProxyServlet extends HttpServlet {
 
         boolean streaming = anthropicReq.path("stream").asBoolean(false);
         String model = anthropicReq.path("model").asText("unknown");
+        String cacheKey = resolvePromptCacheKey(req, uuid);
+        boolean explicitPromptCaching = isExplicitPromptCachingEnabled(config, model);
+        int requestMessageCount = anthropicReq.path("messages").size();
+        long requestSizeBytes = body.getBytes(StandardCharsets.UTF_8).length;
+        config.recordRequest(model, requestMessageCount, requestSizeBytes);
 
         if (debug) {
             StringBuilder sb = new StringBuilder("OpenAI proxy ← Anthropic request: ");
@@ -100,12 +105,13 @@ public final class OpenAIProxyServlet extends HttpServlet {
         }
 
         if (config.getMode() == OpenAIProxyConfig.Mode.CHATGPT_CODEX) {
-            handleCodexRequest(req, resp, config, uuid, anthropicReq, model, streaming, debug);
+            handleCodexRequest(req, resp, config, cacheKey, explicitPromptCaching, anthropicReq, model, streaming,
+                    requestMessageCount, requestSizeBytes, debug);
             return;
         }
 
         // Translate request
-        ObjectNode openaiReq = AnthropicToOpenAITranslator.translateRequest(anthropicReq);
+        ObjectNode openaiReq = AnthropicToOpenAITranslator.translateRequest(anthropicReq, cacheKey, explicitPromptCaching);
         String openaiBody = AnthropicToOpenAITranslator.MAPPER.writeValueAsString(openaiReq);
 
         String targetUrl = config.getBaseUrl();
@@ -128,14 +134,15 @@ public final class OpenAIProxyServlet extends HttpServlet {
 
         HttpClient httpClient = config.buildHttpClient();
         if (streaming) {
-            handleStreaming(httpClient, httpReq, model, resp, debug);
+            handleStreaming(httpClient, httpReq, model, resp, config, requestMessageCount, requestSizeBytes, debug);
         } else {
-            handleNonStreaming(httpClient, httpReq, model, resp, debug);
+            handleNonStreaming(httpClient, httpReq, model, resp, config, requestMessageCount, requestSizeBytes, debug);
         }
     }
 
     private void handleNonStreaming(HttpClient httpClient, HttpRequest httpReq, String model,
-                                    HttpServletResponse resp, boolean debug) throws IOException {
+                                    HttpServletResponse resp, OpenAIProxyConfig config,
+                                    int requestMessageCount, long requestSizeBytes, boolean debug) throws IOException {
         HttpResponse<String> httpResp;
         try {
             httpResp = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -152,6 +159,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
             LOG.severe("OpenAI proxy: provider returned HTTP " + status + ": " + errBody);
             resp.setStatus(status);
             resp.setContentType("application/json");
+            setRetryAfterIfHardLimit(resp, errBody, status);
             resp.getWriter().write(toAnthropicError(errBody, status));
             return;
         }
@@ -173,7 +181,9 @@ public final class OpenAIProxyServlet extends HttpServlet {
             LOG.info(sb.toString());
         }
 
-        ObjectNode anthropicResp = AnthropicToOpenAITranslator.translateResponse(openaiResp, model);
+        ObjectNode anthropicResp = AnthropicToOpenAITranslator.translateResponse(
+                openaiResp, model, requestMessageCount, requestSizeBytes);
+        recordUsage(config, model, openaiResp.path("usage"));
 
         if (debug) {
             LOG.info("OpenAI proxy → Anthropic response: stop_reason="
@@ -188,7 +198,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
     }
 
     private void handleStreaming(HttpClient httpClient, HttpRequest httpReq, String model,
-                                 HttpServletResponse resp, boolean debug) throws IOException {
+                                 HttpServletResponse resp, OpenAIProxyConfig config,
+                                 int requestMessageCount, long requestSizeBytes, boolean debug) throws IOException {
         resp.setStatus(HttpServletResponse.SC_OK);
         resp.setContentType("text/event-stream");
         resp.setCharacterEncoding("UTF-8");
@@ -216,7 +227,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
         }
 
         AnthropicToOpenAITranslator.StreamingState state =
-                new AnthropicToOpenAITranslator.StreamingState();
+                new AnthropicToOpenAITranslator.StreamingState(requestMessageCount, requestSizeBytes);
 
         int chunkCount = 0;
         boolean firstChunk = true;
@@ -244,10 +255,16 @@ public final class OpenAIProxyServlet extends HttpServlet {
         if (state.isMessageStarted() && !state.isDoneReceived()) {
             writer.write(state.buildDoneEvents());
         }
-
-        if (debug) {
-            LOG.info("OpenAI proxy: streaming done, total chunks=" + chunkCount);
+        if (state.isMessageStarted()) {
+            config.addUsage(model, state.getInputTokens(), state.getOutputTokens(),
+                    state.getCachedTokens(), state.getCacheWriteTokens());
         }
+
+        LOG.fine("OpenAI proxy: streaming done, total chunks=" + chunkCount
+                + " input_tokens=" + state.getInputTokens()
+                + " output_tokens=" + state.getOutputTokens()
+                + " cached_tokens=" + state.getCachedTokens()
+                + " cache_write_tokens=" + state.getCacheWriteTokens());
         writer.flush();
     }
 
@@ -264,7 +281,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
      * {@link #toCodexAnthropicError}.
      */
     private void handleCodexRequest(HttpServletRequest req, HttpServletResponse resp, OpenAIProxyConfig config,
-            String uuid, JsonNode anthropicReq, String model, boolean streaming, boolean debug) throws IOException {
+            String cacheKey, boolean explicitPromptCaching, JsonNode anthropicReq, String model,
+            boolean streaming, int requestMessageCount, long requestSizeBytes, boolean debug) throws IOException {
 
         ClaudeProfile profile = ClaudeProfileStore.findById(config.getProfileId());
         String accessToken;
@@ -279,7 +297,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
             return;
         }
 
-        ObjectNode codexReq = AnthropicToCodexTranslator.translateRequest(anthropicReq, uuid);
+        ObjectNode codexReq = AnthropicToCodexTranslator.translateRequest(anthropicReq, cacheKey, explicitPromptCaching);
         String codexBody = AnthropicToCodexTranslator.MAPPER.writeValueAsString(codexReq);
 
         String targetUrl = config.getBaseUrl();
@@ -305,7 +323,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
 
         HttpClient httpClient = config.buildHttpClient();
         if (streaming) {
-            handleCodexStreaming(httpClient, httpReq, resp, debug);
+            handleCodexStreaming(httpClient, httpReq, resp, config, model, requestMessageCount, requestSizeBytes);
         } else {
             // The Codex backend requires stream:true on every request body
             // (see AnthropicToCodexTranslator.translateRequest) — there is no
@@ -313,12 +331,14 @@ public final class OpenAIProxyServlet extends HttpServlet {
             // itself didn't ask for streaming, open the same SSE connection
             // anyway and collapse it into one response via ResponseAggregator,
             // the same way Codex CLI's own non-streaming callers do.
-            handleCodexNonStreamingViaAggregatedStream(httpClient, httpReq, model, resp, debug);
+            handleCodexNonStreamingViaAggregatedStream(httpClient, httpReq, model, resp, config,
+                    requestMessageCount, requestSizeBytes, debug);
         }
     }
 
     private void handleCodexNonStreamingViaAggregatedStream(HttpClient httpClient, HttpRequest httpReq, String model,
-            HttpServletResponse resp, boolean debug) throws IOException {
+            HttpServletResponse resp, OpenAIProxyConfig config,
+            int requestMessageCount, long requestSizeBytes, boolean debug) throws IOException {
         HttpResponse<InputStream> httpResp;
         try {
             httpResp = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofInputStream());
@@ -334,6 +354,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
             LOG.severe("OpenAI proxy (Codex): provider returned HTTP " + status + ": " + errBody);
             resp.setStatus(status);
             resp.setContentType("application/json");
+            setRetryAfterIfHardLimit(resp, errBody, status);
             resp.getWriter().write(toCodexAnthropicError(errBody, status));
             return;
         }
@@ -359,14 +380,17 @@ public final class OpenAIProxyServlet extends HttpServlet {
                     + " | " + AnthropicToCodexTranslator.summarizeCodexResponse(codexResp));
         }
 
-        ObjectNode anthropicResp = AnthropicToCodexTranslator.translateResponse(codexResp, model);
+        ObjectNode anthropicResp = AnthropicToCodexTranslator.translateResponse(
+                codexResp, model, requestMessageCount, requestSizeBytes);
+        recordUsage(config, model, codexResp.path("usage"));
         resp.setStatus(HttpServletResponse.SC_OK);
         resp.setContentType("application/json");
         resp.getWriter().write(AnthropicToCodexTranslator.MAPPER.writeValueAsString(anthropicResp));
     }
 
     private void handleCodexStreaming(HttpClient httpClient, HttpRequest httpReq,
-            HttpServletResponse resp, boolean debug) throws IOException {
+            HttpServletResponse resp, OpenAIProxyConfig config, String model,
+            int requestMessageCount, long requestSizeBytes) throws IOException {
         resp.setStatus(HttpServletResponse.SC_OK);
         resp.setContentType("text/event-stream");
         resp.setCharacterEncoding("UTF-8");
@@ -393,7 +417,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
             return;
         }
 
-        AnthropicToCodexTranslator.StreamingState state = new AnthropicToCodexTranslator.StreamingState();
+        AnthropicToCodexTranslator.StreamingState state =
+                new AnthropicToCodexTranslator.StreamingState(requestMessageCount, requestSizeBytes);
         String currentEvent = null;
 
         try (BufferedReader reader = new BufferedReader(
@@ -416,9 +441,15 @@ public final class OpenAIProxyServlet extends HttpServlet {
         if (state.isMessageStarted() && !state.isDoneReceived()) {
             writer.write(state.buildDoneEvents());
         }
-        if (debug) {
-            LOG.info("OpenAI proxy (Codex): streaming done");
+        if (state.isMessageStarted()) {
+            config.addUsage(model, state.getInputTokens(), state.getOutputTokens(),
+                    state.getCachedTokens(), state.getCacheWriteTokens());
         }
+        LOG.fine("OpenAI proxy (Codex): streaming done"
+                + " input_tokens=" + state.getInputTokens()
+                + " output_tokens=" + state.getOutputTokens()
+                + " cached_tokens=" + state.getCachedTokens()
+                + " cache_write_tokens=" + state.getCacheWriteTokens());
         writer.flush();
     }
 
@@ -452,11 +483,15 @@ public final class OpenAIProxyServlet extends HttpServlet {
             if (json.has("type") && json.has("error")) {
                 return providerBody;
             }
-            // OpenAI format: {"error":{"message":"...","type":"..."}}
+            // OpenAI format: {"error":{"message":"...","type":"...","code":"..."}}
             if (json.has("error")) {
                 JsonNode err = json.get("error");
                 String msg  = err.path("message").asText("Provider error " + httpStatus);
-                String type = err.path("type").asText("api_error");
+                String rawType = err.path("type").asText("");
+                String rawCode = err.path("code").asText("");
+                String type = isQuotaOrRateLimitError(httpStatus, rawType, rawCode)
+                        ? "rate_limit_error"
+                        : (rawType.isBlank() ? "api_error" : rawType);
                 String escaped = msg.replace("\\", "\\\\").replace("\"", "\\\"");
                 return "{\"type\":\"error\",\"error\":{\"type\":\"" + type + "\",\"message\":\"" + escaped + "\"}}";
             }
@@ -468,6 +503,127 @@ public final class OpenAIProxyServlet extends HttpServlet {
             }
         } catch (Exception ignored) {}
         return "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Provider returned HTTP " + httpStatus + "\"}}";
+    }
+
+    /**
+     * Sets a {@code Retry-After} response header when the provider error body
+     * indicates a hard, long-lived quota exhaustion (Codex's
+     * {@code usage_limit_reached} error carries a machine-readable
+     * {@code resets_in_seconds} field for this). Confirmed empirically
+     * (see {@code claude-launch-tests/test_429_retry_headers.py}) that Claude
+     * Code CLI's SDK honors {@code Retry-After} and gives up immediately
+     * instead of retrying up to 10 times when the value is large — so this is
+     * only set for genuine hard limits, never for ordinary transient 429s
+     * (which have no {@code resets_in_seconds} field and should still get the
+     * CLI's normal retry/backoff behavior).
+     */
+    private static void setRetryAfterIfHardLimit(HttpServletResponse resp, String providerBody, int httpStatus) {
+        Long retryAfterSeconds = extractHardLimitRetryAfterSeconds(providerBody, httpStatus);
+        if (retryAfterSeconds != null) {
+            resp.setHeader("Retry-After", String.valueOf(retryAfterSeconds));
+        }
+    }
+
+    /**
+     * Extracts the {@code resets_in_seconds} field from a hard-quota-exhaustion
+     * error body (currently only Codex's {@code usage_limit_reached} error
+     * carries this), or {@code null} if the error doesn't indicate a
+     * long-lived hard limit.
+     */
+    static Long extractHardLimitRetryAfterSeconds(String providerBody, int httpStatus) {
+        if (httpStatus != 429) {
+            return null;
+        }
+        try {
+            JsonNode json = AnthropicToCodexTranslator.MAPPER.readTree(providerBody);
+            JsonNode resetsIn = json.path("error").path("resets_in_seconds");
+            if (resetsIn.isNumber()) {
+                return resetsIn.asLong();
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * Recognizes OpenAI-format rate-limit/quota-exhaustion errors so they can be
+     * mapped to Anthropic's canonical {@code rate_limit_error} type, mirroring
+     * what {@link #toCodexAnthropicError} already does for the Codex backend.
+     * HTTP 429 always qualifies; otherwise matches OpenAI's documented
+     * {@code insufficient_quota} / {@code rate_limit_exceeded} error codes/types.
+     */
+    private static boolean isQuotaOrRateLimitError(int httpStatus, String rawType, String rawCode) {
+        if (httpStatus == 429) {
+            return true;
+        }
+        String type = rawType.toLowerCase(java.util.Locale.ROOT);
+        String code = rawCode.toLowerCase(java.util.Locale.ROOT);
+        return type.contains("insufficient_quota") || code.contains("insufficient_quota")
+                || type.contains("rate_limit") || code.contains("rate_limit");
+    }
+
+    /**
+     * Resolves the value to send upstream as {@code prompt_cache_key}.
+     *
+     * <p>Prefers Claude Code CLI's own {@code X-Claude-Code-Session-Id} request
+     * header — confirmed stable across {@code --continue}/{@code --resume}
+     * restarts of the same conversation (same value used for the
+     * {@code ~/.claude/projects/<hash>/<session-id>.jsonl} file being reopened;
+     * see {@code claude-launch-tests/test_session_id_header_stability.py}) —
+     * over the plugin's own per-process proxy UUID, which is freshly generated
+     * on every {@code ClaudeProcess.start()} call and would otherwise start a
+     * new prompt-cache key on every session restart, discarding any warm cache.
+     * Falls back to the proxy UUID when the header is absent (e.g. non-Claude-Code
+     * clients, or older CLI versions that don't send it).
+     */
+    private static String resolvePromptCacheKey(HttpServletRequest req, String uuid) {
+        String sessionHeader = req.getHeader("X-Claude-Code-Session-Id");
+        return sessionHeader != null && !sessionHeader.isBlank() ? sessionHeader : uuid;
+    }
+
+    /**
+     * Extracts usage totals from a raw provider {@code usage} object and
+     * accumulates them into {@code config} for the Session Statistics dialog.
+     * Handles both usage-field naming schemes seen across the two upstream
+     * shapes this servlet translates: Chat Completions
+     * ({@code prompt_tokens}/{@code completion_tokens}/
+     * {@code prompt_tokens_details.cached_tokens}) and Responses/Codex
+     * ({@code input_tokens}/{@code output_tokens}/
+     * {@code input_tokens_details.cached_tokens}); {@code cache_write_tokens}
+     * is a shared top-level field name on both. Missing fields default to 0.
+     *
+     * <p>Called from the non-streaming response paths; the streaming (SSE) paths
+     * accumulate the same totals directly from their {@code StreamingState}
+     * (see {@code handleStreaming}/{@code handleCodexStreaming}), which tracks
+     * cached/cache-write token details the same way once the stream completes.
+     */
+    static void recordUsage(OpenAIProxyConfig config, String model, JsonNode usage) {
+        if (usage.isMissingNode()) {
+            return;
+        }
+        long input = usage.has("prompt_tokens")
+                ? usage.path("prompt_tokens").asLong(0) : usage.path("input_tokens").asLong(0);
+        long output = usage.has("completion_tokens")
+                ? usage.path("completion_tokens").asLong(0) : usage.path("output_tokens").asLong(0);
+        JsonNode cachedDetails = usage.has("prompt_tokens_details")
+                ? usage.path("prompt_tokens_details") : usage.path("input_tokens_details");
+        long cached = cachedDetails.path("cached_tokens").asLong(0);
+        long cacheWrite = usage.path("cache_write_tokens").asLong(0);
+        config.addUsage(model, input, output, cached, cacheWrite);
+    }
+
+    /**
+     * Resolves whether experimental explicit prompt caching is enabled for the
+     * given model, per the owning profile's {@code ModelAlias} settings.
+     * {@code false} when the config carries no profile id (e.g. older callers
+     * of the {@code CHAT_COMPLETIONS}-mode registration, or the profile was
+     * since deleted) — same as if the model were never opted in.
+     */
+    private static boolean isExplicitPromptCachingEnabled(OpenAIProxyConfig config, String model) {
+        if (config.getProfileId() == null || config.getProfileId().isBlank()) {
+            return false;
+        }
+        ClaudeProfile profile = ClaudeProfileStore.findById(config.getProfileId());
+        return profile != null && profile.isExplicitPromptCachingEnabled(model);
     }
 
     private static String readBody(HttpServletRequest req) throws IOException {

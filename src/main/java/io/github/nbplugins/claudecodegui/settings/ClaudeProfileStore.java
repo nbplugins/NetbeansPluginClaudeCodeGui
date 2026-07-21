@@ -76,6 +76,7 @@ public final class ClaudeProfileStore {
                 def.setExtraCliArgs(stored.getExtraCliArgs());
                 def.setModelAliases(stored.getModelAliases());
                 def.setCustomModels(stored.getCustomModels());
+                def.setExplicitPromptCachingModels(stored.getExplicitPromptCachingModels());
                 def.setStorageDir(stored.getStorageDir());
                 def.setOpenaiSubscription(stored.isOpenaiSubscription());
                 def.setChatgptAccessToken(stored.getChatgptAccessToken());

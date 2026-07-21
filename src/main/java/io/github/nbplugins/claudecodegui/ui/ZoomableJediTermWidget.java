@@ -8,11 +8,13 @@ import com.jediterm.terminal.ui.TerminalPanel;
 import com.jediterm.terminal.ui.settings.SettingsProvider;
 import io.github.nbplugins.claudecodegui.ui.common.Zoomable;
 import io.github.nbplugins.claudecodegui.ui.common.ZoomSupport;
+import java.util.function.Supplier;
+import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 
 /**
- * A {@link JediTermWidget} that splices a "Zoom" submenu into the terminal's
- * native right-click context menu.
+ * A {@link JediTermWidget} that splices a "Zoom" submenu (and, optionally, a
+ * "Session Statistics…" item) into the terminal's native right-click context menu.
  *
  * <p>JediTerm builds its context menu internally: {@code TerminalPanel} has its
  * own mouse listener that calls the protected
@@ -32,6 +34,8 @@ import javax.swing.JPopupMenu;
 public class ZoomableJediTermWidget extends JediTermWidget {
 
     private final Zoomable zoomable;
+    private final Runnable onShowSessionStatistics;
+    private final Supplier<Boolean> sessionStatisticsAvailable;
     private ZoomTerminalPanel zoomPanel;
 
     /**
@@ -41,8 +45,28 @@ public class ZoomableJediTermWidget extends JediTermWidget {
      *                          and {@link #refreshFont()} operate on
      */
     public ZoomableJediTermWidget(SettingsProvider settingsProvider, Zoomable zoomable) {
+        this(settingsProvider, zoomable, null, null);
+    }
+
+    /**
+     * @param settingsProvider           terminal settings (font, colors); also supplies the
+     *                                    zoom-adjusted font size
+     * @param zoomable                    the surface whose font the context-menu Zoom submenu
+     *                                    and {@link #refreshFont()} operate on
+     * @param onShowSessionStatistics     called when the context menu's "Session Statistics…"
+     *                                    item is clicked; {@code null} omits that item entirely
+     * @param sessionStatisticsAvailable  returns whether Session Statistics is available for
+     *                                    the current session (only OpenAI-compatible/ChatGPT
+     *                                    Subscription connection types); queried on every
+     *                                    right-click since availability can change once the
+     *                                    session starts; {@code null} treated as unavailable
+     */
+    public ZoomableJediTermWidget(SettingsProvider settingsProvider, Zoomable zoomable,
+            Runnable onShowSessionStatistics, Supplier<Boolean> sessionStatisticsAvailable) {
         super(settingsProvider);
         this.zoomable = zoomable;
+        this.onShowSessionStatistics = onShowSessionStatistics;
+        this.sessionStatisticsAvailable = sessionStatisticsAvailable;
     }
 
     /**
@@ -81,6 +105,15 @@ public class ZoomableJediTermWidget extends JediTermWidget {
         protected JPopupMenu createPopupMenu(TerminalActionProvider provider) {
             JPopupMenu menu = super.createPopupMenu(provider);
             ZoomSupport.appendZoomMenu(menu, zoomable);
+            if (onShowSessionStatistics != null && sessionStatisticsAvailable != null
+                    && Boolean.TRUE.equals(sessionStatisticsAvailable.get())) {
+                if (menu.getComponentCount() > 0) {
+                    menu.addSeparator();
+                }
+                JMenuItem sessionStats = new JMenuItem("Session Statistics…");
+                sessionStats.addActionListener(e -> onShowSessionStatistics.run());
+                menu.add(sessionStats);
+            }
             return menu;
         }
 

@@ -159,6 +159,16 @@ public final class ClaudeProfile {
     private List<String> customModels;
 
     /**
+     * Model IDs opted into experimental explicit prompt caching (see
+     * {@link ModelAlias#explicitPromptCaching}), for the OpenAI-compatible and
+     * ChatGPT Subscription connection types. Only entries differing from
+     * {@link ModelAlias#defaultExplicitPromptCaching(String)} need to be
+     * stored, but for simplicity every model shown in the Model Aliases dialog
+     * has its resolved flag written here on save.
+     */
+    private Map<String, Boolean> explicitPromptCachingModels;
+
+    /**
      * Extra CLI arguments passed to the {@code claude} process on startup.
      * E.g. {@code "--verbose --dangerously-skip-permissions"}.
      */
@@ -246,6 +256,7 @@ public final class ClaudeProfile {
         this.extraEnvVars  = new ArrayList<>();
         this.modelAliases  = new HashMap<>();
         this.customModels  = new ArrayList<>();
+        this.explicitPromptCachingModels = new HashMap<>();
         this.extraCliArgs  = "";
         this.storageDir    = "";
         this.chatgptAccessToken    = "";
@@ -624,6 +635,40 @@ public final class ClaudeProfile {
      */
     public void setCustomModels(List<String> ids) {
         this.customModels = ids != null ? new ArrayList<>(ids) : new ArrayList<>();
+    }
+
+    /**
+     * Returns the per-model experimental explicit-prompt-caching flags.
+     *
+     * @return unmodifiable map (model ID → flag); never {@code null}
+     */
+    public Map<String, Boolean> getExplicitPromptCachingModels() {
+        return explicitPromptCachingModels != null
+                ? Collections.unmodifiableMap(explicitPromptCachingModels) : Collections.emptyMap();
+    }
+
+    /**
+     * Replaces the per-model experimental explicit-prompt-caching flags.
+     *
+     * @param flags model ID → flag map; {@code null} clears the map
+     */
+    public void setExplicitPromptCachingModels(Map<String, Boolean> flags) {
+        this.explicitPromptCachingModels = flags != null ? new HashMap<>(flags) : new HashMap<>();
+    }
+
+    /**
+     * Resolves whether explicit prompt caching is enabled for the given model
+     * ID, falling back to {@link ModelAlias#defaultExplicitPromptCaching(String)}
+     * when no explicit override has been stored for it.
+     *
+     * @param modelId model identifier
+     * @return {@code true} if explicit prompt caching should be sent for this model
+     */
+    public boolean isExplicitPromptCachingEnabled(String modelId) {
+        if (explicitPromptCachingModels != null && explicitPromptCachingModels.containsKey(modelId)) {
+            return explicitPromptCachingModels.get(modelId);
+        }
+        return ModelAlias.defaultExplicitPromptCaching(modelId);
     }
 
     /**
