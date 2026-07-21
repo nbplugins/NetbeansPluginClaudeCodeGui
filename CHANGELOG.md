@@ -1,3 +1,5 @@
+# 1.3
+
 - Fixed the OpenAI-compatible and ChatGPT Subscription connection types silently ending a prompt with no visible response when the provider returned an empty completion (typically because the conversation grew too large for the model's context/output limit) — Claude Code now shows an explanatory message, including the size of the request that triggered it, instead of just returning to the idle prompt
 - Added a "Session Statistics…" context menu item (right-click the prompt area or the terminal) showing cumulative prompt-cache and token-usage statistics plus the size of the last request, broken down per model used during the session; only available for sessions using the OpenAI-compatible or ChatGPT Subscription connection types
 - Added an experimental "Explicit Cache" option per model in the Model Aliases dialog (for the OpenAI-compatible and ChatGPT Subscription connection types), enabled by default for GPT-5.6-family models, to reduce token costs on long conversations where that model family's automatic caching is unreliable; older GPT models get an extended 24-hour cache retention instead
