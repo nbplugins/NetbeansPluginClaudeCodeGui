@@ -1,4 +1,4 @@
-# 1.3
+# 1.3.8 (2026-07-22)
 
 - Fixed the OpenAI-compatible and ChatGPT Subscription connection types silently ending a prompt with no visible response when the provider returned an empty completion (typically because the conversation grew too large for the model's context/output limit) — Claude Code now shows an explanatory message, including the size of the request that triggered it, instead of just returning to the idle prompt
 - Added a "Session Statistics…" context menu item (right-click the prompt area or the terminal) showing cumulative prompt-cache and token-usage statistics plus the size of the last request, broken down per model used during the session; only available for sessions using the OpenAI-compatible or ChatGPT Subscription connection types
