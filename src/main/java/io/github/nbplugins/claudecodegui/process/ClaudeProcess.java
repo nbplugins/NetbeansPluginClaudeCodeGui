@@ -179,6 +179,7 @@ public final class ClaudeProcess {
                 env.put("ANTHROPIC_BASE_URL",
                         "http://127.0.0.1:" + mcpSvc.getServerPort() + "/openai-proxy/" + uuid);
                 env.put("ANTHROPIC_AUTH_TOKEN", "sk-proxy-internal");
+                disableAutoModeServerCheck(env);
                 LOG.info("OpenAI proxy registered: uuid=" + uuid
                         + ", profile=" + profile.getName()
                         + ", target=" + profile.getBaseUrl());
@@ -204,6 +205,7 @@ public final class ClaudeProcess {
                     env.put("ANTHROPIC_BASE_URL",
                             "http://127.0.0.1:" + mcpSvc.getServerPort() + "/openai-proxy/" + uuid);
                     env.put("ANTHROPIC_AUTH_TOKEN", "sk-proxy-internal");
+                    disableAutoModeServerCheck(env);
                     LOG.info("ChatGPT subscription proxy registered: uuid=" + uuid
                             + ", profile=" + profile.getName());
                 } catch (io.github.nbplugins.claudecodegui.chatgptauth.OAuthException e) {
@@ -764,6 +766,31 @@ public final class ClaudeProcess {
      * @param profilesDir base directory for profile config dirs
      * @return mutable env map ready to pass to {@link PtyProcessBuilder}
      */
+    /**
+     * Tells Claude Code not to ask the far end of {@code ANTHROPIC_BASE_URL} to
+     * perform auto mode's server-side classifier checks.
+     *
+     * <p>The OpenAI-proxy and ChatGPT-subscription connection types point
+     * {@code ANTHROPIC_BASE_URL} at this plugin's own local servlet, which
+     * fully translates every request into a non-Anthropic API (OpenAI Chat
+     * Completions or the Codex Responses API). That backend has no concept of
+     * Anthropic's {@code safeguards} request field / {@code safeguard_results}
+     * response field, so the server-side check can never succeed here. Without
+     * this override, Claude Code would still try it, fall back, and show a
+     * one-time "session isn't eligible" notice every session; classifier
+     * requests are billed identically either way, so this only removes the
+     * interruption.
+     *
+     * <p>Uses {@code putIfAbsent} so a value the user already set explicitly
+     * (e.g. via a profile's extra env vars, applied by {@link #buildEnv}
+     * before this runs) is left untouched.
+     *
+     * @param env mutable env map being built for the child process
+     */
+    static void disableAutoModeServerCheck(Map<String, String> env) {
+        env.putIfAbsent("CLAUDE_CODE_AUTO_MODE_SERVER", "0");
+    }
+
     static Map<String, String> buildEnv(ClaudeProfile profile, java.nio.file.Path profilesDir) {
         Map<String, String> env = new HashMap<>(System.getenv());
         env.put("TERM", "xterm-256color");

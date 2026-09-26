@@ -1,3 +1,5 @@
+- Stopped showing Claude Code's "auto mode classifier billing" session notice when using an OpenAI-compatible or ChatGPT Subscription connection type — classifier requests are billed the same as before, just without the interruption, since this connection type was never able to hand those checks off to the server in the first place
+
 # 1.3.8 (2026-07-22)
 
 - Fixed the OpenAI-compatible and ChatGPT Subscription connection types silently ending a prompt with no visible response when the provider returned an empty completion (typically because the conversation grew too large for the model's context/output limit) — Claude Code now shows an explanatory message, including the size of the request that triggered it, instead of just returning to the idle prompt

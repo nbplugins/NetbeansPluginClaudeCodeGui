@@ -172,6 +172,26 @@ class ClaudeProcessTest {
     }
 
     // -------------------------------------------------------------------------
+    // disableAutoModeServerCheck
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testDisableAutoModeServerCheckSetsWhenAbsent() {
+        java.util.Map<String, String> env = new java.util.HashMap<>();
+        ClaudeProcess.disableAutoModeServerCheck(env);
+        assertEquals("0", env.get("CLAUDE_CODE_AUTO_MODE_SERVER"));
+    }
+
+    @Test
+    void testDisableAutoModeServerCheckKeepsUserOverride() {
+        java.util.Map<String, String> env = new java.util.HashMap<>();
+        env.put("CLAUDE_CODE_AUTO_MODE_SERVER", "1");
+        ClaudeProcess.disableAutoModeServerCheck(env);
+        assertEquals("1", env.get("CLAUDE_CODE_AUTO_MODE_SERVER"),
+                "an explicit user-set value must not be overridden");
+    }
+
+    // -------------------------------------------------------------------------
     // toShellCommand
     // -------------------------------------------------------------------------
 
