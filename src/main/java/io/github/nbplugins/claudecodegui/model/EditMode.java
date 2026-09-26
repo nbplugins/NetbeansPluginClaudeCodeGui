@@ -12,13 +12,15 @@ import java.util.Optional;
  * <p>Constants are ordered from <em>least</em> to <em>most</em> permissive, so
  * ordinal comparisons ({@code >=}, {@code <=}) express permission thresholds naturally.
  *
- * <p>Screen-text mapping (used by {@code ScreenContentDetector.detectEditMode}):
+ * <p>Screen-text mapping (used by {@code ScreenContentDetector.detectEditMode}), checked
+ * against the single bottom-most non-blank screen line only:
  * <ul>
  *   <li>{@link #PLAN} — bottom line contains {@code "plan mode"} or {@code "plan-mode"}</li>
- *   <li>{@link #DEFAULT} — bottom line starts with {@code "  esc to interrupt"}
- *       (two leading spaces)</li>
+ *   <li>{@link #DEFAULT} — bottom line contains {@code "manual mode on"}, or (fallback for
+ *       Claude Code versions that do not emit that text) starts with
+ *       {@code "  esc to interrupt"} (two leading spaces)</li>
  *   <li>{@link #ACCEPT_EDITS} — bottom line contains {@code "accept edits"}</li>
- *   <li>{@link #AUTO} — bottom line contains {@code "auto mode"};
+ *   <li>{@link #AUTO} — bottom line contains {@code "auto mode on"};
  *       available on Max/Team/Enterprise/API plans (Claude Code 2.1.83+)</li>
  *   <li>{@link #BYPASS_PERMISSIONS} — bottom line contains {@code "bypass permissions"};
  *       appears when Claude was launched with {@code --dangerously-skip-permissions}</li>

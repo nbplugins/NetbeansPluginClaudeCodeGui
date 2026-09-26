@@ -459,6 +459,10 @@ public final class ScreenContentDetector {
     /**
      * Detect the Claude CLI edit mode from the rendered screen footer.
      *
+     * <p>Only the single bottom-most non-blank line is inspected — text further up the
+     * screen (e.g. a permission-prompt tip or menu option that merely mentions a mode by
+     * name) must never be mistaken for the actual mode-footer line.
+     *
      * <p>Possible return values:
      * <ul>
      *   <li>{@link EditMode#PLAN} — bottom line contains {@code "plan mode"} or
@@ -468,9 +472,12 @@ public final class ScreenContentDetector {
      *   <li>{@link EditMode#BYPASS_PERMISSIONS} — bottom line contains
      *       {@code "bypass permissions"}; present when Claude was launched with
      *       {@code --dangerously-skip-permissions}</li>
-     *   <li>{@link EditMode#DEFAULT} — bottom line starts with
+     *   <li>{@link EditMode#AUTO} — bottom line contains {@code "auto mode on"}</li>
+     *   <li>{@link EditMode#DEFAULT} — bottom line contains {@code "manual mode on"}, or
+     *       (fallback for Claude Code versions that do not emit that text) starts with
      *       {@code "  esc to interrupt"} (two leading spaces)</li>
-     *   <li>{@link Optional#empty()} — screen is blank or transitioning</li>
+     *   <li>{@link Optional#empty()} — screen is blank, transitioning, or the bottom line is
+     *       not a recognized mode indicator</li>
      * </ul>
      *
      * @param lines rendered screen lines
@@ -480,22 +487,24 @@ public final class ScreenContentDetector {
         if (lines == null || lines.isEmpty()) return Optional.empty();
         List<String> bottom = bottomNonBlankLines(lines, 3);
         if (bottom.isEmpty()) return Optional.empty();
-        for (String line : bottom) {
-            String lower = line.toLowerCase();
-            if (lower.contains("plan mode") || lower.contains("plan-mode")) {
-                return Optional.of(EditMode.PLAN);
-            }
-            if (lower.contains("accept edits")) {
-                return Optional.of(EditMode.ACCEPT_EDITS);
-            }
-            if (lower.contains("bypass permissions")) {
-                return Optional.of(EditMode.BYPASS_PERMISSIONS);
-            }
-            if (lower.contains("auto mode")) {
-                return Optional.of(EditMode.AUTO);
-            }
+        String lower = bottom.get(0).toLowerCase();
+        if (lower.contains("plan mode") || lower.contains("plan-mode")) {
+            return Optional.of(EditMode.PLAN);
         }
-        // "  esc to interrupt" with two leading spaces is the reliable Ask/default-mode signal.
+        if (lower.contains("accept edits")) {
+            return Optional.of(EditMode.ACCEPT_EDITS);
+        }
+        if (lower.contains("bypass permissions")) {
+            return Optional.of(EditMode.BYPASS_PERMISSIONS);
+        }
+        if (lower.contains("auto mode on")) {
+            return Optional.of(EditMode.AUTO);
+        }
+        if (lower.contains("manual mode on")) {
+            return Optional.of(EditMode.DEFAULT);
+        }
+        // "  esc to interrupt" with two leading spaces is the reliable Ask/default-mode signal,
+        // kept as a fallback for older Claude Code versions that never emit "manual mode on".
         // Without leading spaces the screen is in an unknown / transitioning state.
         if (bottom.get(0).startsWith("  esc to interrupt")) {
             return Optional.of(EditMode.DEFAULT);

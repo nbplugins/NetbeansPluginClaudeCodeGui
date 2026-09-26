@@ -240,6 +240,51 @@ class ScreenContentDetectorTest {
         assertTrue(detector.detectEditMode(List.of()).isEmpty());
     }
 
+    @org.junit.jupiter.api.Test
+    void detectEditModeNotAutoWhenAutoModeOnlyMentionedInPermissionPromptTip() {
+        // Regression: a Bash-command permission prompt whose tip/menu text merely *mentions*
+        // "auto mode" must NOT be misdetected as EditMode.AUTO — only the actual bottom-most
+        // footer line indicates the current mode.
+        List<String> lines = new ArrayList<>(List.of(
+                " Bash command",
+                " Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below",
+                "",
+                "   │ cd /home/oleg/my-projects/grandorgue/GrandOrgue && mkdir -p build/perf-baseline-debug",
+                "   Configure a scratch Debug build with testing enabled",
+                "",
+                " Do you want to proceed?",
+                " ❯ 1. Yes",
+                "   2. Yes, and switch to auto mode · auto mode handles these prompts for you",
+                "   3. No",
+                "",
+                " Esc to cancel · Tab to amend"
+        ));
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isEmpty(),
+                "Expected empty Optional — permission-prompt tip/menu text merely mentions "
+                        + "\"auto mode\", it is not the mode-footer line");
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeManualMode() {
+        List<String> lines = new ArrayList<>(List.of(
+                "Some output",
+                "⏵⏵ manual mode on (shift+tab to cycle)"
+        ));
+        for (int i = 0; i < 10; i++) lines.add("");
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent());
+        assertEquals(EditMode.DEFAULT, result.get());
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeManualModeCaseInsensitive() {
+        List<String> lines = List.of("Some output", "Manual Mode on | esc to interrupt");
+        java.util.Optional<EditMode> result = detector.detectEditMode(lines);
+        assertTrue(result.isPresent());
+        assertEquals(EditMode.DEFAULT, result.get());
+    }
+
     // -------------------------------------------------------------------------
     // detectPlanName
     // -------------------------------------------------------------------------
