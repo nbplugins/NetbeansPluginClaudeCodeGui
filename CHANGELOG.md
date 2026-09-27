@@ -1,4 +1,4 @@
-# 1.3
+# 1.3.12 (2026-09-27)
 
 - Fixed the plugin's Auto Mode indicator incorrectly turning on when a permission prompt (e.g. for a Bash command) merely mentioned "auto mode" in its tip text or "switch to auto mode" menu option, instead of the mode actually changing
 - Stopped showing Claude Code's "auto mode classifier billing" session notice when using an OpenAI-compatible or ChatGPT Subscription connection type — classifier requests are billed the same as before, just without the interruption, since this connection type was never able to hand those checks off to the server in the first place
