@@ -355,6 +355,126 @@ class ClaudeSessionControllerTest {
     }
 
     // -------------------------------------------------------------------------
+    // pollScreenState — flicker regression: choice-panel resize reflows the same
+    // dialog to a different wrapped width, which must not immediately replace it
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression (GrandOrgue project bug report): showing a choice menu resizes the
+     * terminal (to fit the ChoiceMenuPanel), which makes Claude's Ink renderer re-wrap
+     * the SAME dialog at the new column width. If the reflowed variant is applied to
+     * the model immediately, it triggers another divider resize, causing another
+     * reflow, looping forever (visible as a flickering dialog).
+     *
+     * <p>These are the actual "git-commit-bash-dialog" / "git-commit-bash-dialog-narrow"
+     * fixtures from {@code screen-content-detector/detect-choice-menu/} — the same
+     * real-world dialog, reflowed at two different terminal widths; only option 2's
+     * wrapped display text differs.
+     *
+     * <p>Fix: a replacement candidate that differs from the currently active menu must
+     * be seen on two consecutive polls before it replaces the active menu.
+     */
+    @Test
+    void pollScreenStateDoesNotFlickerBetweenReflowedMenuVariants() throws Exception {
+        List<String> normalWidth = Arrays.asList(
+                " Bash command",
+                "",
+                "   git add pom.xml README.md && git commit -m \"$(cat <<'EOF'",
+                "   Rename Maven project: name to \"Netbeans Claude Code GUI\", artifactId to \"netbeans-claude-code-gui\" (0.14.17-SNAPSHOT)",
+                "",
+                "   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                "   EOF",
+                "   )\"",
+                "   Run shell command",
+                "",
+                " Do you want to proceed?",
+                " ❯ 1. Yes",
+                "   2. Yes, and don't ask again for git add and git commit commands in /home/oleg/my-projects/NetbeansClaudeCodePlugin",
+                "   3. No",
+                "",
+                " Esc to cancel · Tab to amend · ctrl+e to explain"
+        );
+        List<String> narrowWidth = Arrays.asList(
+                " Bash command",
+                "",
+                "   git add pom.xml README.md && git commit -m \"$(cat <<'EOF'",
+                "   Rename Maven project: name to \"Netbeans Claude Code GUI\", artifactId to \"netbeans-claude-code-gui\"",
+                " (0.14.17-SNAPSHOT)",
+                "",
+                "   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                "   EOF",
+                "   )\"",
+                "   Run shell command",
+                "",
+                " Do you want to proceed?",
+                " ❯ 1. Yes",
+                "   2. Yes, and don't ask again for git add and git commit commands in /home/oleg/my-projects/Ne",
+                "tbeansClaudeCodePlugin",
+                "   3. No",
+                "",
+                " Esc to cancel · Tab to amend · ctrl+e to explain"
+        );
+
+        AtomicReference<List<String>> screenRef = new AtomicReference<>(normalWidth);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, screenRef::get);
+
+        c.pollScreenState();
+        ChoiceMenuModel shown = m.getActiveChoiceMenu();
+        assertNotNull(shown, "menu must be set on first poll");
+        String originalOption2 = shown.options().get(1).display();
+
+        // Choice panel resize reflows the dialog to a narrower width for one poll.
+        screenRef.set(narrowWidth);
+        c.pollScreenState();
+        assertEquals(originalOption2, m.getActiveChoiceMenu().options().get(1).display(),
+                "a single differing poll must not replace the active menu with the reflowed variant");
+
+        // Screen reflows back to the original width before the narrow variant is ever
+        // confirmed twice in a row -- the menu must never have flickered to it.
+        screenRef.set(normalWidth);
+        c.pollScreenState();
+        assertEquals(originalOption2, m.getActiveChoiceMenu().options().get(1).display(),
+                "menu must remain stable and never show the transient reflowed variant");
+    }
+
+    /**
+     * A genuinely different menu (not a reflow artifact) must still be applied once
+     * it is seen on two consecutive polls, so the debounce added for the flicker fix
+     * does not permanently block legitimate menu replacements.
+     */
+    @Test
+    void pollScreenStateAppliesNewMenuAfterTwoConsecutiveConfirmations() throws Exception {
+        List<String> menuA = Arrays.asList(
+                " Do you want to proceed?",
+                " ❯ 1. Yes",
+                "   2. No",
+                " Esc to cancel"
+        );
+        List<String> menuB = Arrays.asList(
+                " Claude wants to exit plan mode",
+                " ❯ 1. Yes",
+                "   2. No",
+                " Esc to cancel"
+        );
+        AtomicReference<List<String>> screenRef = new AtomicReference<>(menuA);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, screenRef::get);
+
+        c.pollScreenState();
+        assertEquals("Do you want to proceed?", m.getActiveChoiceMenu().text());
+
+        screenRef.set(menuB);
+        c.pollScreenState();
+        assertEquals("Do you want to proceed?", m.getActiveChoiceMenu().text(),
+                "must not replace on the first differing detection");
+
+        c.pollScreenState();
+        assertEquals("Claude wants to exit plan mode", m.getActiveChoiceMenu().text(),
+                "genuinely new menu must be applied after two consecutive confirmations");
+    }
+
+    // -------------------------------------------------------------------------
     // pollScreenState — model discovery deferred while screen shows WORKING
     // -------------------------------------------------------------------------
 

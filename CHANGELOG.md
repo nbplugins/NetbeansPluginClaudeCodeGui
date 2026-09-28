@@ -1,3 +1,5 @@
+- Fixed a choice-dialog prompt (e.g. a Bash-command permission prompt) flickering and repeatedly resizing when Claude's response text re-wrapped to a slightly different width after the dialog first appeared
+
 # 1.3.12 (2026-09-27)
 
 - Fixed the plugin's Auto Mode indicator incorrectly turning on when a permission prompt (e.g. for a Bash command) merely mentioned "auto mode" in its tip text or "switch to auto mode" menu option, instead of the mode actually changing

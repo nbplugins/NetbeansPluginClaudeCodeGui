@@ -135,6 +135,13 @@ public class ClaudeSessionController {
     private int standardModelCount = 0;
 
     /**
+     * A newly detected choice menu that differs from the currently active one, held
+     * pending a second consecutive confirming detection before it replaces the active
+     * menu. See {@link #applyDetectedChoiceMenu}.
+     */
+    private ChoiceMenuModel pendingChoiceMenuCandidate;
+
+    /**
      * Rolling buffer of the last {@link #PTY_LINE_BUFFER_SIZE} stripped PTY lines.
      * Used as a fallback for prompt detection when the JediTerm screen buffer is
      * still empty (e.g. widget not yet laid out, terminal size 0×0 at startup).
@@ -259,7 +266,7 @@ public class ClaudeSessionController {
 
         modelDiscoveryAttempts = 0;
         modelComboPopulated = false;
-        model.clearChoiceMenu();
+        clearActiveChoiceMenu();
         model.setLifecycle(SessionLifecycle.STARTING);
         model.setWorkingDirectory(dir);
         model.loadPersistedHistory();
@@ -321,7 +328,7 @@ public class ClaudeSessionController {
         firstOutputReceived = false;
 
         model.setModelList(List.of(), -1);
-        model.clearChoiceMenu();
+        clearActiveChoiceMenu();
         model.clearEditModeRegistry();
         model.setLifecycle(SessionLifecycle.STARTING);
     }
@@ -469,7 +476,7 @@ public class ClaudeSessionController {
                 }, "pty-multiselect");
                 t.setDaemon(true);
                 t.start();
-                model.clearChoiceMenu();
+                clearActiveChoiceMenu();
             } else if (answer.startsWith("MULTI_TYPE:")) {
                 // Format: MULTI_TYPE:checks:typeN:text
                 // e.g. MULTI_TYPE:1,3:5:my text  or  MULTI_TYPE::5:my text
@@ -525,7 +532,7 @@ public class ClaudeSessionController {
                 }, "pty-multitype");
                 t.setDaemon(true);
                 t.start();
-                model.clearChoiceMenu();
+                clearActiveChoiceMenu();
             } else if (answer.startsWith("TYPE:")) {
                 int sep = answer.indexOf(':', 5);
                 String digit = answer.substring(5, sep);
@@ -569,14 +576,14 @@ public class ClaudeSessionController {
                 }, "pty-typeinput");
                 t.setDaemon(true);
                 t.start();
-                model.clearChoiceMenu();
+                clearActiveChoiceMenu();
             } else if (answer.startsWith("ARROW:")) {
                 int targetIdx = Integer.parseInt(answer.substring(6));
                 ChoiceMenuModel current = model.getActiveChoiceMenu();
                 int currentIdx = current != null ? current.defaultOptionIndex() : 0;
                 int delta = targetIdx - currentIdx;
                 LOG.fine("[PTY write] ARROW targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
-                model.clearChoiceMenu();
+                clearActiveChoiceMenu();
                 if (delta == 0) {
                     connector.write("\r");
                 } else {
@@ -610,7 +617,7 @@ public class ClaudeSessionController {
                     int currentIdx = currentIdx2;
                     int delta = targetIdx - currentIdx;
                     LOG.fine("[PTY write] ARROW-digit targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
-                    model.clearChoiceMenu();
+                    clearActiveChoiceMenu();
                     if (delta == 0) {
                         connector.write("\r");
                     } else {
@@ -636,7 +643,7 @@ public class ClaudeSessionController {
                     String toWrite = isMenuDigit ? answer : answer + "\r";
                     LOG.fine("[PTY write] " + toWrite.replace("\r", "\\r").replace("\n", "\\n"));
                     connector.write(toWrite);
-                    model.clearChoiceMenu();
+                    clearActiveChoiceMenu();
                 }
             }
         } catch (IOException ex) {
@@ -1110,12 +1117,7 @@ public class ClaudeSessionController {
         if (!modelDiscoveryInProgress) {
             Optional<ChoiceMenuModel> menuOpt = screenContentDetector.detectChoiceMenu(lines);
             if (menuOpt.isPresent()) {
-                ChoiceMenuModel newMenu = menuOpt.get();
-                ChoiceMenuModel current = model.getActiveChoiceMenu();
-                if (current == null || !newMenu.text().equals(current.text()) || !optionsEqual(newMenu.options(), current.options())) {
-                    LOG.fine("[pollScreenState] setting choice menu: \"" + newMenu.text() + "\"");
-                    model.setActiveChoiceMenu(newMenu);
-                }
+                applyDetectedChoiceMenu(menuOpt.get(), "[pollScreenState] ");
             } else if (model.getActiveChoiceMenu() != null && !screenContentDetector.detectYesNoPrompt(lines)) {
                 // For unnumbered menus (ARROW: responses), don't dismiss from the screen-poll timer.
                 // The /resume picker redraws itself during PTY resize (when the choice panel
@@ -1127,7 +1129,7 @@ public class ClaudeSessionController {
                         && active.options().get(0).response().startsWith("ARROW:");
                 if (!isUnnumbered) {
                     LOG.fine("[pollScreenState] menu gone from screen, dismissing");
-                    model.clearChoiceMenu();
+                    clearActiveChoiceMenu();
                 }
             }
         }
@@ -1223,7 +1225,7 @@ public class ClaudeSessionController {
         firstOutputReceived = false;
 
         model.setModelList(List.of(), -1);
-        model.clearChoiceMenu();
+        clearActiveChoiceMenu();
         model.clearEditModeRegistry();
         model.setLifecycle(SessionLifecycle.STARTING);
     }
@@ -1301,16 +1303,9 @@ public class ClaudeSessionController {
                     return;
                 }
                 LOG.fine("[screen prompt] menu gone from screen, dismissing");
-                model.clearChoiceMenu();
+                clearActiveChoiceMenu();
             } else {
-                ChoiceMenuModel newMenu = req.get();
-                ChoiceMenuModel current = model.getActiveChoiceMenu();
-                if (!newMenu.text().equals(current.text()) || !optionsEqual(newMenu.options(), current.options())) {
-                    LOG.fine("[screen prompt] menu changed, updating (req=" + newMenu.text() + ")");
-                    model.setActiveChoiceMenu(newMenu);
-                } else {
-                    LOG.fine("[screen prompt] menu still on screen, keeping (req=" + newMenu.text() + ")");
-                }
+                applyDetectedChoiceMenu(req.get(), "[screen prompt] ");
             }
             return;
         }
@@ -1361,6 +1356,59 @@ public class ClaudeSessionController {
     private ChoiceMenuModel detectCurrentMenu() {
         List<String> lines = screenLines.get();
         return screenContentDetector.detectChoiceMenu(lines).orElse(model.getActiveChoiceMenu());
+    }
+
+    /**
+     * Applies a newly detected choice menu to the model, or — if a <em>different</em>
+     * menu is already active — defers applying it until the same replacement candidate
+     * is confirmed by a second consecutive detection.
+     *
+     * <p>Showing a choice menu resizes the terminal to fit {@code ChoiceMenuPanel}
+     * (see {@code ClaudeSessionTab#switchSouthCard}), which makes Claude's Ink renderer
+     * re-wrap the same dialog at the new column width. Without this debounce, that
+     * transiently different-looking reflow would immediately replace the menu just
+     * shown, triggering another divider resize, another reflow, and so on — a visible
+     * flicker loop. Withholding the replacement until it is confirmed twice means the
+     * destabilizing resize never happens for a one-off reflow artifact, so the screen
+     * naturally reverts to matching the currently active menu on the next poll.
+     *
+     * @param newMenu the menu detected on this poll
+     * @param logTag  short prefix identifying the calling poll path, for LOG.fine messages
+     */
+    private void applyDetectedChoiceMenu(ChoiceMenuModel newMenu, String logTag) {
+        ChoiceMenuModel current = model.getActiveChoiceMenu();
+        if (current == null) {
+            pendingChoiceMenuCandidate = null;
+            LOG.fine(logTag + "setting choice menu: \"" + newMenu.text() + "\"");
+            model.setActiveChoiceMenu(newMenu);
+            return;
+        }
+        if (sameMenu(newMenu, current)) {
+            pendingChoiceMenuCandidate = null;
+            return;
+        }
+        if (pendingChoiceMenuCandidate != null && sameMenu(newMenu, pendingChoiceMenuCandidate)) {
+            LOG.fine(logTag + "confirmed replacement menu: \"" + newMenu.text() + "\"");
+            pendingChoiceMenuCandidate = null;
+            model.setActiveChoiceMenu(newMenu);
+        } else {
+            LOG.fine(logTag + "candidate replacement menu, awaiting confirmation: \"" + newMenu.text() + "\"");
+            pendingChoiceMenuCandidate = newMenu;
+        }
+    }
+
+    private static boolean sameMenu(ChoiceMenuModel a, ChoiceMenuModel b) {
+        return a.text().equals(b.text()) && optionsEqual(a.options(), b.options());
+    }
+
+    /**
+     * Clears the active choice menu and any pending replacement candidate held by
+     * {@link #applyDetectedChoiceMenu}, so a stale candidate from before the menu was
+     * dismissed can never leak into whatever is shown next.
+     */
+    private void clearActiveChoiceMenu() {
+        pendingChoiceMenuCandidate = null;
+        model.clearChoiceMenu();
     }
 
     private static boolean optionsEqual(List<ChoiceMenuModel.Option> a, List<ChoiceMenuModel.Option> b) {
