@@ -1,0 +1,8 @@
+{
+  "text": "Security guide",
+  "options": [
+    {"display": "No, exit", "response": "ARROW:0"},
+    {"display": "Yes, I trust this folder", "response": "ARROW:1"}
+  ],
+  "defaultOptionIndex": 0
+}
