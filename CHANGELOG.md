@@ -1,3 +1,4 @@
+- Fixed ChatGPT Subscription token refresh hanging indefinitely (freezing the session) when a profile's custom HTTPS/HTTP proxy hostname was slow or unreachable to resolve via DNS
 - Fixed a choice-dialog prompt (e.g. a Bash-command permission prompt) flickering and repeatedly resizing when Claude's response text re-wrapped to a slightly different width after the dialog first appeared
 
 # 1.3.12 (2026-09-27)
