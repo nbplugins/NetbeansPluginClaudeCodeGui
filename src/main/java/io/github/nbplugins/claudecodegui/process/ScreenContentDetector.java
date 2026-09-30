@@ -330,10 +330,20 @@ public final class ScreenContentDetector {
         int stopRow = -1; // row where we stopped (first non-option line above options)
 
         int i = footerRow - 1;
+        boolean firstBlock = true;
         while (i >= 0) {
-            // Skip blank lines between blocks
-            while (i >= 0 && screenLines.get(i).isBlank()) i--;
-            if (i < 0) break;
+            if (screenLines.get(i).isBlank()) {
+                if (!firstBlock) {
+                    // A blank line after at least one option block was already collected marks
+                    // the end of the option list (real menu items are never blank-separated from
+                    // each other) — stop here instead of skipping through unrelated prose above.
+                    stopRow = i;
+                    break;
+                }
+                // Allow a single blank gap between the footer and the first (bottom-most) option.
+                while (i >= 0 && screenLines.get(i).isBlank()) i--;
+                if (i < 0) break;
+            }
 
             String raw = screenLines.get(i);
             String trimmed = raw.trim();
@@ -360,12 +370,16 @@ public final class ScreenContentDetector {
                 break;
             }
 
-            // Collect this block: desc = current line, main = line above (if non-blank)
+            // Collect this block: desc = current line, main = line above (if non-blank).
+            // Only pair the two lines when the lower one carries the metadata separator "·"
+            // (e.g. "23 hours ago · bugfix/new-kafka · 1MB") — the shape real 2-line unnumbered
+            // entries use. Without that marker, treat the line as its own single-line option so
+            // two genuinely separate options (e.g. "No, exit" / "Yes, I trust this folder") don't
+            // get fused into one.
             String desc = trimmed;
-            i--;
             String main = null;
-            if (i >= 0 && !screenLines.get(i).isBlank()) {
-                String raw2 = screenLines.get(i);
+            if (desc.indexOf('·') >= 0 && i - 1 >= 0 && !screenLines.get(i - 1).isBlank()) {
+                String raw2 = screenLines.get(i - 1);
                 String trimmed2 = raw2.trim();
                 if (!isSeparatorLine(trimmed2) && !OPTION_LINE.matcher(trimmed2).matches()
                         && !isBoxDrawingLine(trimmed2) && !trimmed2.contains("\u2315")
@@ -374,6 +388,7 @@ public final class ScreenContentDetector {
                     i--;
                 }
             }
+            i--;
             if (main == null) {
                 // Single-line block — treat as main with no description
                 main = desc;
@@ -381,6 +396,7 @@ public final class ScreenContentDetector {
             }
             blockMainLines.add(0, main);
             blockDescLines.add(0, desc);
+            firstBlock = false;
         }
 
         if (blockMainLines.size() < 2) return Optional.empty();
