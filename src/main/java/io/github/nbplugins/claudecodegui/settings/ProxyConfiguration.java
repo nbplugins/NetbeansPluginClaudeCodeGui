@@ -63,7 +63,7 @@ public final class ProxyConfiguration {
                     try {
                         URI uri  = URI.create(url);
                         int port = uri.getPort() > 0 ? uri.getPort() : 8080;
-                        builder.proxy(ProxySelector.of(new InetSocketAddress(uri.getHost(), port)));
+                        builder.proxy(ProxySelector.of(InetSocketAddress.createUnresolved(uri.getHost(), port)));
                     } catch (Exception e) {
                         builder.proxy(ProxySelector.getDefault());
                     }
