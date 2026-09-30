@@ -51,6 +51,10 @@ public class ModelMenuParser {
     private static final Pattern VERSION_TAIL_PAT =
             Pattern.compile("([A-Z][a-z]+\\s+\\d+\\.\\d+)\\s*$");
 
+    /** Matches a bare version-like name, e.g. "Opus 5.5" or "Sonnet 5" (no decimal required). */
+    private static final Pattern NAME_LOOKS_LIKE_VERSION_PAT =
+            Pattern.compile("^[A-Z][a-zA-Z]+\\s+\\d+(?:\\.\\d+)?$");
+
     /**
      * Parses terminal screen lines and returns the discovered models.
      *
@@ -68,7 +72,12 @@ public class ModelMenuParser {
 
             // Numbered format: "N. ..."
             if (trimmed.matches("^\\d+\\..*")) {
-                String leftPart = trimmed.split("[·\u00b7]", 2)[0];
+                // Strip the ordinal (and any following whitespace — some CLI versions emit a
+                // single space, others two) first, so a double-space-after-ordinal quirk can
+                // never be mistaken for the name/description column boundary below.
+                String afterOrdinal = trimmed.replaceFirst("^\\d+\\.\\s*", "");
+                boolean hasSeparator = afterOrdinal.indexOf('·') >= 0;
+                String leftPart = hasSeparator ? afterOrdinal.split("[·\\u00b7]", 2)[0] : afterOrdinal;
                 Matcher descMatcher = DESC_PAT.matcher(leftPart);
                 if (descMatcher.find()) {
                     String namePart = leftPart.substring(0, descMatcher.start()).trim();
@@ -77,9 +86,23 @@ public class ModelMenuParser {
                             .replaceFirst("^\u2714\\s*", "").trim();
                     // Format 2: "(currently X)"
                     Matcher currentlyMatcher = CURRENTLY_PAT.matcher(desc);
-                    String modelId = currentlyMatcher.find()
-                            ? currentlyMatcher.group(1)
-                            : desc;
+                    String modelId;
+                    if (currentlyMatcher.find()) {
+                        modelId = currentlyMatcher.group(1);
+                    } else if (!hasSeparator && NAME_LOOKS_LIKE_VERSION_PAT.matcher(namePart).matches()) {
+                        // Some newer CLI versions omit the ·-separated version column
+                        // entirely and put the version directly in the name slot (e.g.
+                        // "Opus 5.5             For complex work..."), leaving no version
+                        // string in the description at all. Take the name here only because
+                        // it itself looks like a bare version ("Word N[.M]") — a missing
+                        // separator alone is not enough, since a truncated terminal line can
+                        // also lack one while still being the old "name  version · desc"
+                        // shape (see format2-truncated), whose name column never looks like a
+                        // version.
+                        modelId = namePart;
+                    } else {
+                        modelId = desc;
+                    }
                     if (hasCheck) currentIndex = models.size();
                     models.add(modelId);
                     continue;
