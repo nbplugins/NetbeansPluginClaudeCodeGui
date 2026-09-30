@@ -137,6 +137,13 @@ public class ClaudeSessionTab extends TopComponent
     private static final String CARD_DIFF   = "diff";
     private static final int    DEFAULT_DIFF_HEIGHT = 300;
 
+    /**
+     * Upper bound on {@link #modelCombo}'s minimum width, so a misparsed or unexpectedly long
+     * model list entry can never prevent the status bar (and therefore the panel) from being
+     * shrunk. Shorter content still gets its own smaller natural minimum.
+     */
+    private static final int MODEL_COMBO_MIN_WIDTH = 100;
+
     // -------------------------------------------------------------------------
     // Persistence fields
     // -------------------------------------------------------------------------
@@ -266,7 +273,18 @@ public class ClaudeSessionTab extends TopComponent
         editModeCombo.setToolTipText("Edit mode");
         editModeCombo.addActionListener(e -> onEditModeComboChanged());
 
-        modelCombo = new JComboBox<>();
+        // Minimum width is capped at MODEL_COMBO_MIN_WIDTH — but only when content would
+        // otherwise demand more; shorter content keeps its own smaller natural minimum, and
+        // the combo still grows with its content (up to setMaximumSize below) when there's
+        // room, since preferredSize itself is left untouched. Computed live in
+        // getMinimumSize() (not snapshotted once) so it always tracks the current content.
+        modelCombo = new JComboBox<>() {
+            @Override
+            public Dimension getMinimumSize() {
+                Dimension pref = getPreferredSize();
+                return new Dimension(Math.min(pref.width, MODEL_COMBO_MIN_WIDTH), pref.height);
+            }
+        };
         modelCombo.setMaximumSize(new Dimension(200, 24));
         modelCombo.setToolTipText("Active model");
         modelCombo.setEnabled(false);

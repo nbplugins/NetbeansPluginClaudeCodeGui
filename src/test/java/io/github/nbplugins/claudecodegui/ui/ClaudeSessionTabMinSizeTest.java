@@ -2,6 +2,8 @@ package io.github.nbplugins.claudecodegui.ui;
 
 import java.awt.BorderLayout;
 import java.awt.Dimension;
+import javax.swing.DefaultComboBoxModel;
+import javax.swing.JComboBox;
 import javax.swing.JSplitPane;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
@@ -156,6 +158,52 @@ class ClaudeSessionTabMinSizeTest {
             assertTrue(min.height < 100,
                     "JSplitPane minimum height must be small when bottom component min size is (0,0) — " +
                     "got " + min.height + " px; large value means resize is blocked (issue #19)");
+        });
+    }
+
+    /**
+     * Regression for issue #176: the model dropdown's minimum width must be capped (here at
+     * 100px, mirroring {@code ClaudeSessionTab.MODEL_COMBO_MIN_WIDTH}) whenever its content
+     * would otherwise demand more — including a misparsed, oversized entry — so the panel can
+     * always be shrunk. But the cap must never exceed the combo's own (content-driven, dynamic)
+     * preferred width, so the combo still grows to show genuinely short content in full, and
+     * still grows further when the window is widened, up to its {@code setMaximumSize} cap.
+     */
+    @Test
+    void modelComboMinimumWidthTracksContentButIsCappedAt100() throws Exception {
+        final int cap = 100;
+        SwingUtilities.invokeAndWait(() -> {
+            JComboBox<String> combo = new JComboBox<>() {
+                @Override
+                public Dimension getMinimumSize() {
+                    Dimension pref = getPreferredSize();
+                    return new Dimension(Math.min(pref.width, cap), pref.height);
+                }
+            };
+
+            // Short content: minimum should track the (smaller) preferred width, not the cap.
+            combo.setModel(new DefaultComboBoxModel<>(new String[]{"Opus 5.5"}));
+            int shortPrefWidth = combo.getPreferredSize().width;
+            assertTrue(shortPrefWidth < cap,
+                    "test assumption broken: short item's preferred width (" + shortPrefWidth +
+                    ") should be under the cap (" + cap + ")");
+            assertEquals(shortPrefWidth, combo.getMinimumSize().width,
+                    "minimum width must equal the (smaller) preferred width for short content, " +
+                    "so the combo isn't forced wider than its content needs");
+
+            // Long / misparsed content: minimum must be capped at 100, not follow the huge preferred width.
+            String longItem = "Opus 5.5 ✔             For complex work and everyday tasks describing the model in detail";
+            combo.setModel(new DefaultComboBoxModel<>(new String[]{longItem}));
+            int longPrefWidth = combo.getPreferredSize().width;
+            assertTrue(longPrefWidth > cap,
+                    "test assumption broken: long item's preferred width (" + longPrefWidth +
+                    ") should exceed the cap (" + cap + ")");
+            assertEquals(cap, combo.getMinimumSize().width,
+                    "minimum width must be capped at 100 even though preferred width (" + longPrefWidth +
+                    ") is much larger (issue #176) — otherwise the panel can't be shrunk");
+            assertEquals(longPrefWidth, combo.getPreferredSize().width,
+                    "preferred width itself must stay content-driven (uncapped) so the combo can still " +
+                    "grow to show the full content when the window is widened");
         });
     }
 }
