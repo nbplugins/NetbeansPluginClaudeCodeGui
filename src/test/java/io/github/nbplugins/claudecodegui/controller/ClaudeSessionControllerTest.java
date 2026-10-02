@@ -164,7 +164,9 @@ class ClaudeSessionControllerTest {
     /**
      * Regression guard: if the screen shows a concrete mode (e.g. "plan mode" disappears
      * and nothing replaces it → "default") while WORKING, the model must NOT be overwritten
-     * with "default" — but if the screen explicitly shows "plan mode" text it must still update.
+     * with "default" — but if the screen explicitly shows "plan mode" text it must still update
+     * (once confirmed twice — see {@link #pollScreenStateEditModeAppliesAfterTwoConsecutiveConfirmations}
+     * for why a single poll is no longer enough on its own).
      */
     @Test
     void pollScreenStateDetectsPlanModeChangeWhileWorking() throws Exception {
@@ -187,9 +189,87 @@ class ClaudeSessionControllerTest {
         f.setBoolean(c3, true);
 
         c3.pollScreenState();
+        assertEquals(EditMode.DEFAULT, m3.getEditMode(),
+                "first poll must only register PLAN as a pending candidate, not apply it yet");
 
+        c3.pollScreenState();
         assertEquals(EditMode.PLAN, m3.getEditMode(),
-                "plan mode must be detected even during WORKING when text is visible");
+                "plan mode must be detected even during WORKING once confirmed on a second consecutive poll");
+    }
+
+    // -------------------------------------------------------------------------
+    // pollScreenState — edit-mode debounce: a single glitch poll must not flip
+    // the model; the same new mode confirmed twice must be applied.
+    //
+    // Regression: Claude's Ink renderer repaints the footer via cursor-movement
+    // escapes, which can transiently reflow the bottom line for a single poll
+    // tick. Applying every single-poll detection immediately could flip the model
+    // to a glitch mode and back on the very next poll, visible to the user as the
+    // mode briefly cycling through unrelated values and sometimes settling on the
+    // wrong one.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void pollScreenStateEditModeDoesNotFlipOnSingleGlitchPoll() throws Exception {
+        List<String> acceptEditsScreen = Collections.singletonList(
+                "⏵⏵ accept edits on (shift+tab to cycle)");
+        List<String> glitchScreen = Collections.singletonList(
+                "⏵⏵ auto mode on (shift+tab to cycle)");
+        AtomicReference<List<String>> screenRef = new AtomicReference<>(acceptEditsScreen);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, screenRef::get);
+        m.setWorkingDirectory(new java.io.File("/tmp/test-glitch"));
+        m.setEditMode(EditMode.ACCEPT_EDITS);
+        m.setLifecycle(SessionLifecycle.READY);
+        setModelComboPopulated(c, true);
+
+        c.pollScreenState();
+        assertEquals(EditMode.ACCEPT_EDITS, m.getEditMode(), "baseline poll must keep acceptEdits");
+
+        // Single glitch poll: screen briefly shows an unrelated mode (mid-redraw reflow)
+        screenRef.set(glitchScreen);
+        c.pollScreenState();
+        assertEquals(EditMode.ACCEPT_EDITS, m.getEditMode(),
+                "a single glitch poll reading a different mode must not flip the model");
+
+        // Glitch was one-off; real footer reverts on the next poll
+        screenRef.set(acceptEditsScreen);
+        c.pollScreenState();
+        assertEquals(EditMode.ACCEPT_EDITS, m.getEditMode(),
+                "model must still show acceptEdits once the glitch frame is gone");
+    }
+
+    @Test
+    void pollScreenStateEditModeAppliesAfterTwoConsecutiveConfirmations() throws Exception {
+        List<String> acceptEditsScreen = Collections.singletonList(
+                "⏵⏵ accept edits on (shift+tab to cycle)");
+        List<String> autoScreen = Collections.singletonList(
+                "⏵⏵ auto mode on (shift+tab to cycle)");
+        AtomicReference<List<String>> screenRef = new AtomicReference<>(acceptEditsScreen);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, screenRef::get);
+        m.setWorkingDirectory(new java.io.File("/tmp/test-confirm"));
+        m.setEditMode(EditMode.ACCEPT_EDITS);
+        m.setLifecycle(SessionLifecycle.READY);
+        setModelComboPopulated(c, true);
+
+        c.pollScreenState();
+        assertEquals(EditMode.ACCEPT_EDITS, m.getEditMode());
+
+        screenRef.set(autoScreen);
+        c.pollScreenState();
+        assertEquals(EditMode.ACCEPT_EDITS, m.getEditMode(),
+                "first differing poll must only become a pending candidate, not apply immediately");
+
+        c.pollScreenState();
+        assertEquals(EditMode.AUTO, m.getEditMode(),
+                "second consecutive confirming poll must apply the new mode");
+    }
+
+    private static void setModelComboPopulated(ClaudeSessionController c, boolean value) throws Exception {
+        java.lang.reflect.Field f = ClaudeSessionController.class.getDeclaredField("modelComboPopulated");
+        f.setAccessible(true);
+        f.setBoolean(c, value);
     }
 
     // -------------------------------------------------------------------------
@@ -855,6 +935,64 @@ class ClaudeSessionControllerTest {
                 .getDeclaredMethod("trySendShiftTabsUntilMode", EditMode.class);
         m.setAccessible(true);
         return (boolean) m.invoke(c, target);
+    }
+
+    // -------------------------------------------------------------------------
+    // waitForConcreteModeChange — glitch-frame debounce
+    //
+    // Regression: a single screen-poll tick can catch Claude's Ink renderer
+    // mid-repaint of the footer and read an unrelated, one-off mode. Returning
+    // that immediately would desynchronize trySendShiftTabsUntilMode's notion of
+    // "current mode" from what CC actually shows, causing the final mode to land
+    // somewhere other than the one requested. A differing mode is only reported
+    // once the same mode is seen on two consecutive polls.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void waitForConcreteModeChange_singleGlitchPollIsNotReportedAsTheChange() throws Exception {
+        // poll-1: one-off glitch shows AUTO; poll-2+: the real, stable new mode (ACCEPT_EDITS).
+        AtomicReference<Integer> poll = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() {
+                int p = poll.updateAndGet(v -> v + 1);
+                return p == 1 ? Optional.of(EditMode.AUTO) : Optional.of(EditMode.ACCEPT_EDITS);
+            }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        Optional<EditMode> result = invokeWaitForConcreteModeChange(c, Optional.empty());
+
+        assertEquals(Optional.of(EditMode.ACCEPT_EDITS), result,
+                "must resolve to the mode confirmed on two consecutive polls, not the one-off glitch");
+    }
+
+    @Test
+    void waitForConcreteModeChange_confirmsOnSecondConsecutiveAgreeingPoll() throws Exception {
+        // No glitch: the same new mode appears on both poll-1 and poll-2.
+        AtomicReference<Integer> poll = new AtomicReference<>(0);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override Optional<EditMode> detectCurrentMode() {
+                poll.updateAndGet(v -> v + 1);
+                return Optional.of(EditMode.ACCEPT_EDITS);
+            }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        Optional<EditMode> result = invokeWaitForConcreteModeChange(c, Optional.empty());
+
+        assertEquals(Optional.of(EditMode.ACCEPT_EDITS), result);
+        assertEquals(2, (int) poll.get(), "must confirm on exactly the second consecutive agreeing poll");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Optional<EditMode> invokeWaitForConcreteModeChange(
+            ClaudeSessionController c, Optional<EditMode> before) throws Exception {
+        java.lang.reflect.Method m = ClaudeSessionController.class
+                .getDeclaredMethod("waitForConcreteModeChange", Optional.class);
+        m.setAccessible(true);
+        return (Optional<EditMode>) m.invoke(c, before);
     }
 
     // -------------------------------------------------------------------------

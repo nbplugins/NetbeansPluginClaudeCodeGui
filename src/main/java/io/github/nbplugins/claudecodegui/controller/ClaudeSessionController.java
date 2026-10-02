@@ -142,6 +142,13 @@ public class ClaudeSessionController {
     private ChoiceMenuModel pendingChoiceMenuCandidate;
 
     /**
+     * A newly detected edit mode that differs from the model's current mode, held
+     * pending a second consecutive confirming detection before it replaces the
+     * current mode. See {@link #applyDetectedEditMode}.
+     */
+    private Optional<EditMode> pendingEditModeCandidate = Optional.empty();
+
+    /**
      * Rolling buffer of the last {@link #PTY_LINE_BUFFER_SIZE} stripped PTY lines.
      * Used as a fallback for prompt detection when the JediTerm screen buffer is
      * still empty (e.g. widget not yet laid out, terminal size 0×0 at startup).
@@ -818,18 +825,31 @@ public class ClaudeSessionController {
 
     /**
      * Polls the screen up to {@link #modeSwitchPollCount} times, returning as soon
-     * as a concrete (non-empty) mode that differs from {@code before} is detected.
-     * Returns {@link Optional#empty()} on timeout.
+     * as a concrete (non-empty) mode that differs from {@code before} is detected on
+     * two consecutive polls. Returns {@link Optional#empty()} on timeout.
+     *
+     * <p>Requiring two consecutive agreeing polls (rather than acting on the first
+     * differing reading) guards against a single screen-poll tick catching Claude's
+     * Ink renderer mid-repaint of the footer — a one-off glitch frame that shows an
+     * unrelated mode would otherwise be mistaken for the Shift+Tab's real effect,
+     * desynchronizing this loop's notion of "current mode" from what CC actually
+     * shows and causing the final mode to land somewhere other than {@code targetMode}.
      */
     private Optional<EditMode> waitForConcreteModeChange(Optional<EditMode> before)
             throws InterruptedException {
+        Optional<EditMode> candidate = Optional.empty();
         for (int poll = 0; poll < modeSwitchPollCount; poll++) {
             Thread.sleep(modeSwitchPollMs);
             Optional<EditMode> detected = detectCurrentMode();
             LOG.fine("trySendShiftTabsUntilMode poll=" + poll
                     + " detected=" + detected.map(EditMode::key).orElse("(empty)"));
             if (detected.isPresent() && !detected.equals(before)) {
-                return detected;
+                if (candidate.isPresent() && candidate.equals(detected)) {
+                    return detected;
+                }
+                candidate = detected;
+            } else {
+                candidate = Optional.empty();
             }
         }
         return Optional.empty();
@@ -1164,20 +1184,7 @@ public class ClaudeSessionController {
 
         // Continuously sync CC screen mode → model (skip during switches and discovery)
         if (modelComboPopulated && !modeSwitchInProgress && !modelDiscoveryInProgress) {
-            Optional<EditMode> detected = screenContentDetector.detectEditMode(lines);
-            LOG.fine("[pollScreenState] editMode sync: detected=" + detected.orElse(null) + " current=" + model.getEditMode());
-            if (detected.isPresent()) {
-                EditMode mode = detected.get();
-                if (mode != model.getEditMode()) {
-                    model.setEditMode(mode);
-                }
-            } else if (model.getLifecycle() != SessionLifecycle.WORKING) {
-                // Unknown mode outside WORKING (screen transitioning or idle with no indicator)
-                // → treat as Ask/default. During WORKING: preserve current registry value.
-                if (model.getEditMode() != EditMode.DEFAULT) {
-                    model.setEditMode(EditMode.DEFAULT);
-                }
-            }
+            applyDetectedEditMode(screenContentDetector.detectEditMode(lines));
         }
     }
 
@@ -1375,6 +1382,54 @@ public class ClaudeSessionController {
      * @param newMenu the menu detected on this poll
      * @param logTag  short prefix identifying the calling poll path, for LOG.fine messages
      */
+    /**
+     * Applies a newly detected edit mode to the model, or — if it differs from both
+     * the current mode and any already-pending candidate — withholds it until the
+     * same mode is confirmed by a second consecutive detection.
+     *
+     * <p>Claude's Ink renderer repaints its footer using cursor-movement escape
+     * sequences; a single screen-poll tick can catch that repaint mid-flight and read
+     * a reflowed or stale line, producing a one-off incorrect {@link EditMode} even
+     * though the real footer (and the mode itself) never actually changed. Applying
+     * every single-poll detection immediately (as before this debounce) could flip
+     * the model to that glitch mode; the next poll would then see the real mode again
+     * and flip back, visible to the user as the mode briefly cycling through unrelated
+     * values. Requiring the same new mode on two consecutive polls — the same pattern
+     * used for choice-menu replacement in {@link #applyDetectedChoiceMenu} — means a
+     * one-off glitch frame never survives to the next poll and is never applied.
+     *
+     * @param detected the mode detected on this poll, or empty if the screen shows no
+     *                 recognizable mode indicator (idle/transitioning, or WORKING with
+     *                 no visible marker)
+     */
+    private void applyDetectedEditMode(Optional<EditMode> detected) {
+        LOG.fine("[pollScreenState] editMode sync: detected=" + detected.orElse(null) + " current=" + model.getEditMode());
+        if (detected.isEmpty()) {
+            if (model.getLifecycle() == SessionLifecycle.WORKING) {
+                // No on-screen marker while working is the expected steady state
+                // (not a glitch) — preserve the current mode and drop any pending candidate.
+                pendingEditModeCandidate = Optional.empty();
+                return;
+            }
+            // Unknown mode outside WORKING (screen transitioning or idle with no indicator)
+            // → treat as Ask/default.
+            detected = Optional.of(EditMode.DEFAULT);
+        }
+        EditMode mode = detected.get();
+        if (mode == model.getEditMode()) {
+            pendingEditModeCandidate = Optional.empty();
+            return;
+        }
+        if (pendingEditModeCandidate.isPresent() && pendingEditModeCandidate.get() == mode) {
+            LOG.fine("[pollScreenState] editMode confirmed: " + mode);
+            pendingEditModeCandidate = Optional.empty();
+            model.setEditMode(mode);
+        } else {
+            LOG.fine("[pollScreenState] editMode candidate, awaiting confirmation: " + mode);
+            pendingEditModeCandidate = Optional.of(mode);
+        }
+    }
+
     private void applyDetectedChoiceMenu(ChoiceMenuModel newMenu, String logTag) {
         ChoiceMenuModel current = model.getActiveChoiceMenu();
         if (current == null) {
