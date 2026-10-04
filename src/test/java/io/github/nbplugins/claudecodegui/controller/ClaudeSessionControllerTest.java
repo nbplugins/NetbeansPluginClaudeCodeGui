@@ -38,6 +38,36 @@ class ClaudeSessionControllerTest {
     // onClaudeIdle
     // -------------------------------------------------------------------------
 
+    private static ChoiceMenuModel menu(String text, String... displays) {
+        List<ChoiceMenuModel.Option> opts = new java.util.ArrayList<>();
+        for (int i = 0; i < displays.length; i++) {
+            opts.add(new ChoiceMenuModel.Option(displays[i], String.valueOf(i + 1)));
+        }
+        return new ChoiceMenuModel(text, opts, 0);
+    }
+
+    @Test
+    void isShrunkViewOf_prefixOfScrollingList_true() {
+        ChoiceMenuModel full = menu("Select model", "a", "b", "c", "d");
+        ChoiceMenuModel shrunk = menu("Select model", "a", "b", "c");
+        assertTrue(ClaudeSessionController.isShrunkViewOf(shrunk, full));
+    }
+
+    @Test
+    void isShrunkViewOf_sameSizeOrGrown_false() {
+        ChoiceMenuModel three = menu("Select model", "a", "b", "c");
+        ChoiceMenuModel four = menu("Select model", "a", "b", "c", "d");
+        assertFalse(ClaudeSessionController.isShrunkViewOf(three, three));
+        assertFalse(ClaudeSessionController.isShrunkViewOf(four, three));
+    }
+
+    @Test
+    void isShrunkViewOf_differentTextOrOptions_false() {
+        ChoiceMenuModel full = menu("Select model", "a", "b", "c", "d");
+        assertFalse(ClaudeSessionController.isShrunkViewOf(menu("Other", "a", "b", "c"), full));
+        assertFalse(ClaudeSessionController.isShrunkViewOf(menu("Select model", "a", "x", "c"), full));
+    }
+
     @Test
     void onClaudeIdleSetsLifecycleToReady() {
         model.setLifecycle(SessionLifecycle.WORKING);
