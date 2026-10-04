@@ -1,11 +1,11 @@
+# 1.3
+
 - Fixed switching the edit mode (e.g. to Auto Mode) while a prompt was still running sometimes cycling through several modes and landing on the wrong one instead of the one selected
 - Fixed the model dropdown in the status bar being unable to shrink below roughly half the panel's width — it was inflating its minimum size to fit the widest previously-seen item, even a stale oversized one left over from a misparsed model list (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/176)
 - Fixed the model dropdown showing full descriptions (including the checkmark and effort text) instead of short model names with newer Claude Code CLI versions that add an extra space after the option number (e.g. "1.  Default (recommended)") (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/176)
 - Fixed an unnumbered choice prompt (e.g. the "trust this folder" dialog) showing every line of the surrounding text as a bogus selectable option instead of just the real choices, and losing the "Yes" option entirely by merging it into the "No" option's description
 - Fixed ChatGPT Subscription token refresh hanging indefinitely (freezing the session) when a profile's custom HTTPS/HTTP proxy hostname was slow or unreachable to resolve via DNS
 - Fixed a choice-dialog prompt (e.g. a Bash-command permission prompt) flickering and repeatedly resizing when Claude's response text re-wrapped to a slightly different width after the dialog first appeared
-
-# 1.3
 
 # 1.3.12 (2026-09-27)
 
