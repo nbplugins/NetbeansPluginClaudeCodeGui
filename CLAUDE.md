@@ -33,7 +33,7 @@ A release has an explicit **start** and **finish**:
 **During development** — add user-visible changes to `CHANGELOG.md` (see rules below).
 
 **Finishing a release** (only this, nothing else):
-- Add `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` heading at the top of `CHANGELOG.md` (above the unreleased bullets). Commit with message `"Requested release MAJOR.MINOR"`.
+- Add `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` heading as the **very first line (line 1)** of `CHANGELOG.md`, above the unreleased bullets — `autotag.sh` reads only line 1, so a heading anywhere else (e.g. below the bullets) silently triggers no release. Commit with message `"Requested release MAJOR.MINOR"`.
 - This commit must reach `main` via a PR — never push directly to upstream. Create a dedicated branch `req/MAJOR.MINOR` based on `upstream/main`:
   ```bash
   git fetch upstream
@@ -70,7 +70,7 @@ Version numbers continue from the last released patch: if `0.17.3` was the last 
 
 ### CHANGELOG.md rules
 
-The heading `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` is the CI release signal — **only add it when finishing a release**. The date is optional; if omitted, CI inserts today's date automatically (e.g. `# 0.18` or `# 0.18 (2026-04-04)`).
+The heading `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` is the CI release signal — **only add it when finishing a release, and only on line 1 of the file** (`autotag.sh` checks `head -n 1` only; a heading placed lower is ignored and no release is created). The date is optional; if omitted, CI inserts today's date automatically (e.g. `# 0.18` or `# 0.18 (2026-04-04)`).
 
 During development, add bullet lines at the **very top** of `CHANGELOG.md` (above any existing heading), with no section heading. When finishing a release, add the `# MAJOR.MINOR` or `# MAJOR.MINOR (YYYY-MM-DD)` heading above those bullets.
 
