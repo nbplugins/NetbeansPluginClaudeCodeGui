@@ -1,4 +1,4 @@
-# 1.3
+# 1.3.20 (2026-10-04)
 
 - Fixed switching the edit mode (e.g. to Auto Mode) while a prompt was still running sometimes cycling through several modes and landing on the wrong one instead of the one selected
 - Fixed the model dropdown in the status bar being unable to shrink below roughly half the panel's width — it was inflating its minimum size to fit the widest previously-seen item, even a stale oversized one left over from a misparsed model list (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/176)
