@@ -1438,7 +1438,7 @@ public class ClaudeSessionController {
             model.setActiveChoiceMenu(newMenu);
             return;
         }
-        if (sameMenu(newMenu, current)) {
+        if (sameMenu(newMenu, current) || isShrunkViewOf(newMenu, current)) {
             pendingChoiceMenuCandidate = null;
             return;
         }
@@ -1450,6 +1450,28 @@ public class ClaudeSessionController {
             LOG.fine(logTag + "candidate replacement menu, awaiting confirmation: \"" + newMenu.text() + "\"");
             pendingChoiceMenuCandidate = newMenu;
         }
+    }
+
+    /**
+     * Returns {@code true} when {@code newMenu} is just a shorter window onto the same
+     * scrolling list as {@code current} (same question, options are a strict prefix).
+     *
+     * <p>Scrolling pickers such as {@code /model} draw as many items as fit the terminal.
+     * The choice panel shrinks the terminal, which makes Claude draw fewer items, which
+     * shrinks the panel, which grows the terminal again — an endless flicker. Keeping
+     * the larger option list breaks that loop.
+     */
+    static boolean isShrunkViewOf(ChoiceMenuModel newMenu, ChoiceMenuModel current) {
+        List<ChoiceMenuModel.Option> n = newMenu.options();
+        List<ChoiceMenuModel.Option> c = current.options();
+        if (!newMenu.text().equals(current.text()) || n.size() >= c.size()) return false;
+        for (int i = 0; i < n.size(); i++) {
+            if (!n.get(i).display().equals(c.get(i).display())
+                    || !n.get(i).response().equals(c.get(i).response())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean sameMenu(ChoiceMenuModel a, ChoiceMenuModel b) {

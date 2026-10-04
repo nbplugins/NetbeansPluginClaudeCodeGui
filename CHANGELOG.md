@@ -1,3 +1,4 @@
+- Fixed the choice dialog (e.g. /model) endlessly flickering and resizing when not all menu items fit on screen
 # 1.3.20 (2026-10-04)
 
 - Fixed switching the edit mode (e.g. to Auto Mode) while a prompt was still running sometimes cycling through several modes and landing on the wrong one instead of the one selected
