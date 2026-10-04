@@ -68,6 +68,29 @@ class ClaudeSessionControllerTest {
         assertFalse(ClaudeSessionController.isShrunkViewOf(menu("Select model", "a", "x", "c"), full));
     }
 
+    /** Menu whose options are numbered from {@code first} (a scrolled window of a long list). */
+    private static ChoiceMenuModel scrolled(String text, int first, String... displays) {
+        List<ChoiceMenuModel.Option> opts = new java.util.ArrayList<>();
+        for (int i = 0; i < displays.length; i++) {
+            opts.add(new ChoiceMenuModel.Option(displays[i], String.valueOf(first + i)));
+        }
+        return new ChoiceMenuModel(text, opts, 0);
+    }
+
+    @Test
+    void isShrunkViewOf_scrolledWindowWithDifferentScrollIndicator_true() {
+        ChoiceMenuModel full = scrolled("\u2191 8.  Fable 5", 9, "a", "b", "c", "d", "e");
+        ChoiceMenuModel shrunk = scrolled("\u2191 10. b", 11, "c", "d", "e");
+        assertTrue(ClaudeSessionController.isShrunkViewOf(shrunk, full));
+    }
+
+    @Test
+    void isShrunkViewOf_scrolledWindowMismatchingOption_false() {
+        ChoiceMenuModel full = scrolled("\u2191 8.  Fable 5", 9, "a", "b", "c", "d", "e");
+        assertFalse(ClaudeSessionController.isShrunkViewOf(scrolled("\u2191 10. b", 11, "c", "x", "e"), full));
+        assertFalse(ClaudeSessionController.isShrunkViewOf(scrolled("Question", 11, "c", "d", "e"), full));
+    }
+
     @Test
     void onClaudeIdleSetsLifecycleToReady() {
         model.setLifecycle(SessionLifecycle.WORKING);

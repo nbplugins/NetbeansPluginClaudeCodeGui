@@ -1454,24 +1454,38 @@ public class ClaudeSessionController {
 
     /**
      * Returns {@code true} when {@code newMenu} is just a shorter window onto the same
-     * scrolling list as {@code current} (same question, options are a strict prefix).
+     * scrolling list as {@code current}: same question (or both "question" lines are
+     * scroll indicators such as {@code ↑ 8. Fable 5}, which change with the scroll
+     * position) and every option matches an option of {@code current} by response and
+     * display, with fewer options in total.
      *
      * <p>Scrolling pickers such as {@code /model} draw as many items as fit the terminal.
-     * The choice panel shrinks the terminal, which makes Claude draw fewer items, which
-     * shrinks the panel, which grows the terminal again — an endless flicker. Keeping
-     * the larger option list breaks that loop.
+     * The choice panel shrinks the terminal, which makes Claude draw fewer items (and
+     * move the scroll window), which shrinks the panel, which grows the terminal again —
+     * an endless flicker. Keeping the larger option list breaks that loop.
      */
     static boolean isShrunkViewOf(ChoiceMenuModel newMenu, ChoiceMenuModel current) {
         List<ChoiceMenuModel.Option> n = newMenu.options();
         List<ChoiceMenuModel.Option> c = current.options();
-        if (!newMenu.text().equals(current.text()) || n.size() >= c.size()) return false;
-        for (int i = 0; i < n.size(); i++) {
-            if (!n.get(i).display().equals(c.get(i).display())
-                    || !n.get(i).response().equals(c.get(i).response())) {
-                return false;
+        if (n.size() >= c.size()) return false;
+        boolean sameText = newMenu.text().equals(current.text())
+                || (isScrollIndicator(newMenu.text()) && isScrollIndicator(current.text()));
+        if (!sameText) return false;
+        for (ChoiceMenuModel.Option no : n) {
+            boolean found = false;
+            for (ChoiceMenuModel.Option co : c) {
+                if (no.display().equals(co.display()) && no.response().equals(co.response())) {
+                    found = true;
+                    break;
+                }
             }
+            if (!found) return false;
         }
         return true;
+    }
+
+    private static boolean isScrollIndicator(String text) {
+        return text.startsWith("\u2191") || text.startsWith("\u2193");
     }
 
     private static boolean sameMenu(ChoiceMenuModel a, ChoiceMenuModel b) {
