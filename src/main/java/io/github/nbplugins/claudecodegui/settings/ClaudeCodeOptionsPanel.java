@@ -85,6 +85,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
     private javax.swing.JCheckBox startNewSessionCheck;
     /** Spinner for the maximum number of sessions shown in the session list. */
     private JSpinner sessionListLimitSpinner;
+    private JSpinner choiceMenuMaxHeightSpinner;
     /** Dropdown for the dock position of the Claude Code session tab. */
     private javax.swing.JComboBox<String> dockModeCombo;
     /** Dropdown for the dock position of the Markdown Preview tab. */
@@ -273,6 +274,15 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
         choiceMenuFocusCombo = new javax.swing.JComboBox<>(CHOICE_MENU_FOCUS_LABELS);
         choiceMenuFocusCombo.setToolTipText("Controls whether the choice menu grabs keyboard focus when it appears");
         form.add(choiceMenuFocusCombo, gbc(1, row, false));
+        row++;
+
+        // --- choice menu max height ---
+        form.add(new JLabel("Choice menu max height (px):"), gbc(0, row, false));
+        choiceMenuMaxHeightSpinner = new JSpinner(new SpinnerNumberModel(
+                ClaudeCodePreferences.DEFAULT_CHOICE_MENU_MAX_HEIGHT, 100, 2000, 20));
+        choiceMenuMaxHeightSpinner.setToolTipText(
+                "Option lists of a choice dialog (e.g. /model) taller than this get a scrollbar");
+        form.add(choiceMenuMaxHeightSpinner, gbc(1, row, false));
         row++;
 
         // --- terminal font ---
@@ -480,6 +490,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                 ClaudeCodePreferences.getContextMenuSessionMode()
                         == io.github.nbplugins.claudecodegui.model.SessionMode.NEW);
         sessionListLimitSpinner.setValue(ClaudeCodePreferences.getSessionListLimit());
+        choiceMenuMaxHeightSpinner.setValue(ClaudeCodePreferences.getChoiceMenuMaxHeight());
         dockModeCombo.setSelectedIndex(ClaudeCodePreferences.getSessionDockMode().ordinal());
         mdPreviewDockModeCombo.setSelectedIndex(
                 ClaudeCodePreferences.getMarkdownPreviewDockMode().ordinal());
@@ -528,6 +539,7 @@ public final class ClaudeCodeOptionsPanel extends JPanel {
                         ? io.github.nbplugins.claudecodegui.model.SessionMode.NEW
                         : io.github.nbplugins.claudecodegui.model.SessionMode.CONTINUE_LAST);
         ClaudeCodePreferences.setSessionListLimit((Integer) sessionListLimitSpinner.getValue());
+        ClaudeCodePreferences.setChoiceMenuMaxHeight((Integer) choiceMenuMaxHeightSpinner.getValue());
         ClaudeCodePreferences.setSessionDockMode(dockModeFromCombo(dockModeCombo));
         ClaudeCodePreferences.setMarkdownPreviewDockMode(dockModeFromCombo(mdPreviewDockModeCombo));
         ClaudeCodePreferences.setFileDiffDockMode(dockModeFromCombo(fileDiffDockModeCombo));

@@ -1,0 +1,15 @@
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Select model
+  Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
+
+  ↑ 8.  Fable 5                  Most capable for your hardest and longest-running tasks
+    9.  Opus 4.8                 Best for everyday, complex tasks
+    10. Opus 4.7                 Best for everyday, complex tasks
+    11. Opus 4.6                 Best for everyday, complex tasks
+  ❯ 12. Sonnet 4.6               Efficient for routine tasks
+
+
+  ◐ Medium effort ←/→ to adjust
+
+  Enter to set as default · s to use this session only · Esc to cancel
+

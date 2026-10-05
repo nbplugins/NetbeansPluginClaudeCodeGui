@@ -48,7 +48,14 @@ public final class ScreenContentDetector {
      * Leading whitespace is allowed (produced by ESC[1C cursor-forward expansion).
      */
     private static final Pattern OPTION_LINE =
-            Pattern.compile("^\\s*(\u276F|\u25B6|>)?\\s*\\d+\\.\\s*.+");
+            Pattern.compile("^\\s*(\u276F|\u25B6|>|\u2191|\u2193)?\\s*\\d+\\.\\s*.+");
+
+    /**
+     * Matches the "hidden items" line of a scrolling menu, e.g. {@code … +7 models}
+     * (also {@code ... +7 models}).
+     */
+    private static final Pattern HIDDEN_ITEMS_LINE =
+            Pattern.compile("^(\u2026|\\.\\.\\.)\\s*\\+\\d+\\s+\\S.*");
 
     /** Matches an option line that carries the Ink cursor glyph (selected item). */
     private static final Pattern CURSOR_LINE =
@@ -186,6 +193,7 @@ public final class ScreenContentDetector {
                 String line = raw.trim();
                 if (line.isBlank()) break;
                 if (OPTION_LINE.matcher(line).matches()) break;
+                if (HIDDEN_ITEMS_LINE.matcher(line).matches()) break;
                 // Skip keyboard-hint lines; "shift+tab to approve" also marks the option
                 // as requiring free-text input (hasTextInput=true).
                 if (isHintLine(line)) {
@@ -246,9 +254,11 @@ public final class ScreenContentDetector {
         // currently-selected option. Numbered lists in Claude's own output never have
         // a cursor, so requiring one eliminates false positives entirely.
         boolean hasCursor = false;
+        int cursorNumber = 0;
         for (int i = firstOptionRow; i <= lastOptionRow; i++) {
             if (CURSOR_LINE.matcher(screenLines.get(i).trim()).matches()) {
                 hasCursor = true;
+                cursorNumber = parseOptionNumber(screenLines.get(i).trim());
                 break;
             }
         }
@@ -281,7 +291,23 @@ public final class ScreenContentDetector {
         }
 
         LOG.fine(tag + "[ScreenContentDetector] detected prompt: \"" + question + "\" options=" + options);
-        return Optional.of(new ChoiceMenuModel(question, options, 0));
+        // Scrolling menu: Claude marks hidden items with a leading ↑ / ↓ on the edge option
+        // and/or a "… +N models" line below the list.
+        boolean scrollable = screenLines.get(firstOptionRow).trim().startsWith("\u2191")
+                || screenLines.get(lastOptionRow).trim().startsWith("\u2193");
+        for (int i = lastOptionRow + 1; !scrollable && i < Math.min(lastOptionRow + 4, screenLines.size()); i++) {
+            if (HIDDEN_ITEMS_LINE.matcher(screenLines.get(i).trim()).matches()) scrollable = true;
+        }
+        return Optional.of(new ChoiceMenuModel(question, options, 0, scrollable, cursorNumber));
+    }
+
+    /** Returns the menu number of a trimmed option line, or 0 if it cannot be parsed. */
+    static int parseOptionNumber(String trimmedOptionLine) {
+        try {
+            return Integer.parseInt(extractOption(trimmedOptionLine, 0).response());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -750,7 +776,7 @@ public final class ScreenContentDetector {
     static ChoiceMenuModel.Option extractOption(String line, int index) {
         // Skip cursor glyph if present
         String working = line;
-        if (!working.isEmpty() && "\u276F\u25B6>".indexOf(working.charAt(0)) >= 0) {
+        if (!working.isEmpty() && "\u276F\u25B6>\u2191\u2193".indexOf(working.charAt(0)) >= 0) {
             working = working.substring(1).stripLeading();
         }
         int dotPos = working.indexOf('.');

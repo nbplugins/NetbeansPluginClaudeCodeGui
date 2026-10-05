@@ -66,9 +66,9 @@ public class ModelMenuParser {
         int currentIndex = -1;
 
         for (String line : lines) {
-            boolean hasCursor = line.trim().matches("^[❯▶>].*");
+            boolean hasCursor = line.trim().matches("^[❯▶>↑↓].*");
             boolean hasCheck  = line.contains("\u2714");
-            String trimmed = line.trim().replaceFirst("^[❯▶>]\\s*", "").trim();
+            String trimmed = line.trim().replaceFirst("^[❯▶>↑↓]\\s*", "").trim();
 
             // Numbered format: "N. ..."
             if (trimmed.matches("^\\d+\\..*")) {

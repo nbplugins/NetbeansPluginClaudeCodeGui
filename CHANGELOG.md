@@ -1,3 +1,4 @@
+- Added support for long choice dialogs (e.g. /model with more than 9 items): all items are listed with a scrollbar when the list is taller than the new "Choice menu max height" setting (Tools → Options → Claude Code → General, default 320 px), items 10 and above can be selected, and the model list at startup and the model combo include every model
 - Fixed the choice dialog (e.g. /model) endlessly flickering and resizing when not all menu items fit on screen
 # 1.3.20 (2026-10-04)
 

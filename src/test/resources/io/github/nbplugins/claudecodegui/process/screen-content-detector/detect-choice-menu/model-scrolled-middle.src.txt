@@ -1,0 +1,16 @@
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Select model
+  Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
+
+  ↑ 4.  Fable 5.1                For your toughest challenges
+    5.  Haiku 4.5                Fastest for quick answers
+    6.  Sonnet 5                 Efficient for routine tasks
+    7.  Opus 5                   Best for everyday, complex tasks
+  ❯ 8.  Fable 5                  Most capable for your hardest and longest-running tasks
+     … +4 models
+
+  ● High effort (default) ←/→ to adjust
+
+  Enter to set as default · s to use this session only · Esc to cancel
+
+

@@ -74,6 +74,12 @@ class ScreenContentDetectorTest {
                     "text mismatch for case '" + caseName + "'");
             assertEquals(expected.options(), result.get().options(),
                     "options mismatch for case '" + caseName + "'");
+            assertEquals(expected.scrollable(), result.get().scrollable(),
+                    "scrollable mismatch for case '" + caseName + "'");
+            if (expected.cursorNumber() != 0) {
+                assertEquals(expected.cursorNumber(), result.get().cursorNumber(),
+                        "cursorNumber mismatch for case '" + caseName + "'");
+            }
         }
     }
 
