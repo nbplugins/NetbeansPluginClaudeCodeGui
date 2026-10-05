@@ -102,6 +102,12 @@ public final class ChoiceMenuModel {
     private final List<Option> options;
     @JsonProperty("defaultOptionIndex")
     private final int defaultOptionIndex;
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    @JsonProperty("scrollable")
+    private final boolean scrollable;
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    @JsonProperty("cursorNumber")
+    private final int cursorNumber;
 
     /**
      * Creates a choice-menu model.
@@ -110,15 +116,47 @@ public final class ChoiceMenuModel {
      * @param options            list of selectable options
      * @param defaultOptionIndex index of the pre-selected option
      */
+    public ChoiceMenuModel(String text, List<Option> options, int defaultOptionIndex) {
+        this(text, options, defaultOptionIndex, false, 0);
+    }
+
+    /**
+     * Creates a choice-menu model.
+     *
+     * @param text               prompt text displayed above the options
+     * @param options            list of selectable options
+     * @param defaultOptionIndex index of the pre-selected option
+     * @param scrollable         whether Claude shows only a window of a longer list
+     *                           (scroll indicators {@code ↑}/{@code ↓}/{@code … +N})
+     * @param cursorNumber       menu number of the item under Claude's cursor, or 0 if unknown
+     */
     @JsonCreator
     public ChoiceMenuModel(
             @JsonProperty("text") String text,
             @JsonProperty("options") List<Option> options,
-            @JsonProperty("defaultOptionIndex") int defaultOptionIndex) {
+            @JsonProperty("defaultOptionIndex") int defaultOptionIndex,
+            @JsonProperty("scrollable") boolean scrollable,
+            @JsonProperty("cursorNumber") int cursorNumber) {
         this.text = text;
         this.options = options;
         this.defaultOptionIndex = defaultOptionIndex;
+        this.scrollable = scrollable;
+        this.cursorNumber = cursorNumber;
     }
+
+    /**
+     * Returns whether Claude shows only a window of a longer list.
+     *
+     * @return {@code true} if the menu scrolls
+     */
+    public boolean scrollable() { return scrollable; }
+
+    /**
+     * Returns the menu number of the item under Claude's cursor.
+     *
+     * @return the number, or 0 if unknown
+     */
+    public int cursorNumber() { return cursorNumber; }
 
     /**
      * Returns the prompt text.

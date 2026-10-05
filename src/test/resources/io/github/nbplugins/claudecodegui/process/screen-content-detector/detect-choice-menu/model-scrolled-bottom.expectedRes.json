@@ -1,0 +1,28 @@
+{
+  "text": "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
+  "options": [
+    {
+      "display": "Fable 5                  Most capable for your hardest and longest-running tasks",
+      "response": "8"
+    },
+    {
+      "display": "Opus 4.8                 Best for everyday, complex tasks",
+      "response": "9"
+    },
+    {
+      "display": "Opus 4.7                 Best for everyday, complex tasks",
+      "response": "10"
+    },
+    {
+      "display": "Opus 4.6                 Best for everyday, complex tasks",
+      "response": "11"
+    },
+    {
+      "display": "Sonnet 4.6               Efficient for routine tasks",
+      "response": "12"
+    }
+  ],
+  "defaultOptionIndex": 0,
+  "scrollable": true,
+  "cursorNumber": 12
+}

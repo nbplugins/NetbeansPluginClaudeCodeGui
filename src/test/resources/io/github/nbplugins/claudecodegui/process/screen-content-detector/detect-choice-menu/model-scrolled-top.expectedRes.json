@@ -1,0 +1,28 @@
+{
+  "text": "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
+  "options": [
+    {
+      "display": "Default (recommended) ✔  Sonnet 5.5 · Efficient for routine tasks",
+      "response": "1"
+    },
+    {
+      "display": "Opus 5.5                 For complex work and everyday tasks",
+      "response": "2"
+    },
+    {
+      "display": "Sonnet 5.5               Most efficient for simpler tasks",
+      "response": "3"
+    },
+    {
+      "display": "Fable 5.1                For your toughest challenges",
+      "response": "4"
+    },
+    {
+      "display": "Haiku 4.5                Fastest for quick answers",
+      "response": "5"
+    }
+  ],
+  "defaultOptionIndex": 0,
+  "scrollable": true,
+  "cursorNumber": 3
+}

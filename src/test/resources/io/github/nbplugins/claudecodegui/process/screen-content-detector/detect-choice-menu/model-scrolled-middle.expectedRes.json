@@ -1,0 +1,28 @@
+{
+  "text": "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
+  "options": [
+    {
+      "display": "Fable 5.1                For your toughest challenges",
+      "response": "4"
+    },
+    {
+      "display": "Haiku 4.5                Fastest for quick answers",
+      "response": "5"
+    },
+    {
+      "display": "Sonnet 5                 Efficient for routine tasks",
+      "response": "6"
+    },
+    {
+      "display": "Opus 5                   Best for everyday, complex tasks",
+      "response": "7"
+    },
+    {
+      "display": "Fable 5                  Most capable for your hardest and longest-running tasks",
+      "response": "8"
+    }
+  ],
+  "defaultOptionIndex": 0,
+  "scrollable": true,
+  "cursorNumber": 8
+}

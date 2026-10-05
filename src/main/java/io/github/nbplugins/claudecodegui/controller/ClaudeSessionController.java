@@ -11,6 +11,7 @@ import io.github.nbplugins.claudecodegui.model.SessionLifecycle;
 import io.github.nbplugins.claudecodegui.model.SessionMode;
 import io.github.nbplugins.claudecodegui.process.ClaudeProcess;
 import io.github.nbplugins.claudecodegui.process.ClaudeSessionStore;
+import io.github.nbplugins.claudecodegui.process.MenuEnumerator;
 import io.github.nbplugins.claudecodegui.process.ModelMenuParser;
 import io.github.nbplugins.claudecodegui.process.PtyTtyConnector;
 import io.github.nbplugins.claudecodegui.process.ScreenContentDetector;
@@ -61,6 +62,10 @@ public class ClaudeSessionController {
 
     /** DEL character (0x7F) — acts as BackSpace in xterm-256color terminals. */
     private static final byte[] PTY_BACKSPACE = {0x7f};
+    private static final byte[] PTY_ARROW_UP = {0x1b, '[', 'A'};
+    private static final byte[] PTY_ARROW_DOWN = {0x1b, '[', 'B'};
+    /** Pause after an arrow key before the screen is read while enumerating a scrolling menu. */
+    private static final long MENU_ENUMERATION_SETTLE_MS = 120;
 
     private static final int MAX_MODEL_DISCOVERY_ATTEMPTS = 1;
 
@@ -124,6 +129,8 @@ public class ClaudeSessionController {
 
     /** {@code true} while the model-discovery or model-switch background thread is running. */
     private volatile boolean modelDiscoveryInProgress = false;
+    /** True while {@link MenuEnumerator} walks the cursor through a scrolling menu. */
+    private volatile boolean menuEnumerationInProgress = false;
 
     /** Number of model-discovery attempts made since the last session start. */
     private int modelDiscoveryAttempts = 0;
@@ -645,6 +652,13 @@ public class ClaudeSessionController {
                         t.setDaemon(true);
                         t.start();
                     }
+                } else if (answer.matches("[0-9]{2,}") && menuCursorNumber(current) > 0) {
+                    // Items 10+ cannot be typed (a digit selects immediately): move the PTY
+                    // cursor onto the item with arrow keys, then Enter.
+                    int delta = Integer.parseInt(answer) - menuCursorNumber(current);
+                    LOG.fine("[PTY write] ARROW-number answer=" + answer + " delta=" + delta);
+                    clearActiveChoiceMenu();
+                    sendArrowsThenEnter(delta, "pty-arrow-number");
                 } else {
                     boolean isMenuDigit = answer.matches("[0-9]");
                     String toWrite = isMenuDigit ? answer : answer + "\r";
@@ -656,6 +670,33 @@ public class ClaudeSessionController {
         } catch (IOException ex) {
             LOG.warning("writePtyAnswer failed: " + ex.getMessage());
         }
+    }
+
+    /** Menu number under the PTY cursor according to {@code menu}, or 0 if unknown. */
+    private int menuCursorNumber(ChoiceMenuModel menu) {
+        if (menu != null && menu.cursorNumber() > 0) return menu.cursorNumber();
+        ChoiceMenuModel active = model.getActiveChoiceMenu();
+        return active != null ? active.cursorNumber() : 0;
+    }
+
+    /** Presses Down (delta &gt; 0) or Up (delta &lt; 0) {@code |delta|} times, then Enter, on a daemon thread. */
+    private void sendArrowsThenEnter(int delta, String threadName) {
+        Thread t = new Thread(() -> {
+            try {
+                byte[] arrow = delta < 0 ? PTY_ARROW_UP : PTY_ARROW_DOWN;
+                for (int i = 0; i < Math.abs(delta); i++) {
+                    connector.write(arrow);
+                    Thread.sleep(80);
+                }
+                connector.write("\r");
+            } catch (IOException ex) {
+                LOG.warning(threadName + " write failed: " + ex.getMessage());
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }, threadName);
+        t.setDaemon(true);
+        t.start();
     }
 
     /**
@@ -910,7 +951,24 @@ public class ClaudeSessionController {
             Thread t = new Thread(() -> {
                 try {
                     openModelMenu();
-                    connector.write(String.valueOf(index + 1));
+                    if (index < 9) {
+                        connector.write(String.valueOf(index + 1));
+                    } else {
+                        // Items 10+ cannot be typed: move the cursor onto the item, then Enter.
+                        int cursor = waitForModelMenuCursor();
+                        if (cursor > 0) {
+                            int delta = index + 1 - cursor;
+                            byte[] arrow = delta < 0 ? PTY_ARROW_UP : PTY_ARROW_DOWN;
+                            for (int i = 0; i < Math.abs(delta); i++) {
+                                connector.write(arrow);
+                                Thread.sleep(80);
+                            }
+                            connector.write("\r");
+                        } else {
+                            LOG.warning("model switch: /model menu not visible, cannot select item " + (index + 1));
+                            connector.write(PTY_ESC);
+                        }
+                    }
                     Thread.sleep(500);
                 } catch (IOException | InterruptedException ex) {
                     LOG.warning("model switch failed: " + ex.getMessage());
@@ -927,6 +985,16 @@ public class ClaudeSessionController {
     // -------------------------------------------------------------------------
     // Model discovery
     // -------------------------------------------------------------------------
+
+    /** Waits (up to ~3 s) for the {@code /model} menu and returns the number under the cursor, or 0. */
+    private int waitForModelMenuCursor() throws InterruptedException {
+        for (int i = 0; i < 20; i++) {
+            Optional<ChoiceMenuModel> m = screenContentDetector.detectChoiceMenu(screenLines.get());
+            if (m.isPresent() && m.get().cursorNumber() > 0) return m.get().cursorNumber();
+            Thread.sleep(150);
+        }
+        return 0;
+    }
 
     /**
      * Opens the {@code /model} selection menu, parses the screen, and populates
@@ -985,6 +1053,14 @@ public class ClaudeSessionController {
                         Thread.sleep(200);
                         connector.write("\r");
                     }
+                }
+
+                // A long menu shows only a window of the models: walk the cursor through the
+                // whole list (and back) so the combo gets every model, not just the visible ones.
+                if (menuOpt.isPresent() && menuOpt.get().scrollable()) {
+                    ChoiceMenuModel full = newMenuEnumerator().enumerate(menuOpt.get());
+                    menuOpt = Optional.of(full);
+                    lines = MenuEnumerator.toScreenLines(full);
                 }
 
                 // Scan the rolling PTY line buffer for the /model hint line, which is
@@ -1134,7 +1210,7 @@ public class ClaudeSessionController {
         // (e.g. thinking spinner keeps PTY active and prevents the 400 ms silence).
         // Also clear stale menu when it disappears from screen — flushPendingPrompt
         // may never fire if the spinner continuously restarts promptFlushTimer.
-        if (!modelDiscoveryInProgress) {
+        if (!modelDiscoveryInProgress && !menuEnumerationInProgress) {
             Optional<ChoiceMenuModel> menuOpt = screenContentDetector.detectChoiceMenu(lines);
             if (menuOpt.isPresent()) {
                 applyDetectedChoiceMenu(menuOpt.get(), "[pollScreenState] ");
@@ -1274,7 +1350,7 @@ public class ClaudeSessionController {
      */
     void flushPendingPrompt() {
         LOG.fine("[flushPendingPrompt] enter, modelDiscoveryInProgress=" + modelDiscoveryInProgress);
-        if (modelDiscoveryInProgress) return;
+        if (modelDiscoveryInProgress || menuEnumerationInProgress) return;
 
         Optional<ChoiceMenuModel> req = Optional.empty();
         List<String> lines = screenLines.get();
@@ -1335,7 +1411,7 @@ public class ClaudeSessionController {
 
         req.ifPresent(r -> {
             LOG.fine("[screen prompt flush] setting choice menu: \"" + r.text() + "\" | options=" + r.options());
-            model.setActiveChoiceMenu(r);
+            showChoiceMenu(r);
         });
     }
 
@@ -1430,12 +1506,51 @@ public class ClaudeSessionController {
         }
     }
 
+    /**
+     * Shows {@code menu} in the choice panel. A scrolling menu (only a window of a longer
+     * list is on screen) is first completed on a daemon thread by {@link MenuEnumerator},
+     * which walks the PTY cursor through the whole list and back; the poll timers are
+     * suppressed meanwhile, and the panel is shown only once the full list is known.
+     */
+    private void showChoiceMenu(ChoiceMenuModel menu) {
+        if (!menu.scrollable() || connector == null || menuEnumerationInProgress) {
+            model.setActiveChoiceMenu(menu);
+            return;
+        }
+        menuEnumerationInProgress = true;
+        Thread t = new Thread(() -> {
+            ChoiceMenuModel full = menu;
+            try {
+                full = newMenuEnumerator().enumerate(menu);
+            } catch (IOException ex) {
+                LOG.warning("menu enumeration failed: " + ex.getMessage());
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            } finally {
+                final ChoiceMenuModel result = full;
+                SwingUtilities.invokeLater(() -> {
+                    menuEnumerationInProgress = false;
+                    if (model.getActiveChoiceMenu() == null) model.setActiveChoiceMenu(result);
+                });
+            }
+        }, "claude-menu-enumeration");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private MenuEnumerator newMenuEnumerator() {
+        return new MenuEnumerator(screenContentDetector, screenLines, new MenuEnumerator.Keys() {
+            @Override public void down() throws IOException { connector.write(PTY_ARROW_DOWN); }
+            @Override public void up() throws IOException { connector.write(PTY_ARROW_UP); }
+        }, Thread::sleep, MENU_ENUMERATION_SETTLE_MS);
+    }
+
     private void applyDetectedChoiceMenu(ChoiceMenuModel newMenu, String logTag) {
         ChoiceMenuModel current = model.getActiveChoiceMenu();
         if (current == null) {
             pendingChoiceMenuCandidate = null;
             LOG.fine(logTag + "setting choice menu: \"" + newMenu.text() + "\"");
-            model.setActiveChoiceMenu(newMenu);
+            showChoiceMenu(newMenu);
             return;
         }
         if (sameMenu(newMenu, current) || isShrunkViewOf(newMenu, current)) {

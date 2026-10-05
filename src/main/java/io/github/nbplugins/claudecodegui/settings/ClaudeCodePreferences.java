@@ -545,6 +545,35 @@ public final class ClaudeCodePreferences {
     }
 
     // -------------------------------------------------------------------------
+    // choiceMenuMaxHeight
+    // -------------------------------------------------------------------------
+
+    /** Preference key: maximum height (pixels) of the choice-menu option list before it scrolls. */
+    public static final String KEY_CHOICE_MENU_MAX_HEIGHT = "choiceMenuMaxHeight";
+    /** Default: 320 pixels. */
+    public static final int DEFAULT_CHOICE_MENU_MAX_HEIGHT = 320;
+
+    /**
+     * Returns the maximum height of the choice-menu option list; a longer list gets a scrollbar.
+     *
+     * @return height in pixels (100–2000)
+     */
+    public static int getChoiceMenuMaxHeight() {
+        return NbPreferences.forModule(ClaudeCodePreferences.class)
+                .getInt(KEY_CHOICE_MENU_MAX_HEIGHT, DEFAULT_CHOICE_MENU_MAX_HEIGHT);
+    }
+
+    /**
+     * Persists the maximum height of the choice-menu option list.
+     *
+     * @param v height in pixels; clamped to [100, 2000]
+     */
+    public static void setChoiceMenuMaxHeight(int v) {
+        NbPreferences.forModule(ClaudeCodePreferences.class)
+                .putInt(KEY_CHOICE_MENU_MAX_HEIGHT, Math.max(100, Math.min(2000, v)));
+    }
+
+    // -------------------------------------------------------------------------
     // hangTimeoutSeconds
     // -------------------------------------------------------------------------
 

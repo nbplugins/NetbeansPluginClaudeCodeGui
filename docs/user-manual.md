@@ -272,6 +272,8 @@ Claude Code sometimes presents interactive prompts (Yes/No or multiple choice). 
 
 **Other options** appear as radio buttons. Some options may include a text field for additional input. Click the desired option (and optionally fill in the text field), then press **Enter** or click **Send** to submit. Press **Escape** to cancel.
 
+**Long menus.** When Claude shows only part of a long list (e.g. `/model` with more than a handful of models), the plugin scrolls through the whole list once to collect every item, then shows them all. If the list is taller than **Choice menu max height** (see [Settings](#11-settings)), the option list gets a scrollbar. Items numbered 10 and above are selected by moving Claude's cursor with the arrow keys, so every item can be chosen.
+
 After submitting or cancelling, the input area is restored automatically.
 
 **Note:** If the choice panel does not appear when Claude asks a question, or appears unexpectedly without a question — click into the terminal area and interact with Claude directly. The panel will disappear automatically once Claude's state changes.
@@ -383,6 +385,7 @@ Open **Tools → Options → Claude Code** in NetBeans.
 | Automatically open Plan Preview tab when Claude writes a plan | On | When enabled, a live Markdown Preview tab opens automatically as soon as the user clicks Allow in a diff panel for a file in a `plans/` directory. |
 | Markdown preview dock position | Right side | Where the Markdown Preview tab is docked when first opened. Choices: Editor area, Right side, Left side top, Left side bottom, Bottom dock. |
 | Choice menu focus | Grab focus | Controls whether the choice menu panel grabs keyboard focus when it appears. Choices: Grab focus, Show without grabbing focus, Hide menu. |
+| Choice menu max height (px) | 320 | Maximum height of the option list in the choice menu panel (100–2000). Longer lists (e.g. `/model` with many models) get a scrollbar; the scrollbar also appears or disappears by itself when you resize the panel by dragging the divider. |
 | Terminal font | Auto | Font used in the embedded terminal. Click **Choose…** to open the font picker. The label shows the resolved font name (e.g. `Adwaita Mono, 14 (Auto)` when auto-detection is active, or `Monospaced, 14` when set explicitly). |
 
 #### Terminal font picker

@@ -1,10 +1,12 @@
 package io.github.nbplugins.claudecodegui.ui;
 
 import io.github.nbplugins.claudecodegui.model.ChoiceMenuModel;
+import io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbplugins.claudecodegui.ui.common.DecoratedTextField;
 import io.github.nbplugins.claudecodegui.ui.common.UiUtils;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Dimension;
 import java.awt.event.KeyEvent;
 import java.util.List;
 import java.util.function.Consumer;
@@ -21,8 +23,11 @@ import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
+import javax.swing.JScrollPane;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
+import javax.swing.ScrollPaneConstants;
+import javax.swing.SwingUtilities;
 
 /**
  * A panel that appears when claude asks an interactive question.
@@ -400,11 +405,27 @@ public final class ChoiceMenuPanel extends JPanel {
         JPanel mainRow = new JPanel();
         mainRow.setLayout(new BoxLayout(mainRow, BoxLayout.X_AXIS));
         mainRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        mainRow.add(leftCol);
-        mainRow.add(Box.createHorizontalGlue());
+        mainRow.add(new OptionScrollPane(leftCol, maxOptionsHeight()));
         mainRow.add(rightCol);
 
         add(mainRow);
+
+        // Long option lists scroll: keep the selected / focused option in view.
+        final JComponent initiallySelected = defaultRadioBtn;
+        if (initiallySelected != null) {
+            SwingUtilities.invokeLater(() -> leftCol.scrollRectToVisible(initiallySelected.getBounds()));
+        }
+        java.awt.event.FocusAdapter keepVisible = new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent e) {
+                leftCol.scrollRectToVisible(((Component) e.getSource()).getBounds());
+            }
+        };
+        for (JRadioButton rb : radioButtons) {
+            if (rb != null) rb.addFocusListener(keepVisible);
+        }
+        for (JCheckBox cb : checkBoxes) {
+            if (cb != null) cb.addFocusListener(keepVisible);
+        }
 
         // ESC → cancel from anywhere in the panel
         getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
@@ -821,6 +842,52 @@ public final class ChoiceMenuPanel extends JPanel {
     }
 
     // -------------------------------------------------------------------------
+
+    /** Maximum height of the option list before it scrolls (Tools → Options → General). */
+    private static int maxOptionsHeight() {
+        try {
+            return ClaudeCodePreferences.getChoiceMenuMaxHeight();
+        } catch (RuntimeException | LinkageError e) {
+            return ClaudeCodePreferences.DEFAULT_CHOICE_MENU_MAX_HEIGHT;
+        }
+    }
+
+    /**
+     * Scroll pane whose preferred height is the content height capped at {@code maxHeight}.
+     * The scrollbar is shown only while the pane is actually shorter than its content, so it
+     * appears and disappears by itself when the user resizes the panel.
+     */
+    private static final class OptionScrollPane extends JScrollPane {
+        private final int maxHeight;
+
+        OptionScrollPane(JComponent view, int maxHeight) {
+            super(view, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                    ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+            this.maxHeight = maxHeight;
+            setBorder(null);
+            setAlignmentY(Component.TOP_ALIGNMENT);
+            getVerticalScrollBar().setUnitIncrement(16);
+        }
+
+        @Override
+        public Dimension getPreferredSize() {
+            Dimension v = getViewport().getView().getPreferredSize();
+            boolean capped = v.height > maxHeight;
+            int width = v.width + (capped ? getVerticalScrollBar().getPreferredSize().width : 0);
+            return new Dimension(width, Math.min(v.height, maxHeight));
+        }
+
+        /** Stretches horizontally up to the buttons on the right, so the scrollbar sits next to them. */
+        @Override
+        public Dimension getMaximumSize() {
+            return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+        }
+
+        @Override
+        public Dimension getMinimumSize() {
+            return new Dimension(getPreferredSize().width, Math.min(getPreferredSize().height, 48));
+        }
+    }
 
     private void submitAnswer(String answer) {
         Consumer<String> cb = callback;

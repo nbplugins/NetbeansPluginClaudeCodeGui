@@ -1,6 +1,7 @@
 package io.github.nbplugins.claudecodegui.ui;
 
 import io.github.nbplugins.claudecodegui.model.ChoiceMenuModel;
+import io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbplugins.claudecodegui.model.ChoiceMenuModel.Option;
 import io.github.nbplugins.claudecodegui.ui.common.UiUtils;
 import java.awt.BorderLayout;
@@ -1035,8 +1036,50 @@ class ChoiceMenuPanelTest {
     }
 
     // -------------------------------------------------------------------------
+    // long menus
+    // -------------------------------------------------------------------------
+
+    @Test
+    void testLongOptionListIsCappedAndScrollable() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
+            List<Option> opts = new ArrayList<>();
+            for (int i = 1; i <= 40; i++) opts.add(new Option("Model " + i, String.valueOf(i)));
+            panel.show(new ChoiceMenuModel("Select model", opts, 0, true, 3), a -> {}, false);
+
+            javax.swing.JScrollPane sp = findScrollPane(panel);
+            assertNotNull(sp, "option list must be inside a scroll pane");
+            assertEquals(ClaudeCodePreferences.DEFAULT_CHOICE_MENU_MAX_HEIGHT, sp.getPreferredSize().height,
+                    "tall list is capped at the configured max height");
+        });
+    }
+
+    @Test
+    void testShortOptionListIsNotCapped() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            ChoiceMenuPanel panel = new ChoiceMenuPanel(() -> null);
+            panel.show(new ChoiceMenuModel("Q?",
+                    List.of(new Option("A", "1"), new Option("B", "2"), new Option("C", "3")), 0), a -> {}, false);
+            javax.swing.JScrollPane sp = findScrollPane(panel);
+            assertNotNull(sp);
+            assertTrue(sp.getPreferredSize().height < ClaudeCodePreferences.DEFAULT_CHOICE_MENU_MAX_HEIGHT);
+        });
+    }
+
+    // -------------------------------------------------------------------------
     // helpers
     // -------------------------------------------------------------------------
+
+    private static javax.swing.JScrollPane findScrollPane(java.awt.Container container) {
+        for (Component c : container.getComponents()) {
+            if (c instanceof javax.swing.JScrollPane sp) return sp;
+            if (c instanceof java.awt.Container sub) {
+                javax.swing.JScrollPane found = findScrollPane(sub);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
 
     private static List<String> collectButtonLabels(java.awt.Container container) {
         List<String> labels = new ArrayList<>();
@@ -1136,6 +1179,8 @@ class ChoiceMenuPanelTest {
             if (c instanceof JButton btn) {
                 String t = btn.getText();
                 if (!"Send".equals(t) && !"Submit".equals(t) && !"Cancel".equals(t)) result.add(btn);
+            } else if (c instanceof javax.swing.JScrollBar) {
+                // scrollbar arrow buttons are not choice buttons
             } else if (c instanceof java.awt.Container sub) {
                 result.addAll(collectYesNoButtons(sub));
             }
