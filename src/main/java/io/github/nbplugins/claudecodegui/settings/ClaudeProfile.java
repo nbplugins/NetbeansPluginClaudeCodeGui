@@ -159,6 +159,13 @@ public final class ClaudeProfile {
     private List<String> customModels;
 
     /**
+     * IDs of all models with a non-blank alias (sonnet/opus/haiku/custom), in the
+     * row order of the Model Aliases dialog — the model combo and the dialog itself
+     * follow this order. {@code null}/empty for profiles saved before it existed.
+     */
+    private List<String> modelOrder;
+
+    /**
      * Model IDs opted into experimental explicit prompt caching (see
      * {@link ModelAlias#explicitPromptCaching}), for the OpenAI-compatible and
      * ChatGPT Subscription connection types. Only entries differing from
@@ -256,6 +263,7 @@ public final class ClaudeProfile {
         this.extraEnvVars  = new ArrayList<>();
         this.modelAliases  = new HashMap<>();
         this.customModels  = new ArrayList<>();
+        this.modelOrder    = new ArrayList<>();
         this.explicitPromptCachingModels = new HashMap<>();
         this.extraCliArgs  = "";
         this.storageDir    = "";
@@ -388,9 +396,7 @@ public final class ClaudeProfile {
 
         // Model aliases (ANTHROPIC_DEFAULT_*_MODEL) — only for connection types
         // that use a custom endpoint; irrelevant (and potentially harmful) otherwise.
-        ConnectionType ct = computeConnectionType();
-        if ((ct == ConnectionType.OTHER_API || ct == ConnectionType.OPENAI_PROXY)
-                && modelAliases != null) {
+        if (modelAliasesApply() && modelAliases != null) {
             for (int i = 0; i < ALIAS_NAMES.length; i++) {
                 String modelId = modelAliases.get(ALIAS_NAMES[i]);
                 if (modelId != null && !modelId.isBlank()) {
@@ -626,6 +632,72 @@ public final class ClaudeProfile {
      */
     public List<String> getCustomModels() {
         return customModels != null ? Collections.unmodifiableList(customModels) : List.of();
+    }
+
+    /**
+     * Returns the model IDs to append to the model combo after Claude Code's own
+     * {@code /model} menu entries, each switched via {@code /model <id>}: models
+     * mapped to {@code sonnet}/{@code opus}/{@code haiku} (so they stay selectable
+     * by their own id) and the custom models, without duplicates, in the row order
+     * of the Model Aliases dialog ({@link #getModelOrder()}). Alias mappings are included only for connection types that
+     * apply them (see {@link #modelAliasesApply()}).
+     *
+     * <p>Derived, not persisted: {@code @JsonIgnore} keeps Jackson from writing it
+     * and from trying to fill the returned immutable list on load.
+     *
+     * @return unmodifiable list; never {@code null}
+     */
+    @JsonIgnore
+    public List<String> getComboModelIds() {
+        java.util.LinkedHashSet<String> available = new java.util.LinkedHashSet<>();
+        if (modelAliasesApply() && modelAliases != null) {
+            for (String alias : ALIAS_NAMES) {
+                String id = modelAliases.get(alias);
+                if (id != null && !id.isBlank()) {
+                    available.add(id);
+                }
+            }
+        }
+        available.addAll(getCustomModels());
+        // Dialog row order first; anything not covered (e.g. profiles saved before
+        // the order was stored) keeps the aliases-then-custom fallback order.
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
+        for (String id : getModelOrder()) {
+            if (available.contains(id)) {
+                ids.add(id);
+            }
+        }
+        ids.addAll(available);
+        return List.copyOf(ids);
+    }
+
+    /**
+     * Returns the Model Aliases dialog row order (see {@link #modelOrder}).
+     *
+     * @return unmodifiable list; never {@code null}
+     */
+    public List<String> getModelOrder() {
+        return modelOrder != null ? Collections.unmodifiableList(modelOrder) : List.of();
+    }
+
+    /**
+     * Replaces the Model Aliases dialog row order.
+     *
+     * @param ids model IDs in dialog row order; {@code null} clears the list
+     */
+    public void setModelOrder(List<String> ids) {
+        this.modelOrder = ids != null ? new ArrayList<>(ids) : new ArrayList<>();
+    }
+
+    /**
+     * Whether model aliases ({@code ANTHROPIC_DEFAULT_*_MODEL}) are applied for this
+     * profile's connection type — only for custom endpoints; irrelevant (and
+     * potentially harmful) for Anthropic's own connections.
+     */
+    private boolean modelAliasesApply() {
+        ConnectionType ct = computeConnectionType();
+        return ct == ConnectionType.OTHER_API || ct == ConnectionType.OPENAI_PROXY
+                || ct == ConnectionType.OPENAI_SUBSCRIPTION;
     }
 
     /**

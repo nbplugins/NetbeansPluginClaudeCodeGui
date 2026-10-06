@@ -45,6 +45,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
 
     private final MCPSseServer mcpServer;
     private final ChatGptTokenManager tokenManager = new ChatGptTokenManager();
+    private final PromptPrefixTracker prefixTracker = new PromptPrefixTracker();
 
     // HttpClient is built per-request from the session's OpenAIProxyConfig,
     // which contains the proxy settings from the profile.
@@ -86,7 +87,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
 
         boolean streaming = anthropicReq.path("stream").asBoolean(false);
         String model = anthropicReq.path("model").asText("unknown");
-        String cacheKey = resolvePromptCacheKey(req, uuid);
+        String cacheKey = resolvePromptCacheKey(req.getHeader("X-Claude-Code-Session-Id"),
+                req.getHeader("x-claude-code-agent-id"), uuid);
         boolean explicitPromptCaching = isExplicitPromptCachingEnabled(config, model);
         int requestMessageCount = anthropicReq.path("messages").size();
         long requestSizeBytes = body.getBytes(StandardCharsets.UTF_8).length;
@@ -105,7 +107,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
         }
 
         if (config.getMode() == OpenAIProxyConfig.Mode.CHATGPT_CODEX) {
-            handleCodexRequest(req, resp, config, cacheKey, explicitPromptCaching, anthropicReq, model, streaming,
+            handleCodexRequest(req, resp, config, cacheKey, anthropicReq, model, streaming,
                     requestMessageCount, requestSizeBytes, debug);
             return;
         }
@@ -113,6 +115,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
         // Translate request
         ObjectNode openaiReq = AnthropicToOpenAITranslator.translateRequest(anthropicReq, cacheKey, explicitPromptCaching);
         String openaiBody = AnthropicToOpenAITranslator.MAPPER.writeValueAsString(openaiReq);
+        LOG.fine("OpenAI proxy: prompt prefix vs previous request (key=" + cacheKey + "): "
+                + prefixTracker.recordAndDescribe(cacheKey, openaiReq));
 
         String targetUrl = config.getBaseUrl();
         if (!targetUrl.endsWith("/")) targetUrl += "/";
@@ -281,7 +285,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
      * {@link #toCodexAnthropicError}.
      */
     private void handleCodexRequest(HttpServletRequest req, HttpServletResponse resp, OpenAIProxyConfig config,
-            String cacheKey, boolean explicitPromptCaching, JsonNode anthropicReq, String model,
+            String cacheKey, JsonNode anthropicReq, String model,
             boolean streaming, int requestMessageCount, long requestSizeBytes, boolean debug) throws IOException {
 
         ClaudeProfile profile = ClaudeProfileStore.findById(config.getProfileId());
@@ -297,8 +301,10 @@ public final class OpenAIProxyServlet extends HttpServlet {
             return;
         }
 
-        ObjectNode codexReq = AnthropicToCodexTranslator.translateRequest(anthropicReq, cacheKey, explicitPromptCaching);
+        ObjectNode codexReq = AnthropicToCodexTranslator.translateRequest(anthropicReq, cacheKey);
         String codexBody = AnthropicToCodexTranslator.MAPPER.writeValueAsString(codexReq);
+        LOG.fine("OpenAI proxy (Codex): prompt prefix vs previous request (key=" + cacheKey + "): "
+                + prefixTracker.recordAndDescribe(cacheKey, codexReq));
 
         String targetUrl = config.getBaseUrl();
         if (!targetUrl.endsWith("/")) targetUrl += "/";
@@ -310,16 +316,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
                     + " | " + AnthropicToCodexTranslator.summarizeCodexRequest(codexReq));
         }
 
-        HttpRequest httpReq = HttpRequest.newBuilder()
-                .uri(URI.create(targetUrl))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + accessToken)
-                .header("ChatGPT-Account-Id", profile != null ? profile.getChatgptAccountId() : config.getAccountId())
-                .header("User-Agent", "netbeans-plugin-claude-code-gui")
-                .header("originator", "codex_cli_rs")
-                .POST(HttpRequest.BodyPublishers.ofString(codexBody, StandardCharsets.UTF_8))
-                .timeout(Duration.ofSeconds(600))
-                .build();
+        HttpRequest httpReq = buildCodexHttpRequest(targetUrl, codexBody, accessToken,
+                profile != null ? profile.getChatgptAccountId() : config.getAccountId(), cacheKey);
 
         HttpClient httpClient = config.buildHttpClient();
         if (streaming) {
@@ -334,6 +332,33 @@ public final class OpenAIProxyServlet extends HttpServlet {
             handleCodexNonStreamingViaAggregatedStream(httpClient, httpReq, model, resp, config,
                     requestMessageCount, requestSizeBytes, debug);
         }
+    }
+
+    /**
+     * Builds the HTTP request to the Codex Responses endpoint.
+     *
+     * <p>{@code sessionId} (the same value sent as {@code prompt_cache_key}) is also
+     * sent as the {@code session_id} header, as Codex CLI itself does: without it the
+     * Codex backend spreads consecutive requests of one conversation across
+     * prompt-cache shards and almost never reports cached tokens, even for
+     * byte-identical prefixes (see {@code claude-launch-tests/test_codex_prompt_cache.py}).
+     */
+    static HttpRequest buildCodexHttpRequest(String targetUrl, String codexBody, String accessToken,
+            String accountId, String sessionId) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(targetUrl))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + accessToken)
+                .header("ChatGPT-Account-Id", accountId)
+                .header("User-Agent", "netbeans-plugin-claude-code-gui")
+                .header("originator", "codex_cli_rs");
+        if (sessionId != null && !sessionId.isBlank()) {
+            builder.header("session_id", sessionId);
+        }
+        return builder
+                .POST(HttpRequest.BodyPublishers.ofString(codexBody, StandardCharsets.UTF_8))
+                .timeout(Duration.ofSeconds(600))
+                .build();
     }
 
     private void handleCodexNonStreamingViaAggregatedStream(HttpClient httpClient, HttpRequest httpReq, String model,
@@ -574,10 +599,19 @@ public final class OpenAIProxyServlet extends HttpServlet {
      * new prompt-cache key on every session restart, discarding any warm cache.
      * Falls back to the proxy UUID when the header is absent (e.g. non-Claude-Code
      * clients, or older CLI versions that don't send it).
+     *
+     * <p>Subagent requests carry the same session id plus an
+     * {@code x-claude-code-agent-id} header; each subagent has its own prompt
+     * history, so it gets its own key ({@code <session>/<agentId>}) instead of
+     * sharing — and overflowing — the main conversation's cache routing.
+     *
+     * @param sessionHeader {@code X-Claude-Code-Session-Id} header value, may be {@code null}
+     * @param agentHeader   {@code x-claude-code-agent-id} header value (subagents only), may be {@code null}
+     * @param uuid          the proxy's per-process UUID, used when there is no session header
      */
-    private static String resolvePromptCacheKey(HttpServletRequest req, String uuid) {
-        String sessionHeader = req.getHeader("X-Claude-Code-Session-Id");
-        return sessionHeader != null && !sessionHeader.isBlank() ? sessionHeader : uuid;
+    static String resolvePromptCacheKey(String sessionHeader, String agentHeader, String uuid) {
+        String key = sessionHeader != null && !sessionHeader.isBlank() ? sessionHeader : uuid;
+        return agentHeader != null && !agentHeader.isBlank() ? key + "/" + agentHeader : key;
     }
 
     /**
@@ -589,7 +623,8 @@ public final class OpenAIProxyServlet extends HttpServlet {
      * {@code prompt_tokens_details.cached_tokens}) and Responses/Codex
      * ({@code input_tokens}/{@code output_tokens}/
      * {@code input_tokens_details.cached_tokens}); {@code cache_write_tokens}
-     * is a shared top-level field name on both. Missing fields default to 0.
+     * is read by {@link AnthropicToOpenAITranslator#cacheWriteTokens} (nested in the
+     * details object or top-level). Missing fields default to 0.
      *
      * <p>Called from the non-streaming response paths; the streaming (SSE) paths
      * accumulate the same totals directly from their {@code StreamingState}
@@ -607,7 +642,7 @@ public final class OpenAIProxyServlet extends HttpServlet {
         JsonNode cachedDetails = usage.has("prompt_tokens_details")
                 ? usage.path("prompt_tokens_details") : usage.path("input_tokens_details");
         long cached = cachedDetails.path("cached_tokens").asLong(0);
-        long cacheWrite = usage.path("cache_write_tokens").asLong(0);
+        long cacheWrite = AnthropicToOpenAITranslator.cacheWriteTokens(usage, 0);
         config.addUsage(model, input, output, cached, cacheWrite);
     }
 

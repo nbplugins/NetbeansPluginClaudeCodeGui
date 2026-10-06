@@ -101,46 +101,51 @@ class AnthropicToCodexTranslatorTest {
     }
 
     // -------------------------------------------------------------------------
-    // explicit prompt caching (experimental) — only prompt_cache_retention for
-    // pre-5.6 GPT models; 5.6+ breakpoints intentionally not implemented (see
-    // the three-arg translateRequest Javadoc).
+    // prompt caching — the Codex backend rejects every explicit-caching field
+    // (prompt_cache_retention → HTTP 400 "Unsupported parameter",
+    // prompt_cache_options → HTTP 400 "not supported on this model"), see
+    // claude-launch-tests/test_codex_prompt_cache.py
     // -------------------------------------------------------------------------
 
     @Test
-    void translateRequest_explicitCachingDisabled_noRetentionField() throws Exception {
+    void translateRequest_olderGptModel_neverSendsRetentionOrOptions() throws Exception {
         ObjectNode result = AnthropicToCodexTranslator.translateRequest(
-                load("req_system_prompt.json"), "s", false); // model=gpt-4o
+                load("req_system_prompt.json"), "s"); // model=gpt-4o
 
         assertFalse(result.has("prompt_cache_retention"));
+        assertFalse(result.has("prompt_cache_options"));
     }
 
     @Test
-    void translateRequest_explicitCachingEnabled_olderGptModel_setsRetention() throws Exception {
+    void translateRequest_gpt56_neverSendsRetentionOrOptions() throws Exception {
         ObjectNode result = AnthropicToCodexTranslator.translateRequest(
-                load("req_system_prompt.json"), "s", true); // model=gpt-4o
+                load("req_system_prompt_gpt56.json"), "s");
 
-        assertEquals("24h", result.path("prompt_cache_retention").asText());
-    }
-
-    @Test
-    void translateRequest_explicitCachingEnabled_gpt56_doesNotSetRetentionOrOptions() throws Exception {
-        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
-                load("req_system_prompt_gpt56.json"), "s", true);
-
-        // Deliberately no prompt_cache_retention (that's the <5.6 mechanism) and no
-        // prompt_cache_options (breakpoints unimplemented for this backend, see Javadoc).
         assertFalse(result.has("prompt_cache_retention"));
         assertFalse(result.has("prompt_cache_options"));
         assertEquals("You are helpful.", result.path("instructions").asText());
     }
 
-    @Test
-    void translateRequest_explicitCachingEnabled_nonGptModel_noEffect() throws Exception {
-        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
-                load("req_simple_text.json"), "s", true); // model=claude-sonnet-4-5
+    // -------------------------------------------------------------------------
+    // mid-conversation role:"system" messages (Claude Code >= 2.1.288)
+    // -------------------------------------------------------------------------
 
-        assertFalse(result.has("prompt_cache_retention"));
-        assertFalse(result.has("prompt_cache_options"));
+    @Test
+    void translateRequest_midConversationSystemMessage_becomesDeveloperMessageInPlace() throws Exception {
+        ObjectNode result = AnthropicToCodexTranslator.translateRequest(
+                load("req_mid_conversation_system.json"), "s");
+
+        JsonNode input = result.path("input");
+        assertEquals(4, input.size());
+        assertEquals("user", input.get(0).path("role").asText());
+        assertEquals("developer", input.get(1).path("role").asText());
+        assertEquals("message", input.get(1).path("type").asText());
+        assertEquals("input_text", input.get(1).path("content").get(0).path("type").asText());
+        assertEquals("# Environment\nWorking directory: /tmp/x",
+                input.get(1).path("content").get(0).path("text").asText());
+        assertEquals("assistant", input.get(2).path("role").asText());
+        assertEquals("developer", input.get(3).path("role").asText());
+        assertEquals("Reminder A\n\nReminder B", input.get(3).path("content").get(0).path("text").asText());
     }
 
     @Test
@@ -402,6 +407,42 @@ class AnthropicToCodexTranslatorTest {
 
         assertEquals(30, s.getCachedTokens());
         assertEquals(40, s.getCacheWriteTokens());
+    }
+
+    @Test
+    void streaming_completedEvent_cacheWriteTokensInsideInputTokensDetails() {
+        // Actual Codex backend shape: cache_write_tokens nested next to cached_tokens
+        AnthropicToCodexTranslator.StreamingState s = state();
+
+        s.processEvent("response.completed",
+                "{\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20,"
+                + "\"input_tokens_details\":{\"cached_tokens\":30,\"cache_write_tokens\":50}}}}");
+
+        assertEquals(30, s.getCachedTokens());
+        assertEquals(50, s.getCacheWriteTokens());
+    }
+
+    @Test
+    void aggregator_cacheWriteTokensInsideInputTokensDetails() {
+        AnthropicToCodexTranslator.ResponseAggregator a = new AnthropicToCodexTranslator.ResponseAggregator();
+
+        a.processEvent("response.completed",
+                "{\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20,"
+                + "\"input_tokens_details\":{\"cached_tokens\":30,\"cache_write_tokens\":50}}}}");
+
+        JsonNode usage = a.buildCodexResponse().path("usage");
+        assertEquals(30, usage.path("input_tokens_details").path("cached_tokens").asInt());
+        assertEquals(50, usage.path("input_tokens_details").path("cache_write_tokens").asInt());
+    }
+
+    @Test
+    void summarizeCodexResponse_includesCachedTokens() throws Exception {
+        JsonNode resp = AnthropicToCodexTranslator.MAPPER.readTree(
+                "{\"status\":\"completed\",\"output\":[{}],\"usage\":{\"input_tokens\":100,"
+                + "\"output_tokens\":20,\"input_tokens_details\":{\"cached_tokens\":30}}}");
+
+        assertEquals("status=completed output_items=1 input_tokens=100 output_tokens=20 cached_tokens=30",
+                AnthropicToCodexTranslator.summarizeCodexResponse(resp));
     }
 
     // -------------------------------------------------------------------------

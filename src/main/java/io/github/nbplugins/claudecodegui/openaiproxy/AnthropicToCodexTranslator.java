@@ -21,7 +21,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * <ul>
  *   <li>{@code system} → {@code instructions}</li>
  *   <li>{@code messages[]} → flat {@code input[]} items ({@code message},
- *       {@code function_call}, {@code function_call_output})</li>
+ *       {@code function_call}, {@code function_call_output}); mid-conversation
+ *       {@code role:"system"} messages → {@code developer} messages in place</li>
  *   <li>Images inside {@code tool_result} content → {@code "[image omitted: <mediaType>]"}
  *       placeholder text (the Codex backend does not accept images there)</li>
  *   <li>Claude Code's {@code output_config.effort} → Codex {@code reasoning.effort}</li>
@@ -84,41 +85,17 @@ public final class AnthropicToCodexTranslator {
      * Translates an Anthropic {@code POST /v1/messages} request body to an
      * OpenAI Responses API request body targeting the Codex backend.
      *
+     * <p>No explicit prompt-caching fields are ever sent: the Codex backend
+     * rejects {@code prompt_cache_retention} ("Unsupported parameter") and
+     * {@code prompt_cache_options} ("not supported on this model") with HTTP 400.
+     * Cache routing relies on {@code prompt_cache_key} plus the {@code session_id}
+     * header set by {@code OpenAIProxyServlet.buildCodexHttpRequest}.
+     *
      * @param anthropicRequest parsed Anthropic request JSON
      * @param sessionId        session/conversation identifier, used as {@code prompt_cache_key}
      * @return Responses-API-format request JSON
      */
     public static ObjectNode translateRequest(JsonNode anthropicRequest, String sessionId) {
-        return translateRequest(anthropicRequest, sessionId, false);
-    }
-
-    /**
-     * Translates an Anthropic {@code POST /v1/messages} request body to an
-     * OpenAI Responses API request body targeting the Codex backend.
-     *
-     * @param anthropicRequest      parsed Anthropic request JSON
-     * @param sessionId             session/conversation identifier, used as {@code prompt_cache_key}
-     * @param explicitPromptCaching experimental (see {@link io.github.nbplugins.claudecodegui.settings.ModelAlias}):
-     *                              when the resolved model parses as a GPT-family id older than
-     *                              5.6, sends {@code prompt_cache_retention: "24h"}. GPT-&ge;5.6
-     *                              explicit breakpoints ({@code prompt_cache_options}/
-     *                              {@code prompt_cache_breakpoint}) are intentionally NOT
-     *                              implemented here yet: unlike the Chat Completions API's
-     *                              well-documented {@code text} content-part shape, whether the
-     *                              Responses API's {@code instructions} field (a plain top-level
-     *                              string, separate from {@code input[]} items) accepts the same
-     *                              content-part-array structuring needed to attach a breakpoint is
-     *                              unverified — even {@code openai/codex}'s own client doesn't do
-     *                              this yet (see the ChatGPT-subscription rate-limit
-     *                              investigation). Sending {@code prompt_cache_options.mode:
-     *                              "explicit"} without a matching breakpoint would disable
-     *                              automatic breakpoint placement without providing a replacement,
-     *                              which risks making caching *worse*, not better — so this is
-     *                              deliberately left as a follow-up pending live verification.
-     * @return Responses-API-format request JSON
-     */
-    public static ObjectNode translateRequest(JsonNode anthropicRequest, String sessionId,
-            boolean explicitPromptCaching) {
         ObjectNode responses = MAPPER.createObjectNode();
 
         String model = anthropicRequest.path("model").asText("");
@@ -161,15 +138,6 @@ public final class AnthropicToCodexTranslator {
             responses.put("prompt_cache_key", sessionId);
         }
 
-        // Experimental explicit prompt caching (see the Javadoc above for why only the
-        // pre-5.6 prompt_cache_retention path is implemented here, not explicit breakpoints).
-        if (explicitPromptCaching) {
-            Double gptVersion = io.github.nbplugins.claudecodegui.settings.ModelAlias.parseGptVersion(model);
-            if (gptVersion != null && gptVersion < 5.6) {
-                responses.put("prompt_cache_retention", "24h");
-            }
-        }
-
         // Messages → flat input[] items
         ArrayNode input = responses.putArray("input");
         JsonNode anthropicMessages = anthropicRequest.path("messages");
@@ -181,6 +149,8 @@ public final class AnthropicToCodexTranslator {
                     convertUserMessage(content, input);
                 } else if ("assistant".equals(role)) {
                     convertAssistantMessage(content, input);
+                } else if ("system".equals(role)) {
+                    convertSystemMessage(content, input);
                 }
             }
         }
@@ -216,6 +186,20 @@ public final class AnthropicToCodexTranslator {
             return sb.toString();
         }
         return "";
+    }
+
+    /**
+     * Converts a mid-conversation {@code role:"system"} message (sent by Claude Code
+     * &ge; 2.1.288, e.g. the "# Environment" block after the first prompt) into a
+     * {@code developer} message at the same position, instead of dropping it.
+     */
+    private static void convertSystemMessage(JsonNode content, ArrayNode input) {
+        String text = extractSystemText(content);
+        if (text.isBlank()) return;
+        ObjectNode msg = input.addObject();
+        msg.put("type", "message");
+        msg.put("role", "developer");
+        msg.putArray("content").addObject().put("type", "input_text").put("text", text);
     }
 
     private static void convertUserMessage(JsonNode content, ArrayNode input) {
@@ -600,7 +584,7 @@ public final class AnthropicToCodexTranslator {
                         outputTokens = usage.path("output_tokens").asInt(outputTokens);
                         inputTokens  = usage.path("input_tokens").asInt(inputTokens);
                         cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt(cachedTokens);
-                        cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
+                        cacheWriteTokens = AnthropicToOpenAITranslator.cacheWriteTokens(usage, cacheWriteTokens);
                     }
                     String statusStr = data.path("response").path("status").asText("completed");
                     if (!hadContent) {
@@ -821,10 +805,10 @@ public final class AnthropicToCodexTranslator {
                     outputTokens = usage.path("output_tokens").asInt(outputTokens);
                     // cached_tokens/cache_write_tokens: not documented in openai/codex's own
                     // client, best-effort extraction mirroring OpenAI's Responses API usage
-                    // shape (input_tokens_details.cached_tokens, top-level cache_write_tokens)
+                    // shape (input_tokens_details.cached_tokens / .cache_write_tokens)
                     // for the Session Statistics dialog; default to 0 if absent.
                     cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt(cachedTokens);
-                    cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
+                    cacheWriteTokens = AnthropicToOpenAITranslator.cacheWriteTokens(usage, cacheWriteTokens);
                 }
                 default -> { /* ignore other event types (response.created, response.output_item.done, ...) */ }
             }
@@ -860,8 +844,8 @@ public final class AnthropicToCodexTranslator {
             ObjectNode usage = root.putObject("usage");
             usage.put("input_tokens", inputTokens);
             usage.put("output_tokens", outputTokens);
-            usage.putObject("input_tokens_details").put("cached_tokens", cachedTokens);
-            usage.put("cache_write_tokens", cacheWriteTokens);
+            usage.putObject("input_tokens_details").put("cached_tokens", cachedTokens)
+                    .put("cache_write_tokens", cacheWriteTokens);
             return root;
         }
     }
@@ -889,6 +873,7 @@ public final class AnthropicToCodexTranslator {
         return "status=" + resp.path("status").asText("?")
                 + " output_items=" + resp.path("output").size()
                 + " input_tokens=" + usage.path("input_tokens").asInt(0)
-                + " output_tokens=" + usage.path("output_tokens").asInt(0);
+                + " output_tokens=" + usage.path("output_tokens").asInt(0)
+                + " cached_tokens=" + usage.path("input_tokens_details").path("cached_tokens").asInt(0);
     }
 }

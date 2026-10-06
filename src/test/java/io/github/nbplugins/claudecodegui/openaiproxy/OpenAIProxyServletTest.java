@@ -16,6 +16,48 @@ import static org.junit.jupiter.api.Assertions.*;
 class OpenAIProxyServletTest {
 
     @Test
+    void buildCodexHttpRequest_sendsSessionIdHeaderEqualToCacheKey() {
+        // The Codex backend only routes consecutive requests to the same prompt-cache
+        // shard when the session_id header is present (prompt_cache_key alone gives
+        // near-zero cache hits) — see claude-launch-tests/test_codex_prompt_cache.py.
+        java.net.http.HttpRequest req = OpenAIProxyServlet.buildCodexHttpRequest(
+                "https://chatgpt.com/backend-api/codex/responses", "{}", "tok", "acct", "sess-42");
+
+        assertEquals("sess-42", req.headers().firstValue("session_id").orElse(null));
+        assertEquals("Bearer tok", req.headers().firstValue("Authorization").orElse(null));
+        assertEquals("acct", req.headers().firstValue("ChatGPT-Account-Id").orElse(null));
+        assertEquals("codex_cli_rs", req.headers().firstValue("originator").orElse(null));
+    }
+
+    @Test
+    void resolvePromptCacheKey_mainAgent_usesSessionId() {
+        assertEquals("sess", OpenAIProxyServlet.resolvePromptCacheKey("sess", null, "proxy-uuid"));
+        assertEquals("sess", OpenAIProxyServlet.resolvePromptCacheKey("sess", " ", "proxy-uuid"));
+    }
+
+    @Test
+    void resolvePromptCacheKey_subagent_getsOwnKeyPerAgentId() {
+        // Each subagent has its own prompt history: separate keys keep it from sharing
+        // (and overflowing) the main conversation's cache routing.
+        assertEquals("sess/a64d876382dcd0ee6",
+                OpenAIProxyServlet.resolvePromptCacheKey("sess", "a64d876382dcd0ee6", "proxy-uuid"));
+    }
+
+    @Test
+    void resolvePromptCacheKey_noSessionHeader_fallsBackToProxyUuid() {
+        assertEquals("proxy-uuid", OpenAIProxyServlet.resolvePromptCacheKey(null, null, "proxy-uuid"));
+        assertEquals("proxy-uuid/agent1", OpenAIProxyServlet.resolvePromptCacheKey("", "agent1", "proxy-uuid"));
+    }
+
+    @Test
+    void buildCodexHttpRequest_blankSessionId_omitsHeader() {
+        java.net.http.HttpRequest req = OpenAIProxyServlet.buildCodexHttpRequest(
+                "https://chatgpt.com/backend-api/codex/responses", "{}", "tok", "acct", "");
+
+        assertTrue(req.headers().firstValue("session_id").isEmpty());
+    }
+
+    @Test
     void toAnthropicError_openai429InsufficientQuota_mapsToRateLimitError() {
         String body = "{\"error\":{\"message\":\"You exceeded your current quota\","
                 + "\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}}";
@@ -148,6 +190,18 @@ class OpenAIProxyServletTest {
         assertEquals(30, u.cachedTokens());
         assertEquals(40, u.cacheWriteTokens());
         assertEquals(1, u.requests());
+    }
+
+    @Test
+    void recordUsage_cacheWriteTokensInsideDetails_accumulated() throws Exception {
+        OpenAIProxyConfig config = newConfig();
+        JsonNode usage = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"input_tokens\":100,\"output_tokens\":20,"
+                + "\"input_tokens_details\":{\"cached_tokens\":30,\"cache_write_tokens\":50}}");
+
+        OpenAIProxyServlet.recordUsage(config, "gpt-5.6-terra", usage);
+
+        assertEquals(50, config.getUsageByModel().get("gpt-5.6-terra").cacheWriteTokens());
     }
 
     @Test
