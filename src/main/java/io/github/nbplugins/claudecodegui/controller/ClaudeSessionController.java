@@ -238,7 +238,7 @@ public class ClaudeSessionController {
         workingDir = dir;
         claudeProcess = new ClaudeProcess();
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
-        customModelIds = profile != null ? new ArrayList<>(profile.getCustomModels()) : List.of();
+        customModelIds = profile != null ? new ArrayList<>(profile.getComboModelIds()) : List.of();
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
                 mode != null ? mode : SessionMode.NEW,

@@ -1,3 +1,8 @@
+- Fixed subagents and background requests failing with "model is not supported when using Codex with a ChatGPT account" for ChatGPT Subscription profiles: model aliases from the Model Aliases dialog (e.g. haiku, sonnet) are now applied to ChatGPT Subscription sessions too
+- Changed the model selector to also list models mapped to sonnet, opus or haiku in Model Aliases by their own ID, so they stay selectable directly; all these models are listed in the same order as in the Model Aliases dialog, which now also keeps its row order when reopened
+- Fixed prompt caching almost never working for ChatGPT Subscription connections, so long sessions used up the subscription quota much faster than needed; subagents now get their own cache instead of sharing the main conversation's
+- Fixed ChatGPT Subscription and OpenAI Compatible connections losing part of Claude Code's context (environment info and system reminders) with Claude Code 2.1.288 and newer
+- Fixed requests failing with "Unsupported parameter: prompt_cache_retention" for ChatGPT Subscription models older than GPT-5.6 when Explicit Cache was checked
 # 1.3.25 (2026-10-05)
 
 - Added support for long choice dialogs (e.g. /model with more than 9 items): all items are listed with a scrollbar when the list is taller than the new "Choice menu max height" setting (Tools → Options → Claude Code → General, default 320 px), items 10 and above can be selected, and the model list at startup and the model combo include every model

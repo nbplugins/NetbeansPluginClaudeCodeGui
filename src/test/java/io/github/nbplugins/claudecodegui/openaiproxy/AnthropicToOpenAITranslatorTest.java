@@ -46,6 +46,22 @@ class AnthropicToOpenAITranslatorTest {
     }
 
     @Test
+    void translateRequest_midConversationSystemMessage_keptInPlaceAsSystemMessage() throws Exception {
+        ObjectNode result = AnthropicToOpenAITranslator.translateRequest(load("req_mid_conversation_system.json"));
+
+        JsonNode messages = result.path("messages");
+        assertEquals(5, messages.size());
+        assertEquals("system", messages.get(0).path("role").asText());
+        assertEquals("You are helpful.", messages.get(0).path("content").asText());
+        assertEquals("user", messages.get(1).path("role").asText());
+        assertEquals("system", messages.get(2).path("role").asText());
+        assertEquals("# Environment\nWorking directory: /tmp/x", messages.get(2).path("content").asText());
+        assertEquals("assistant", messages.get(3).path("role").asText());
+        assertEquals("system", messages.get(4).path("role").asText());
+        assertEquals("Reminder A\n\nReminder B", messages.get(4).path("content").asText());
+    }
+
+    @Test
     void translateRequest_noCacheKey_omitsPromptCacheKey() throws Exception {
         ObjectNode result = AnthropicToOpenAITranslator.translateRequest(load("req_simple_text.json"));
 

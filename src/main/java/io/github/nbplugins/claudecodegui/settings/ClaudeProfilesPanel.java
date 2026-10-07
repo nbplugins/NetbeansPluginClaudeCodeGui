@@ -795,6 +795,7 @@ public final class ClaudeProfilesPanel extends JPanel {
         if (!rbOtherApi.isSelected() && !rbOpenAIProxy.isSelected() && !rbChatgptSubscription.isSelected()) {
             p.setModelAliases(null);
             p.setCustomModels(null);
+            p.setModelOrder(null);
             p.setExplicitPromptCachingModels(null);
         }
 
@@ -936,6 +937,8 @@ public final class ClaudeProfilesPanel extends JPanel {
         copy.setNoProxy(src.getNoProxy());
         copy.setExtraEnvVars(new ArrayList<>(src.getExtraEnvVars()));
         copy.setModelAliases(new java.util.HashMap<>(src.getModelAliases()));
+        copy.setCustomModels(src.getCustomModels());
+        copy.setModelOrder(src.getModelOrder());
         copy.setExtraCliArgs(src.getExtraCliArgs());
         profiles.add(copy);
         suppressProfileChange = true;
@@ -984,7 +987,8 @@ public final class ClaudeProfilesPanel extends JPanel {
         flushFormToCurrentProfile();
         ClaudeProfile p = currentFormProfile;
         if (p == null) return;
-        // Reconstruct display list from stored alias map (sonnet/opus/haiku) and custom list
+        // Reconstruct display list from stored alias map (sonnet/opus/haiku) and custom list,
+        // in the saved dialog row order (legacy profiles: aliases first, then custom)
         java.util.List<ModelAlias> existing = new ArrayList<>();
         for (java.util.Map.Entry<String, String> e : p.getModelAliases().entrySet()) {
             existing.add(new ModelAlias(e.getValue(), null, e.getKey())
@@ -994,6 +998,11 @@ public final class ClaudeProfilesPanel extends JPanel {
             existing.add(new ModelAlias(id, null, "custom")
                     .withExplicitPromptCaching(p.isExplicitPromptCachingEnabled(id)));
         }
+        java.util.List<String> savedOrder = p.getModelOrder();
+        existing.sort(java.util.Comparator.comparingInt(m -> {
+            int i = savedOrder.indexOf(m.id());
+            return i >= 0 ? i : Integer.MAX_VALUE;
+        }));
         ModelAliasesDialog dlg;
         if (p.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
             ModelAliasesDialog.ModelFetcher fetcher = () -> {
@@ -1015,7 +1024,11 @@ public final class ClaudeProfilesPanel extends JPanel {
             java.util.Map<String, String> aliasMap = new java.util.LinkedHashMap<>();
             java.util.List<String> customList = new ArrayList<>();
             java.util.Map<String, Boolean> cachingFlags = new java.util.LinkedHashMap<>();
+            java.util.LinkedHashSet<String> order = new java.util.LinkedHashSet<>();
             for (ModelAlias m : chosen) {
+                if (m.alias() != null && !m.alias().isBlank()) {
+                    order.add(m.id());
+                }
                 if ("custom".equals(m.alias())) {
                     customList.add(m.id());
                 } else if (m.alias() != null && !m.alias().isBlank()) {
@@ -1025,6 +1038,7 @@ public final class ClaudeProfilesPanel extends JPanel {
             }
             p.setModelAliases(aliasMap);
             p.setCustomModels(customList);
+            p.setModelOrder(new ArrayList<>(order));
             p.setExplicitPromptCachingModels(cachingFlags);
         }
     }

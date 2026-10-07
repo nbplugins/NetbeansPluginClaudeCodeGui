@@ -490,4 +490,100 @@ class ClaudeProfileTest {
         assertEquals("my-sonnet-model", env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
                 "Model alias env vars must be injected for OTHER_API connection");
     }
+
+    @Test
+    void toEnvVars_injectsModelAliasesForOpenaiSubscriptionConnection() {
+        // Without these, subagents (haiku) and side requests (sonnet) reach the
+        // ChatGPT Codex backend as claude-* model ids and fail with HTTP 400.
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        p.setOpenaiSubscription(true);
+        p.setModelAliases(Map.of("haiku", "gpt-5.6-luna", "sonnet", "gpt-5.6-terra"));
+
+        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.computeConnectionType());
+        Map<String, String> env = p.toEnvVars();
+
+        assertEquals("gpt-5.6-luna", env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+        assertEquals("gpt-5.6-terra", env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"));
+    }
+
+    @Test
+    void getComboModelIds_followsModelAliasesDialogOrder() {
+        // Models mapped to sonnet/opus/haiku stay selectable by their own id, in the
+        // order of the rows in the Model Aliases dialog
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        p.setOpenaiSubscription(true);
+        p.setModelAliases(Map.of("sonnet", "gpt-5.6-terra", "opus", "gpt-5.6-terra", "haiku", "gpt-5.6-luna"));
+        p.setCustomModels(List.of("gpt-5.6-sol", "gpt-5.5"));
+        p.setModelOrder(List.of("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"));
+
+        assertEquals(List.of("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"), p.getComboModelIds());
+    }
+
+    @Test
+    void getComboModelIds_skipsOrderEntriesNoLongerAliased_andAppendsUnorderedOnes() {
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        p.setOpenaiSubscription(true);
+        p.setModelAliases(Map.of("haiku", "gpt-5.6-luna"));
+        p.setCustomModels(List.of("gpt-5.6-sol"));
+        p.setModelOrder(List.of("removed-model", "gpt-5.6-sol"));
+
+        assertEquals(List.of("gpt-5.6-sol", "gpt-5.6-luna"), p.getComboModelIds());
+    }
+
+    @Test
+    void getComboModelIds_legacyProfileWithoutOrder_aliasedThenCustom_withoutDuplicates() {
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        p.setOpenaiSubscription(true);
+        p.setModelAliases(Map.of("sonnet", "gpt-5.6-terra", "opus", "gpt-5.6-terra", "haiku", "gpt-5.6-luna"));
+        p.setCustomModels(List.of("gpt-5.6-sol", "gpt-5.6-luna"));
+
+        assertEquals(List.of("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"), p.getComboModelIds());
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper STORE_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                    .disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+    @Test
+    void jsonRoundTrip_withAliasesAndCustomModels_keepsModelOrder_andDoesNotStoreComboModelIds()
+            throws Exception {
+        // Regression: the derived getComboModelIds() was serialized as a property and,
+        // on load, Jackson tried to fill the immutable list it returns → every profile
+        // except Default failed to load.
+        ClaudeProfile p = ClaudeProfile.createNamed("Test");
+        p.setOpenaiSubscription(true);
+        p.setModelAliases(Map.of("haiku", "gpt-5.6-luna"));
+        p.setCustomModels(List.of("gpt-5.6-sol"));
+        p.setModelOrder(List.of("gpt-5.6-sol", "gpt-5.6-luna"));
+
+        String json = STORE_MAPPER.writeValueAsString(p);
+        assertFalse(json.contains("comboModelIds"), json);
+
+        ClaudeProfile back = STORE_MAPPER.readValue(json, ClaudeProfile.class);
+        assertEquals(List.of("gpt-5.6-sol", "gpt-5.6-luna"), back.getModelOrder());
+        assertEquals(List.of("gpt-5.6-sol", "gpt-5.6-luna"), back.getComboModelIds());
+    }
+
+    @Test
+    void jsonLoad_ignoresComboModelIdsWrittenByBuild_1_3_47() throws Exception {
+        // Profiles saved by 1.3.47/1.3.48 contain a stray "comboModelIds" array
+        String json = "[{\"name\":\"ChatGPT\",\"openaiSubscription\":true,"
+                + "\"customModels\":[\"gpt-5.6-sol\"],\"comboModelIds\":[\"gpt-5.6-sol\"]}]";
+
+        List<ClaudeProfile> loaded = STORE_MAPPER.readValue(json,
+                new com.fasterxml.jackson.core.type.TypeReference<List<ClaudeProfile>>() {});
+
+        assertEquals(1, loaded.size());
+        assertEquals("ChatGPT", loaded.get(0).getName());
+        assertEquals(List.of("gpt-5.6-sol"), loaded.get(0).getComboModelIds());
+    }
+
+    @Test
+    void getComboModelIds_aliasesIgnoredWhereTheyAreNotApplied() {
+        ClaudeProfile p = ClaudeProfile.createNamed("Test"); // CLAUDE_MANAGED
+        p.setModelAliases(Map.of("sonnet", "stale-model"));
+        p.setCustomModels(List.of("custom-1"));
+
+        assertEquals(List.of("custom-1"), p.getComboModelIds());
+    }
 }

@@ -226,6 +226,25 @@ public final class AnthropicToOpenAITranslator {
         return openai;
     }
 
+    /**
+     * Reads the cache-write token count from a provider {@code usage} object.
+     * The Codex backend nests it next to {@code cached_tokens}
+     * ({@code input_tokens_details.cache_write_tokens}); Chat Completions providers
+     * may use {@code prompt_tokens_details}, and some put it at the top level —
+     * all three are accepted. Returns {@code fallback} when absent.
+     */
+    static int cacheWriteTokens(JsonNode usage, int fallback) {
+        for (JsonNode node : new JsonNode[] {
+                usage.path("input_tokens_details").path("cache_write_tokens"),
+                usage.path("prompt_tokens_details").path("cache_write_tokens"),
+                usage.path("cache_write_tokens")}) {
+            if (node.isNumber()) {
+                return node.asInt();
+            }
+        }
+        return fallback;
+    }
+
     private static String extractSystemText(JsonNode systemNode) {
         if (systemNode.isTextual()) {
             return systemNode.asText();
@@ -252,6 +271,15 @@ public final class AnthropicToOpenAITranslator {
                 convertUserMessage(content, openaiMessages);
             } else if ("assistant".equals(role)) {
                 convertAssistantMessage(content, openaiMessages);
+            } else if ("system".equals(role)) {
+                // Mid-conversation system message (Claude Code >= 2.1.288, e.g. the
+                // "# Environment" block) — kept in place instead of being dropped.
+                String text = extractSystemText(content);
+                if (!text.isBlank()) {
+                    ObjectNode sysMsg = openaiMessages.addObject();
+                    sysMsg.put("role", "system");
+                    sysMsg.put("content", text);
+                }
             }
         }
     }
@@ -656,7 +684,7 @@ public final class AnthropicToOpenAITranslator {
                     outputTokens = usage.path("completion_tokens").asInt(outputTokens);
                     inputTokens  = usage.path("prompt_tokens").asInt(inputTokens);
                     cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(cachedTokens);
-                    cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
+                    cacheWriteTokens = cacheWriteTokens(usage, cacheWriteTokens);
                 }
                 return out.toString();
             }
@@ -676,7 +704,7 @@ public final class AnthropicToOpenAITranslator {
                 outputTokens = usage.path("completion_tokens").asInt(outputTokens);
                 inputTokens  = usage.path("prompt_tokens").asInt(inputTokens);
                 cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(cachedTokens);
-                cacheWriteTokens = usage.path("cache_write_tokens").asInt(cacheWriteTokens);
+                cacheWriteTokens = cacheWriteTokens(usage, cacheWriteTokens);
             }
 
             // Reasoning (thinking) delta — DeepSeek/OpenCode style

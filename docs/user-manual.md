@@ -78,7 +78,7 @@ Contains the input area, **▶ Send** / **✖ Cancel** buttons, and **☰ Histor
 
 Press **Shift+Tab** anywhere in the prompt panel to cycle through modes.
 
-**Model selector** — lists the models available in the current session. Standard entries (`sonnet`, `opus`, `haiku`) are discovered by opening the `/model` menu. For **Claude-compatible API** profiles, any models assigned the `custom` alias in **Model Aliases** also appear here, shown by their full provider ID. Selecting a model switches to it immediately.
+**Model selector** — lists the models available in the current session. Standard entries (`sonnet`, `opus`, `haiku`) are discovered by opening the `/model` menu. For **Claude-compatible API**, **OpenAI Compatible** and **ChatGPT Subscription** profiles, every model assigned an alias in **Model Aliases** (`sonnet`, `opus`, `haiku` or `custom`) also appears here, shown by its full provider ID. Selecting a model switches to it immediately.
 
 On the right side of the status bar:
 
@@ -513,7 +513,7 @@ The dialog shows a table with four columns:
 | **Alias** | The standard alias to map this model to: `sonnet`, `opus`, `haiku`, `custom`, or blank (no alias) |
 | **Explicit Cache** | Experimental: send explicit prompt-cache control to the provider for this model (see below) |
 
-**Explicit Cache column (experimental):** GPT-5.6-family models changed how automatic prompt caching works, making it unreliable for long conversations with a stable system prompt and a growing message history — exactly the pattern of an ongoing coding session (see [ChatGPT Subscription rate limits](#chatgpt-subscription) below for background). Checking this column sends explicit cache-control fields to the provider for that model: GPT-5.6+ models get an explicit cache breakpoint (limited to a 30-minute cache lifetime by the provider); older GPT models get a 24-hour cache retention hint instead. It's checked by default for GPT-5.6-family model IDs and has no effect for non-GPT models (e.g. Grok, Gemini) — their own caching, if any, is unaffected. Since this relies on provider behavior that isn't fully documented, treat it as experimental — uncheck it for a model if you notice no improvement or unexpected errors.
+**Explicit Cache column (experimental):** GPT-5.6-family models changed how automatic prompt caching works, making it unreliable for long conversations with a stable system prompt and a growing message history — exactly the pattern of an ongoing coding session (see [ChatGPT Subscription rate limits](#chatgpt-subscription) below for background). Checking this column sends explicit cache-control fields to the provider for that model: GPT-5.6+ models get an explicit cache breakpoint (limited to a 30-minute cache lifetime by the provider); older GPT models get a 24-hour cache retention hint instead. It's checked by default for GPT-5.6-family model IDs and has no effect for non-GPT models (e.g. Grok, Gemini) — their own caching, if any, is unaffected. Since this relies on provider behavior that isn't fully documented, treat it as experimental — uncheck it for a model if you notice no improvement or unexpected errors. It applies to the **OpenAI Compatible** connection type only: for **ChatGPT Subscription** the column has no effect, because the ChatGPT Codex backend rejects explicit cache-control fields — caching there is automatic, keyed to your Claude Code session.
 
 **Buttons:**
 
@@ -530,7 +530,7 @@ The dialog shows a table with four columns:
 **How to configure aliases:**
 
 1. Click **Fetch** to populate the table with models available at your endpoint.
-2. For each model you want to use as a standard model (`sonnet`, `opus`, or `haiku`), set the corresponding alias. You can skip this step if the model ID already starts with `sonnet`, `opus`, or `haiku` — those are matched automatically.
+2. For each model you want to use as a standard model (`sonnet`, `opus`, or `haiku`), set the corresponding alias. You can skip this step if the model ID already starts with `sonnet`, `opus`, or `haiku` — those are matched automatically. Claude Code also uses these aliases on its own — e.g. many subagents run on `haiku` and background requests on `sonnet` — so with **ChatGPT Subscription** and **OpenAI Compatible** profiles map all three, otherwise those requests fail with an unsupported-model error. A model mapped to an alias still appears in the model selector under its own ID.
 3. For each additional model you want to appear in the model selector, set its alias to `custom`. You can assign `custom` to as many models as you like — each will appear as a separate entry in the selector.
 4. Leave models you do not plan to use with a blank alias, or remove them with **Delete** / **Prune**.
 

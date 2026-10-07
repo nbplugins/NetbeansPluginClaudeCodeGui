@@ -1,0 +1,12 @@
+{
+  "model": "gpt-5.6-terra",
+  "max_tokens": 1024,
+  "stream": true,
+  "system": [{"type": "text", "text": "You are helpful."}],
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+    {"role": "system", "content": [{"type": "text", "text": "# Environment\nWorking directory: /tmp/x", "cache_control": {"type": "ephemeral"}}]},
+    {"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
+    {"role": "system", "content": [{"type": "text", "text": "Reminder A"}, {"type": "text", "text": "Reminder B"}]}
+  ]
+}
