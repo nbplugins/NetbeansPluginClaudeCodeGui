@@ -1,4 +1,4 @@
-# 1.3
+# 1.3.28 (2026-10-07)
 
 - Fixed subagents and background requests failing with "model is not supported when using Codex with a ChatGPT account" for ChatGPT Subscription profiles: model aliases from the Model Aliases dialog (e.g. haiku, sonnet) are now applied to ChatGPT Subscription sessions too
 - Changed the model selector to also list models mapped to sonnet, opus or haiku in Model Aliases by their own ID, so they stay selectable directly; all these models are listed in the same order as in the Model Aliases dialog, which now also keeps its row order when reopened
