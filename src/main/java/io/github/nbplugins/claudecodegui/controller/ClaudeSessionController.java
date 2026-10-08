@@ -801,7 +801,7 @@ public class ClaudeSessionController {
         modeSwitchInProgress = true;
         Thread t = new Thread(() -> {
             try {
-                LOG.info("sendShiftTabsUntilMode: target=" + targetMode
+                LOG.fine("sendShiftTabsUntilMode: target=" + targetMode
                         + " currentModel=" + model.getEditMode());
                 if (trySendShiftTabsUntilMode(targetMode)) return;
                 // AUTO mode not found — older CC doesn't support it; try fallbacks

@@ -207,7 +207,7 @@ public class GetDiagnostics implements Tool<GetDiagnosticsParams, String> {
             }
 
             List<ErrorDescription> errors = getErrorDescriptions(fileObject);
-            LOGGER.log(Level.INFO, "getDiagnostics: {0} errors for {1}",
+            LOGGER.log(Level.FINE, "getDiagnostics: {0} errors for {1}",
                     new Object[]{errors.size(), filePath});
 
             for (ErrorDescription ed : errors) {

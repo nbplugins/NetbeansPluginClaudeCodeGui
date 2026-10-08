@@ -281,7 +281,7 @@ public class MCPSseServer {
                 bodyBytes = in.readAllBytes();
             }
             String body = new String(bodyBytes, StandardCharsets.UTF_8);
-            LOGGER.log(Level.INFO, "PreToolUse hook received: {0}", body);
+            LOGGER.log(Level.FINE, "PreToolUse hook received: {0} bytes", bodyBytes.length);
 
             jakarta.servlet.AsyncContext asyncCtx = req.startAsync(req, resp);
             asyncCtx.setTimeout(590_000L);

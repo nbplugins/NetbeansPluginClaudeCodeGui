@@ -348,15 +348,6 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
             return NbBundle.getMessage(ClaudeSessionSelectorPanel.class, "TAB_NewSession");
         }
         Project[] openProjects = OpenProjects.getDefault().getOpenProjects();
-        LOG.info("resolveTabLabel: dir=" + dir.getAbsolutePath()
-                + " openProjects=" + openProjects.length);
-        for (Project p : openProjects) {
-            File projDir = FileUtil.toFile(p.getProjectDirectory());
-            String projName = ProjectUtils.getInformation(p).getDisplayName();
-            LOG.info("  comparing with project '" + projName
-                    + "' dir=" + (projDir != null ? projDir.getAbsolutePath() : "null")
-                    + " equal=" + dir.equals(projDir));
-        }
         for (Project p : openProjects) {
             File projDir = FileUtil.toFile(p.getProjectDirectory());
             if (projDir == null) continue;
@@ -365,7 +356,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
             }
             try {
                 if (dir.getCanonicalPath().equals(projDir.getCanonicalPath())) {
-                    LOG.info("  canonical match found for project '"
+                    LOG.fine("  canonical match found for project '"
                             + ProjectUtils.getInformation(p).getDisplayName() + "'");
                     return ProjectUtils.getInformation(p).getDisplayName();
                 }

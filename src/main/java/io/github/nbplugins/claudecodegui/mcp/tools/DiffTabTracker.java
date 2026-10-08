@@ -31,7 +31,7 @@ public class DiffTabTracker {
      * @param handler Handler to call when the diff is accepted or rejected
      */
     public static void register(String tabName, AsyncHandler handler) {
-        LOGGER.info("Registering async handler for diff tab: " + tabName);
+        LOGGER.fine("Registering async handler for diff tab: " + tabName);
         pendingDiffs.put(tabName, handler);
     }
 
@@ -43,7 +43,7 @@ public class DiffTabTracker {
     public static AsyncHandler remove(String tabName) {
         AsyncHandler handler = pendingDiffs.remove(tabName);
         if (handler != null) {
-            LOGGER.info("Removed async handler for diff tab: " + tabName);
+            LOGGER.fine("Removed async handler for diff tab: " + tabName);
         }
         return handler;
     }
@@ -74,12 +74,12 @@ public class DiffTabTracker {
     public static void setRejected(String tabName) {
         AsyncHandler handler = pendingDiffs.remove(tabName);
         if (handler != null) {
-            LOGGER.info("Diff rejected for tab: " + tabName);
+            LOGGER.fine("Diff rejected for tab: " + tabName);
             java.util.List<org.openbeans.claude.netbeans.tools.params.Content> contentList = new java.util.ArrayList<>();
             contentList.add(new org.openbeans.claude.netbeans.tools.params.Content("text", "FILE_REJECTED"));
             handler.sendResponse(new OpenDiffResult(contentList));
         } else {
-            LOGGER.info("No pending handler for tab (already resolved or never registered): " + tabName);
+            LOGGER.fine("No pending handler for tab (already resolved or never registered): " + tabName);
         }
     }
 
@@ -103,7 +103,7 @@ public class DiffTabTracker {
      * @return the future that will be completed with {@code "allow"} or {@code "deny"}
      */
     public static CompletableFuture<String> registerHookFuture(String tabName) {
-        LOGGER.info("Registering hook future for tab: " + tabName);
+        LOGGER.fine("Registering hook future for tab: " + tabName);
         CompletableFuture<String> future = new CompletableFuture<>();
         pendingHookFutures.put(tabName, future);
         return future;
@@ -118,7 +118,7 @@ public class DiffTabTracker {
     public static void resolveHook(String tabName, String jsonResponse) {
         CompletableFuture<String> future = pendingHookFutures.remove(tabName);
         if (future != null) {
-            LOGGER.info("Hook resolved for tab: " + tabName);
+            LOGGER.fine("Hook resolved for tab: " + tabName);
             future.complete(jsonResponse);
         }
     }

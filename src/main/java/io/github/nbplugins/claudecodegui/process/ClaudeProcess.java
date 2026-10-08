@@ -235,7 +235,7 @@ public final class ClaudeProcess {
         List<String> cmd = new ArrayList<>();
         cmd.add(executable);
         ClaudeCodeStatusService mcp = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
-        LOG.info("MCP service lookup: " + (mcp == null ? "null" : mcp.getClass().getName())
+        LOG.fine("MCP service lookup: " + (mcp == null ? "null" : mcp.getClass().getName())
                 + ", running=" + (mcp != null && mcp.isServerRunning())
                 + ", port=" + (mcp != null ? mcp.getServerPort() : -1));
         if (mcp != null && mcp.isServerRunning()) {
