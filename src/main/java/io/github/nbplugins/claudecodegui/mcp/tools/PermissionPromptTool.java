@@ -99,11 +99,11 @@ public class PermissionPromptTool implements Tool<PermissionPromptTool.Params, A
         String toolName = params.getToolName();
         JsonNode toolInput = params.getToolInput();
 
-        LOGGER.info("permission_prompt called for tool: " + toolName);
+        LOGGER.fine("permission_prompt called for tool: " + toolName);
 
         // For non-file-editing tools, auto-allow.
         if (!isFileEditTool(toolName)) {
-            LOGGER.info("Auto-allowing non-file-edit tool: " + toolName);
+            LOGGER.fine("Auto-allowing non-file-edit tool: " + toolName);
             return syncAllow();
         }
 
@@ -126,22 +126,22 @@ public class PermissionPromptTool implements Tool<PermissionPromptTool.Params, A
 
         return handler -> FileDiffOpener.open(filePath, before, after, finalTabName, null,
             () -> {
-                LOGGER.info("Permission granted for tab: " + finalTabName);
+                LOGGER.fine("Permission granted for tab: " + finalTabName);
                 AsyncHandler<List<Content>> h = DiffTabTracker.remove(finalTabName);
                 if (h != null) h.sendResponse(allowResult());
             },
             reason -> {
                 // reason is not forwarded in the MCP protocol — tool returns just "deny"
-                LOGGER.info("Permission denied for tab: " + finalTabName);
+                LOGGER.fine("Permission denied for tab: " + finalTabName);
                 DiffTabTracker.setRejected(finalTabName);
             },
             () -> {
-                LOGGER.info("Permission cancelled for tab: " + finalTabName);
+                LOGGER.fine("Permission cancelled for tab: " + finalTabName);
                 DiffTabTracker.setRejected(finalTabName);
                 FileDiffOpener.cancelCurrentPromptForFile(filePath);
             },
             () -> {
-                LOGGER.info("Permission tab closed for tab: " + finalTabName);
+                LOGGER.fine("Permission tab closed for tab: " + finalTabName);
                 if (DiffTabTracker.isTracked(finalTabName)) {
                     DiffTabTracker.setRejected(finalTabName);
                 }

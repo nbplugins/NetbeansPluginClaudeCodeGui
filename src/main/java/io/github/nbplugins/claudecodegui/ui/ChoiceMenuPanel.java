@@ -99,7 +99,7 @@ public final class ChoiceMenuPanel extends JPanel {
 
         // --- Question label — full width ---
         String questionText = model.text();
-        LOG.info("[ChoiceMenuPanel] question: " + questionText);
+        LOG.fine("[ChoiceMenuPanel] question: " + questionText);
         if (questionText != null && !questionText.isBlank()) {
             JLabel questionLabel = new JLabel("<html>" + escapeHtml(questionText) + "</html>");
             questionLabel.setFont(questionLabel.getFont().deriveFont(questionLabel.getFont().getSize() * 1.5f));
@@ -128,7 +128,7 @@ public final class ChoiceMenuPanel extends JPanel {
                 JButton btn = new JButton(label);
                 UiUtils.applyActionStyle(btn, display.equalsIgnoreCase("Yes"));
                 btn.addActionListener(e -> {
-                    LOG.info("[ChoiceMenuPanel] yes/no clicked: \"" + display + "\" → \"" + response + "\"");
+                    LOG.fine("[ChoiceMenuPanel] yes/no clicked: \"" + display + "\" → \"" + response + "\"");
                     submitAnswer(response);
                 });
                 yesNoBtns.add(btn);
@@ -278,7 +278,7 @@ public final class ChoiceMenuPanel extends JPanel {
         JButton cancelBtn = new JButton("Cancel");
         cancelBtn.setAlignmentX(Component.CENTER_ALIGNMENT);
         cancelBtn.addActionListener(e -> {
-            LOG.info("[ChoiceMenuPanel] Cancel clicked");
+            LOG.fine("[ChoiceMenuPanel] Cancel clicked");
             cancel();
         });
         rightCol.add(cancelBtn);
@@ -821,7 +821,7 @@ public final class ChoiceMenuPanel extends JPanel {
 /** Hides the panel if a prompt is still pending (called when Claude accepted input via terminal). */
     public void dismissIfActive() {
         if (callback != null) {
-            LOG.info("[ChoiceMenuPanel] dismissing — Claude accepted terminal input");
+            LOG.fine("[ChoiceMenuPanel] dismissing — Claude accepted terminal input");
             Consumer<String> cb = callback;
             setVisible(false);
             callback = null;
@@ -891,7 +891,7 @@ public final class ChoiceMenuPanel extends JPanel {
 
     private void submitAnswer(String answer) {
         Consumer<String> cb = callback;
-        LOG.info("[ChoiceMenuPanel] submitAnswer: \"" + answer + "\", cb=" + cb);
+        LOG.fine("[ChoiceMenuPanel] submitAnswer: \"" + answer + "\"");
         setVisible(false);
         callback = null;
         removeAll();

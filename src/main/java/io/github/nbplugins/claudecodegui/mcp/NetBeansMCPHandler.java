@@ -387,7 +387,7 @@ public class NetBeansMCPHandler {
             if (!sessionQueue.offer(json)) {
                 LOGGER.warning("SSE session queue full; async tool response dropped");
             }
-            LOGGER.log(Level.INFO, "Sent async tool response for request ID: {0}", requestId);
+            LOGGER.log(Level.FINE, "Sent async tool response for request ID: {0}", requestId);
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error sending async tool response", e);
         }
@@ -519,10 +519,10 @@ public class NetBeansMCPHandler {
             String toolName = hook.has("tool_name") ? hook.get("tool_name").asText() : "";
             JsonNode toolInput = hook.has("tool_input") ? hook.get("tool_input") : objectMapper.createObjectNode();
 
-            LOGGER.info("handlePreToolUse: tool=" + toolName);
+            LOGGER.fine("handlePreToolUse: tool=" + toolName);
 
             if (!isFileEditTool(toolName)) {
-                LOGGER.info("Auto-allowing non-file-edit tool: " + toolName);
+                LOGGER.fine("Auto-allowing non-file-edit tool: " + toolName);
                 return CompletableFuture.completedFuture(hookAllowJson());
             }
 
@@ -531,16 +531,17 @@ public class NetBeansMCPHandler {
             EditMode editMode = getEditModeForCwd(cwd);
             // Session root is the key that matched in the registry (may differ from hook cwd when Claude cd'd into a subdir)
             String sessionRoot = getSessionRootForCwd(cwd);
-            LOGGER.info("handlePreToolUse: editMode=" + editMode + " cwd=" + cwd + " sessionRoot=" + sessionRoot);
 
             String filePath = getFilePath(toolInput);
+            LOGGER.fine("handlePreToolUse: editMode=" + editMode + " file=" + filePath
+                    + " cwd=" + cwd + " sessionRoot=" + sessionRoot);
 
             // AUTO or higher (BYPASS_PERMISSIONS): auto-allow regardless of location
             // ACCEPT_EDITS or higher (but below AUTO): auto-allow only inside the session root
             if (editMode.ordinal() >= EditMode.AUTO.ordinal()
                     || (editMode.ordinal() >= EditMode.ACCEPT_EDITS.ordinal()
                         && io.github.nbplugins.claudecodegui.ui.FileDiffOpener.isFileUnderDirectory(filePath, sessionRoot))) {
-                LOGGER.info(editMode.key() + " mode — auto-allowing: " + filePath);
+                LOGGER.fine(editMode.key() + " mode — auto-allowing: " + filePath);
                 return CompletableFuture.completedFuture(hookAllowJson());
             }
             // PLAN / DEFAULT / ACCEPT_EDITS-outside: fall through to show diff dialog
@@ -946,7 +947,7 @@ public class NetBeansMCPHandler {
     private void handleDiffTabClosed(String tabName) {
         AsyncHandler handler = DiffTabTracker.remove(tabName);
         if (handler != null) {
-            LOGGER.log(Level.INFO, "Diff tab closed: {0}", tabName);
+            LOGGER.log(Level.FINE, "Diff tab closed: {0}", tabName);
 
             // Create response with DIFF_REJECTED status
             List<Content> contentList = new ArrayList<>();

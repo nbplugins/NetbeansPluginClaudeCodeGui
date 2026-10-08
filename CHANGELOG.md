@@ -1,3 +1,5 @@
+- Improved the IDE log (messages.log): per-request and per-click diagnostics (tab label polling, PreToolUse hooks with file contents, diff tabs, choice menus, permission prompts) are now written only when debug logging is enabled, so the log is no longer flooded and no longer contains edited code
+
 # 1.3.28 (2026-10-07)
 
 - Fixed subagents and background requests failing with "model is not supported when using Codex with a ChatGPT account" for ChatGPT Subscription profiles: model aliases from the Model Aliases dialog (e.g. haiku, sonnet) are now applied to ChatGPT Subscription sessions too

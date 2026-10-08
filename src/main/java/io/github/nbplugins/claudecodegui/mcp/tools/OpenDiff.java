@@ -236,7 +236,7 @@ public class OpenDiff implements Tool<OpenDiffParams, AsyncResponse<OpenDiffResu
                         approveButton.setToolTipText("Approve and apply this diff");
                         approveButton.addActionListener(e -> {
                             // Get the handler from DiffTabTracker
-                            LOGGER.info("Diff approved: " + finalDiffTabName);
+                            LOGGER.fine("Diff approved: " + finalDiffTabName);
 
                             //NOTE: While the message says FILE_SAVED, the IDE does not need to save it. Claude will want to write to it.
 
@@ -255,7 +255,7 @@ public class OpenDiff implements Tool<OpenDiffParams, AsyncResponse<OpenDiffResu
                         javax.swing.JButton rejectButton = new javax.swing.JButton("✗ Reject");
                         rejectButton.setToolTipText("Reject this diff — Claude will not apply the change");
                         rejectButton.addActionListener(e -> {
-                            LOGGER.info("Diff rejected by user: " + finalDiffTabName);
+                            LOGGER.fine("Diff rejected by user: " + finalDiffTabName);
                             DiffTabTracker.setRejected(finalDiffTabName);
                             diffTC.close();
                         });
@@ -277,7 +277,7 @@ public class OpenDiff implements Tool<OpenDiffParams, AsyncResponse<OpenDiffResu
                         return new AsyncResponse<OpenDiffResult>() {
                             @Override
                             public void setHandler(AsyncHandler<OpenDiffResult> handler) {
-                                LOGGER.info("Registering async handler for diff tab: " + finalDiffTabName);
+                                LOGGER.fine("Registering async handler for diff tab: " + finalDiffTabName);
                                 DiffTabTracker.register(finalDiffTabName, handler);
                             }
                         };

@@ -323,7 +323,7 @@ public final class ModelAliasesDialog extends JDialog {
                 try {
                     List<String> ids = get();
                     applyFetchedIds(ids);
-                    LOG.info("Fetch models: " + ids.size() + " models returned");
+                    LOG.fine("Fetch models: " + ids.size() + " models returned");
                     setStatus("Fetched " + ids.size() + " models, " + countAvailable() + " available", false);
                 } catch (Exception ex) {
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
