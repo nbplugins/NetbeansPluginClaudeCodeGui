@@ -1,3 +1,4 @@
+- Added the `regenerate_form_code` MCP tool: after Claude edits a Swing GUI Builder `.form` file, it regenerates the form's `initComponents()` and variable declarations in the `.java` file exactly as the NetBeans GUI Builder does and saves the form, instead of Claude hand-editing the generated code; an open GUI Builder designer is reloaded from the edited `.form`, and Claude is told when the generated code was already up to date
 - Improved the IDE log (messages.log): per-request and per-click diagnostics (tab label polling, PreToolUse hooks with file contents, diff tabs, choice menus, permission prompts) are now written only when debug logging is enabled, so the log is no longer flooded and no longer contains edited code
 
 # 1.3.28 (2026-10-07)

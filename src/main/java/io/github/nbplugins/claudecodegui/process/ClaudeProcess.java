@@ -64,7 +64,8 @@ public final class ClaudeProcess {
     /** MCP tools the plugin adds to {@code permissions.allow}. */
     static final List<String> OUR_ALLOWED_TOOLS = List.of(
             "mcp__netbeans__show_markdown",
-            "mcp__netbeans__show_markdown_file"
+            "mcp__netbeans__show_markdown_file",
+            "mcp__netbeans__regenerate_form_code"
     );
 
     /** Creates a new, idle {@code ClaudeProcess} instance. */
