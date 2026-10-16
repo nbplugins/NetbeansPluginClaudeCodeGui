@@ -1,3 +1,4 @@
+- Fixed the edit-mode selector with Claude Code 2.1.x: it no longer jumps to "Ask on Edit" whenever Claude goes idle, and choosing a mode no longer makes Claude cycle through modes and stop on the wrong one; choosing another mode while a switch is still running now switches to that mode instead of cycling
 - Improved the IDE log (messages.log): per-request and per-click diagnostics (tab label polling, PreToolUse hooks with file contents, diff tabs, choice menus, permission prompts) are now written only when debug logging is enabled, so the log is no longer flooded and no longer contains edited code
 
 # 1.3.28 (2026-10-07)
