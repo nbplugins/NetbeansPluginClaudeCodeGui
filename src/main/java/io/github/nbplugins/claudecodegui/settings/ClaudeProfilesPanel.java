@@ -914,14 +914,16 @@ public final class ClaudeProfilesPanel extends JPanel {
         loadProfileIntoForm(p);
     }
 
-    private void onCopy() {
-        flushFormToCurrentProfile();
-        ClaudeProfile src = currentProfile();
-        if (src == null) return;
-        String name = promptProfileName("Copy Profile", nextDefaultName(), null);
-        if (name == null) return;
-        // Deep-copy
+    /**
+     * Creates a named copy of {@code src} with the same connection settings.
+     *
+     * @param src  profile to copy
+     * @param name valid name of the new profile
+     * @return the new profile
+     */
+    static ClaudeProfile copyOf(ClaudeProfile src, String name) {
         ClaudeProfile copy = ClaudeProfile.createNamed(name);
+        copy.setConnectionType(src.getConnectionType());
         copy.setToken(src.getToken());
         copy.setApiKey(src.getApiKey());
         copy.setBaseUrl(src.getBaseUrl());
@@ -934,6 +936,16 @@ public final class ClaudeProfilesPanel extends JPanel {
         copy.setCustomModels(src.getCustomModels());
         copy.setModelOrder(src.getModelOrder());
         copy.setExtraCliArgs(src.getExtraCliArgs());
+        return copy;
+    }
+
+    private void onCopy() {
+        flushFormToCurrentProfile();
+        ClaudeProfile src = currentProfile();
+        if (src == null) return;
+        String name = promptProfileName("Copy Profile", nextDefaultName(), null);
+        if (name == null) return;
+        ClaudeProfile copy = copyOf(src, name);
         profiles.add(copy);
         suppressProfileChange = true;
         rebuildProfileCombo();

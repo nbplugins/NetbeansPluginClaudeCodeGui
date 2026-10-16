@@ -247,4 +247,17 @@ class ClaudeProfilesPanelFlushTest {
         m.setAccessible(true);
         m.invoke(obj, arg);
     }
+
+    /** Copy Profile must keep the explicitly selected connection type (PR #194 review). */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(ClaudeProfile.ConnectionType.class)
+    void copyOf_preservesConnectionType(ClaudeProfile.ConnectionType type) {
+        ClaudeProfile src = ClaudeProfile.createNamed("Src");
+        src.setConnectionType(type); // no credentials: not inferable from the fields
+
+        ClaudeProfile copy = ClaudeProfilesPanel.copyOf(src, "Copy");
+
+        assertEquals("Copy", copy.getName());
+        assertEquals(type, copy.getConnectionType());
+    }
 }
