@@ -927,6 +927,11 @@ public final class ClaudeProfilesPanel extends JPanel {
         copy.setToken(src.getToken());
         copy.setApiKey(src.getApiKey());
         copy.setBaseUrl(src.getBaseUrl());
+        copy.setChatgptAccessToken(src.getChatgptAccessToken());
+        copy.setChatgptRefreshToken(src.getChatgptRefreshToken());
+        copy.setChatgptAccountId(src.getChatgptAccountId());
+        copy.setChatgptTokenExpiresAt(src.getChatgptTokenExpiresAt());
+        copy.setChatgptEmail(src.getChatgptEmail());
         copy.setProxyMode(src.getProxyMode());
         copy.setHttpProxy(src.getHttpProxy());
         copy.setHttpsProxy(src.getHttpsProxy());

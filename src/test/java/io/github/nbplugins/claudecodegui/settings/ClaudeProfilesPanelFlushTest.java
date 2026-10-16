@@ -260,4 +260,25 @@ class ClaudeProfilesPanelFlushTest {
         assertEquals("Copy", copy.getName());
         assertEquals(type, copy.getConnectionType());
     }
+
+    /** Copy of a signed-in ChatGPT Subscription profile must stay signed in (PR #194 review). */
+    @org.junit.jupiter.api.Test
+    void copyOf_preservesChatgptAuth() {
+        ClaudeProfile src = ClaudeProfile.createNamed("Src");
+        src.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
+        src.setChatgptAccessToken("access");
+        src.setChatgptRefreshToken("refresh");
+        src.setChatgptAccountId("acc-1");
+        src.setChatgptTokenExpiresAt("2026-10-16T20:00:00Z");
+        src.setChatgptEmail("me@example.com");
+
+        ClaudeProfile copy = ClaudeProfilesPanel.copyOf(src, "Copy");
+
+        assertEquals("access", copy.getChatgptAccessToken());
+        assertEquals("refresh", copy.getChatgptRefreshToken());
+        assertEquals("acc-1", copy.getChatgptAccountId());
+        assertEquals("2026-10-16T20:00:00Z", copy.getChatgptTokenExpiresAt());
+        assertEquals("me@example.com", copy.getChatgptEmail());
+        assertTrue(copy.isSignedIntoChatgpt());
+    }
 }
