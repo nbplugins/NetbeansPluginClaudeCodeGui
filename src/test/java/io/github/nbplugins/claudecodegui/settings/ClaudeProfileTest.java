@@ -27,7 +27,7 @@ class ClaudeProfileTest {
     @Test
     void createDefault_connectionTypeIsClaudeManaged() {
         assertEquals(ConnectionType.CLAUDE_MANAGED,
-                ClaudeProfile.createDefault().computeConnectionType());
+                ClaudeProfile.createDefault().getConnectionType());
     }
 
     // -------------------------------------------------------------------------
@@ -90,59 +90,47 @@ class ClaudeProfileTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void computeConnectionType_emptyCredentials_isClaudeManaged() {
+    void getConnectionType_emptyCredentials_isClaudeManaged() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
-        assertEquals(ConnectionType.CLAUDE_MANAGED, p.computeConnectionType());
+        assertEquals(ConnectionType.CLAUDE_MANAGED, p.getConnectionType());
     }
 
     @Test
-    void computeConnectionType_tokenOnly_isSubscription() {
+    void getConnectionType_tokenOnly_isSubscription() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
         p.setToken("tok123");
-        assertEquals(ConnectionType.SUBSCRIPTION, p.computeConnectionType());
+        assertEquals(ConnectionType.SUBSCRIPTION, p.getConnectionType());
     }
 
     @Test
-    void computeConnectionType_apiKeyOnly_isClaudeApi() {
+    void getConnectionType_apiKeyOnly_isClaudeApi() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
         p.setApiKey("sk-ant-123");
-        assertEquals(ConnectionType.CLAUDE_API, p.computeConnectionType());
+        assertEquals(ConnectionType.CLAUDE_API, p.getConnectionType());
     }
 
     @Test
-    void computeConnectionType_apiKeyAndBaseUrl_isOtherApi() {
+    void getConnectionType_apiKeyAndBaseUrl_isOtherApi() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
         p.setApiKey("sk-ant-123");
         p.setBaseUrl("https://api.example.com");
-        assertEquals(ConnectionType.OTHER_API, p.computeConnectionType());
+        assertEquals(ConnectionType.OTHER_API, p.getConnectionType());
     }
 
     @Test
-    void computeConnectionType_apiKeyTakesPrecedenceOverToken() {
+    void getConnectionType_apiKeyTakesPrecedenceOverToken() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
         p.setToken("tok");
         p.setApiKey("key");
-        assertEquals(ConnectionType.CLAUDE_API, p.computeConnectionType());
+        assertEquals(ConnectionType.CLAUDE_API, p.getConnectionType());
     }
 
     @Test
-    void computeConnectionType_openaiSubscription_isOpenaiSubscription() {
+    void getConnectionType_openaiSubscription_isOpenaiSubscription() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
-        p.setOpenaiSubscription(true);
-        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.computeConnectionType());
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
+        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.getConnectionType());
     }
-
-    @Test
-    void computeConnectionType_openaiSubscriptionTakesPrecedenceOverOpenaiProxy() {
-        ClaudeProfile p = ClaudeProfile.createNamed("P");
-        p.setOpenaiProxy(true);
-        p.setOpenaiSubscription(true);
-        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.computeConnectionType());
-    }
-
-    // -------------------------------------------------------------------------
-    // ChatGPT OAuth state
-    // -------------------------------------------------------------------------
 
     @Test
     void isSignedIntoChatgpt_falseByDefault() {
@@ -168,7 +156,7 @@ class ClaudeProfileTest {
     @Test
     void clearChatgptAuth_clearsAllTokenFieldsButNotFlag() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setChatgptAccessToken("access");
         p.setChatgptRefreshToken("refresh");
         p.setChatgptAccountId("acct-1");
@@ -183,7 +171,7 @@ class ClaudeProfileTest {
         assertEquals("", p.getChatgptAccountId());
         assertEquals("", p.getChatgptTokenExpiresAt());
         assertEquals("", p.getChatgptEmail());
-        assertTrue(p.isOpenaiSubscription(), "clearChatgptAuth must not change the connection-type flag");
+        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.getConnectionType(), "clearChatgptAuth must not change the connection type");
     }
 
     // -------------------------------------------------------------------------
@@ -222,7 +210,7 @@ class ClaudeProfileTest {
     @Test
     void toEnvVars_openaiSubscription_noAuthVars() {
         ClaudeProfile p = ClaudeProfile.createNamed("P");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         Map<String, String> env = p.toEnvVars();
         assertFalse(env.containsKey("ANTHROPIC_AUTH_TOKEN"));
         assertFalse(env.containsKey("ANTHROPIC_BASE_URL"));
@@ -470,7 +458,7 @@ class ClaudeProfileTest {
         p.setModelAliases(Map.of("sonnet", "old-model-id"));
         p.setCustomModels(List.of("old-custom-model"));
 
-        assertEquals(ConnectionType.CLAUDE_MANAGED, p.computeConnectionType());
+        assertEquals(ConnectionType.CLAUDE_MANAGED, p.getConnectionType());
         Map<String, String> env = p.toEnvVars();
 
         assertFalse(env.containsKey("ANTHROPIC_DEFAULT_SONNET_MODEL"),
@@ -484,7 +472,7 @@ class ClaudeProfileTest {
         p.setBaseUrl("https://example.com");
         p.setModelAliases(Map.of("sonnet", "my-sonnet-model"));
 
-        assertEquals(ConnectionType.OTHER_API, p.computeConnectionType());
+        assertEquals(ConnectionType.OTHER_API, p.getConnectionType());
         Map<String, String> env = p.toEnvVars();
 
         assertEquals("my-sonnet-model", env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
@@ -496,10 +484,10 @@ class ClaudeProfileTest {
         // Without these, subagents (haiku) and side requests (sonnet) reach the
         // ChatGPT Codex backend as claude-* model ids and fail with HTTP 400.
         ClaudeProfile p = ClaudeProfile.createNamed("Test");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setModelAliases(Map.of("haiku", "gpt-5.6-luna", "sonnet", "gpt-5.6-terra"));
 
-        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.computeConnectionType());
+        assertEquals(ConnectionType.OPENAI_SUBSCRIPTION, p.getConnectionType());
         Map<String, String> env = p.toEnvVars();
 
         assertEquals("gpt-5.6-luna", env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
@@ -511,7 +499,7 @@ class ClaudeProfileTest {
         // Models mapped to sonnet/opus/haiku stay selectable by their own id, in the
         // order of the rows in the Model Aliases dialog
         ClaudeProfile p = ClaudeProfile.createNamed("Test");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setModelAliases(Map.of("sonnet", "gpt-5.6-terra", "opus", "gpt-5.6-terra", "haiku", "gpt-5.6-luna"));
         p.setCustomModels(List.of("gpt-5.6-sol", "gpt-5.5"));
         p.setModelOrder(List.of("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"));
@@ -522,7 +510,7 @@ class ClaudeProfileTest {
     @Test
     void getComboModelIds_skipsOrderEntriesNoLongerAliased_andAppendsUnorderedOnes() {
         ClaudeProfile p = ClaudeProfile.createNamed("Test");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setModelAliases(Map.of("haiku", "gpt-5.6-luna"));
         p.setCustomModels(List.of("gpt-5.6-sol"));
         p.setModelOrder(List.of("removed-model", "gpt-5.6-sol"));
@@ -533,7 +521,7 @@ class ClaudeProfileTest {
     @Test
     void getComboModelIds_legacyProfileWithoutOrder_aliasedThenCustom_withoutDuplicates() {
         ClaudeProfile p = ClaudeProfile.createNamed("Test");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setModelAliases(Map.of("sonnet", "gpt-5.6-terra", "opus", "gpt-5.6-terra", "haiku", "gpt-5.6-luna"));
         p.setCustomModels(List.of("gpt-5.6-sol", "gpt-5.6-luna"));
 
@@ -551,7 +539,7 @@ class ClaudeProfileTest {
         // on load, Jackson tried to fill the immutable list it returns → every profile
         // except Default failed to load.
         ClaudeProfile p = ClaudeProfile.createNamed("Test");
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setModelAliases(Map.of("haiku", "gpt-5.6-luna"));
         p.setCustomModels(List.of("gpt-5.6-sol"));
         p.setModelOrder(List.of("gpt-5.6-sol", "gpt-5.6-luna"));

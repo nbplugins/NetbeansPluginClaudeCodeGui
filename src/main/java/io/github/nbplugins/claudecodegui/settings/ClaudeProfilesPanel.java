@@ -753,26 +753,22 @@ public final class ClaudeProfilesPanel extends JPanel {
             p.setToken(new String(tokenField.getPassword()));
             p.setApiKey("");
             p.setBaseUrl("");
-            p.setOpenaiProxy(false);
-            p.setOpenaiSubscription(false);
+            p.setConnectionType(ClaudeProfile.ConnectionType.SUBSCRIPTION);
         } else if (rbClaudeApi.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setToken("");
             p.setBaseUrl("");
-            p.setOpenaiProxy(false);
-            p.setOpenaiSubscription(false);
+            p.setConnectionType(ClaudeProfile.ConnectionType.CLAUDE_API);
         } else if (rbOtherApi.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setBaseUrl(baseUrlField.getText().trim());
             p.setToken("");
-            p.setOpenaiProxy(false);
-            p.setOpenaiSubscription(false);
+            p.setConnectionType(ClaudeProfile.ConnectionType.OTHER_API);
         } else if (rbOpenAIProxy.isSelected()) {
             p.setApiKey(new String(apiKeyField.getPassword()));
             p.setBaseUrl(baseUrlField.getText().trim());
             p.setToken("");
-            p.setOpenaiProxy(true);
-            p.setOpenaiSubscription(false);
+            p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_PROXY);
         } else if (rbChatgptSubscription.isSelected()) {
             // chatgpt* token fields are written directly by the sign-in/sign-out button
             // handlers, not by this text-field flush — they are opaque credentials, not
@@ -780,14 +776,12 @@ public final class ClaudeProfilesPanel extends JPanel {
             p.setToken("");
             p.setApiKey("");
             p.setBaseUrl("");
-            p.setOpenaiProxy(false);
-            p.setOpenaiSubscription(true);
+            p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         } else {
             p.setToken("");
             p.setApiKey("");
             p.setBaseUrl("");
-            p.setOpenaiProxy(false);
-            p.setOpenaiSubscription(false);
+            p.setConnectionType(ClaudeProfile.ConnectionType.CLAUDE_MANAGED);
         }
 
         // Clear model aliases/custom models when switching to a connection type that does not
@@ -843,7 +837,7 @@ public final class ClaudeProfilesPanel extends JPanel {
         refreshStorageDirField(p);
 
         // Connection type
-        ClaudeProfile.ConnectionType ct = p.computeConnectionType();
+        ClaudeProfile.ConnectionType ct = p.getConnectionType();
         tokenField.setText("");
         apiKeyField.setText("");
         baseUrlField.setText("");
@@ -1004,7 +998,7 @@ public final class ClaudeProfilesPanel extends JPanel {
             return i >= 0 ? i : Integer.MAX_VALUE;
         }));
         ModelAliasesDialog dlg;
-        if (p.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
+        if (p.getConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
             ModelAliasesDialog.ModelFetcher fetcher = () -> {
                 String token = new io.github.nbplugins.claudecodegui.chatgptauth.ChatGptTokenManager()
                         .getValidAccessToken(p);

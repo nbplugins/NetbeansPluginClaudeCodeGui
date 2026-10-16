@@ -180,6 +180,51 @@ class ClaudeProfileStoreTest {
     }
 
     // -------------------------------------------------------------------------
+    // Connection type persistence (issue #191)
+    // -------------------------------------------------------------------------
+
+    @org.junit.jupiter.api.AfterEach
+    void removeStoredDefaultProfile() {
+        org.openide.util.NbPreferences.forModule(ClaudeProfileStore.class)
+                .remove("defaultProfile"); // ClaudeProfileStore.KEY_DEFAULT_PROFILE (private)
+        ClaudeProfileStore.clearProfiles();
+    }
+
+    /**
+     * Regression test for issue #191: "OpenAI-compatible API" selected on the Default
+     * profile was reset to "Claude-compatible API" after reload, because the Default
+     * profile is rebuilt field by field and {@code openaiProxy} was not copied.
+     */
+    @Test
+    void defaultProfile_openaiProxy_survivesSaveAndReload() {
+        ClaudeProfile def = ClaudeProfile.createDefault();
+        def.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_PROXY);
+        def.setApiKey("sk-openai");
+        def.setBaseUrl("https://api.example.com/v1");
+        ClaudeProfileStore.saveProfiles(List.of(def));
+
+        ClaudeProfile loaded = ClaudeProfileStore.getProfiles().get(0);
+        assertTrue(loaded.isDefault());
+        assertEquals(ClaudeProfile.ConnectionType.OPENAI_PROXY, loaded.getConnectionType());
+        assertEquals("sk-openai", loaded.getApiKey());
+        assertEquals("https://api.example.com/v1", loaded.getBaseUrl());
+    }
+
+    /** Companion: the same settings on a named profile were never affected by the bug. */
+    @Test
+    void namedProfile_openaiProxy_survivesSaveAndReload() {
+        ClaudeProfile p = ClaudeProfile.createNamed("OpenAI");
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_PROXY);
+        p.setApiKey("sk-openai");
+        p.setBaseUrl("https://api.example.com/v1");
+        ClaudeProfileStore.saveProfiles(List.of(ClaudeProfile.createDefault(), p));
+
+        ClaudeProfile loaded = ClaudeProfileStore.findByName("OpenAI");
+        assertEquals("OpenAI", loaded.getName());
+        assertEquals(ClaudeProfile.ConnectionType.OPENAI_PROXY, loaded.getConnectionType());
+    }
+
+    // -------------------------------------------------------------------------
     // saveProfiles — skips Default entries
     // -------------------------------------------------------------------------
 

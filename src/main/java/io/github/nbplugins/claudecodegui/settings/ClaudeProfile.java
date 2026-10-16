@@ -1,6 +1,7 @@
 package io.github.nbplugins.claudecodegui.settings;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -17,9 +18,13 @@ import java.util.Map;
  * programmatically.
  *
  * <h2>Connection type</h2>
- * {@link ConnectionType} is <em>not</em> stored — it is derived from the
- * credential fields by {@link #computeConnectionType()}:
+ * The {@link ConnectionType} is stored explicitly (see {@link #getConnectionType()}).
+ * Settings written by older plugin versions have no stored type (only the legacy
+ * {@code openaiProxy} / {@code openaiSubscription} flags and the credential fields);
+ * for them the type is derived on read:
  * <ul>
+ *   <li>{@code openaiSubscription} flag → {@link ConnectionType#OPENAI_SUBSCRIPTION}</li>
+ *   <li>{@code openaiProxy} flag → {@link ConnectionType#OPENAI_PROXY}</li>
  *   <li>non-blank {@code apiKey} + non-blank {@code baseUrl} → {@link ConnectionType#OTHER_API}</li>
  *   <li>non-blank {@code apiKey} → {@link ConnectionType#CLAUDE_API}</li>
  *   <li>non-blank {@code token} → {@link ConnectionType#SUBSCRIPTION}</li>
@@ -40,7 +45,8 @@ public final class ClaudeProfile {
 
     /**
      * Describes how a profile authenticates with Claude / the AI backend.
-     * Derived at runtime from credential fields; never persisted.
+     * Persisted by name; for settings written by older versions derived from
+     * the legacy flags and credential fields.
      */
     public enum ConnectionType {
         /** Claude manages its own authentication (OAuth flow). No env vars injected. */
@@ -189,20 +195,23 @@ public final class ClaudeProfile {
     private String storageDir;
 
     /**
-     * When {@code true}, this profile uses the internal OpenAI-compatible proxy.
-     * {@link #computeConnectionType()} returns {@link ConnectionType#OPENAI_PROXY}.
-     * {@link #baseUrl} and {@link #apiKey} hold the OpenAI endpoint URL and API key.
-     */
-    private boolean openaiProxy;
-
-    /**
-     * When {@code true}, this profile uses a ChatGPT Plus/Pro/Team subscription
-     * (OAuth login) routed through the internal proxy to OpenAI's Codex backend.
-     * {@link #computeConnectionType()} returns {@link ConnectionType#OPENAI_SUBSCRIPTION}.
-     * The {@code chatgpt*} fields hold the OAuth token set obtained via
+     * The connection type chosen for this profile. {@code null} only for settings written
+     * by older plugin versions, which did not store it; {@link #getConnectionType()} then
+     * derives it from {@link #legacyOpenaiProxy}, {@link #legacyOpenaiSubscription} and the
+     * credential fields.
+     *
+     * <p>{@link ConnectionType#OPENAI_PROXY}: {@link #baseUrl} and {@link #apiKey} hold the
+     * OpenAI endpoint URL and API key. {@link ConnectionType#OPENAI_SUBSCRIPTION}: the
+     * {@code chatgpt*} fields hold the OAuth token set obtained via
      * {@code io.github.nbplugins.claudecodegui.chatgptauth.ChatGptOAuthClient}.
      */
-    private boolean openaiSubscription;
+    private ConnectionType connectionType;
+
+    /** Legacy flag from older settings ({@code openaiProxy}); read-only, never written. */
+    private boolean legacyOpenaiProxy;
+
+    /** Legacy flag from older settings ({@code openaiSubscription}); read-only, never written. */
+    private boolean legacyOpenaiSubscription;
 
     /**
      * ChatGPT OAuth access token. Short-lived (hours); refreshed automatically
@@ -324,16 +333,38 @@ public final class ClaudeProfile {
     }
 
     /**
-     * Computes the {@link ConnectionType} from the stored credential fields.
-     * This value is intentionally not persisted.
+     * Returns the connection type of this profile: the stored one, or, for settings written
+     * by older plugin versions that did not store it, the type derived from the legacy flags
+     * and credential fields.
      *
-     * @return the connection type inferred from current field values
+     * @return the connection type; never {@code null}
      */
-    public ConnectionType computeConnectionType() {
-        if (openaiSubscription) {
+    public ConnectionType getConnectionType() {
+        return connectionType != null ? connectionType : deriveLegacyConnectionType();
+    }
+
+    /**
+     * Sets the connection type. {@code null} means "derive from legacy fields".
+     *
+     * @param connectionType the connection type
+     */
+    public void setConnectionType(ConnectionType connectionType) {
+        this.connectionType = connectionType;
+    }
+
+    /** Legacy flag accepted when reading settings written by older plugin versions. */
+    @JsonSetter("openaiProxy")
+    private void readLegacyOpenaiProxy(boolean value) { this.legacyOpenaiProxy = value; }
+
+    /** Legacy flag accepted when reading settings written by older plugin versions. */
+    @JsonSetter("openaiSubscription")
+    private void readLegacyOpenaiSubscription(boolean value) { this.legacyOpenaiSubscription = value; }
+
+    private ConnectionType deriveLegacyConnectionType() {
+        if (legacyOpenaiSubscription) {
             return ConnectionType.OPENAI_SUBSCRIPTION;
         }
-        if (openaiProxy) {
+        if (legacyOpenaiProxy) {
             return ConnectionType.OPENAI_PROXY;
         }
         if (!isBlank(apiKey)) {
@@ -351,7 +382,7 @@ public final class ClaudeProfile {
      *
      * <p>Variables are added in this order (later entries win):
      * <ol>
-     *   <li>Auth variables (based on {@link #computeConnectionType()})</li>
+     *   <li>Auth variables (based on {@link #getConnectionType()})</li>
      *   <li>Proxy variables (based on {@link #proxyMode})</li>
      *   <li>{@link #extraEnvVars} (in list order)</li>
      * </ol>
@@ -366,7 +397,7 @@ public final class ClaudeProfile {
         Map<String, String> env = new HashMap<>();
 
         // Auth
-        switch (computeConnectionType()) {
+        switch (getConnectionType()) {
             case SUBSCRIPTION  -> env.put("CLAUDE_CODE_OAUTH_TOKEN", blankToEmpty(token));
             case CLAUDE_API    -> { /* API key is written to settings.local.json as apiKeyHelper */ }
             case OTHER_API     -> {
@@ -695,7 +726,7 @@ public final class ClaudeProfile {
      * potentially harmful) for Anthropic's own connections.
      */
     private boolean modelAliasesApply() {
-        ConnectionType ct = computeConnectionType();
+        ConnectionType ct = getConnectionType();
         return ct == ConnectionType.OTHER_API || ct == ConnectionType.OPENAI_PROXY
                 || ct == ConnectionType.OPENAI_SUBSCRIPTION;
     }
@@ -788,18 +819,6 @@ public final class ClaudeProfile {
         return this;
     }
 
-    /** Returns {@code true} if this profile uses the internal OpenAI-compatible proxy. */
-    public boolean isOpenaiProxy() { return openaiProxy; }
-
-    /** Sets whether this profile uses the internal OpenAI-compatible proxy. */
-    public void setOpenaiProxy(boolean openaiProxy) { this.openaiProxy = openaiProxy; }
-
-    /** Returns {@code true} if this profile uses a ChatGPT subscription (OAuth) via the internal proxy. */
-    public boolean isOpenaiSubscription() { return openaiSubscription; }
-
-    /** Sets whether this profile uses a ChatGPT subscription (OAuth) via the internal proxy. */
-    public void setOpenaiSubscription(boolean openaiSubscription) { this.openaiSubscription = openaiSubscription; }
-
     /** Returns the ChatGPT OAuth access token; blank when not signed in. */
     public String getChatgptAccessToken() { return blankToEmpty(chatgptAccessToken); }
 
@@ -843,7 +862,7 @@ public final class ClaudeProfile {
 
     /**
      * Clears all ChatGPT OAuth token fields (access token, refresh token,
-     * account id, expiry, email), leaving {@link #openaiSubscription} untouched.
+     * account id, expiry, email), leaving the {@link #getConnectionType() connection type} untouched.
      * Used by the "Sign out" action and when switching away from the
      * {@link ConnectionType#OPENAI_SUBSCRIPTION} connection type.
      */
@@ -862,7 +881,7 @@ public final class ClaudeProfile {
     @Override
     public String toString() {
         return "ClaudeProfile{id='" + getId() + "', name='" + getName()
-                + "', connectionType=" + computeConnectionType()
+                + "', connectionType=" + getConnectionType()
                 + ", proxyMode=" + getProxyMode() + "}";
     }
 

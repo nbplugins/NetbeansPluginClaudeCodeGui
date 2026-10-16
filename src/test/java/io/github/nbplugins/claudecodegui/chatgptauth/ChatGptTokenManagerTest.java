@@ -36,7 +36,7 @@ class ChatGptTokenManagerTest {
 
     private static ClaudeProfile signedInProfile(Instant expiresAt) {
         ClaudeProfile p = ClaudeProfile.createNamed("chatgpt-test-" + System.nanoTime());
-        p.setOpenaiSubscription(true);
+        p.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         p.setChatgptAccessToken("access-old");
         p.setChatgptRefreshToken("refresh-old");
         p.setChatgptAccountId("acct-1");
@@ -98,7 +98,7 @@ class ChatGptTokenManagerTest {
     @Test
     void getValidAccessToken_noRecordedExpiry_refreshes() throws Exception {
         ClaudeProfile profile = ClaudeProfile.createNamed("chatgpt-test-noexp-" + System.nanoTime());
-        profile.setOpenaiSubscription(true);
+        profile.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         profile.setChatgptAccessToken("access-old");
         profile.setChatgptRefreshToken("refresh-old");
         // chatgptTokenExpiresAt left blank

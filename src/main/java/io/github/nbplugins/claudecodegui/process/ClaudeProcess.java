@@ -161,7 +161,7 @@ public final class ClaudeProcess {
 
         // OpenAI proxy: register session and inject ANTHROPIC_BASE_URL pointing to internal proxy
         if (profile != null
-                && profile.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_PROXY) {
+                && profile.getConnectionType() == ClaudeProfile.ConnectionType.OPENAI_PROXY) {
             ClaudeCodeStatusService mcpSvc = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
             if (mcpSvc != null && mcpSvc.isServerRunning()) {
                 String uuid = UUID.randomUUID().toString();
@@ -191,7 +191,7 @@ public final class ClaudeProcess {
         // ChatGPT subscription: pre-emptively refresh the OAuth token, register the
         // session, and inject ANTHROPIC_BASE_URL pointing to the internal Codex proxy.
         if (profile != null
-                && profile.computeConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
+                && profile.getConnectionType() == ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION) {
             ClaudeCodeStatusService mcpSvc = Lookup.getDefault().lookup(ClaudeCodeStatusService.class);
             if (mcpSvc != null && mcpSvc.isServerRunning()) {
                 try {
@@ -219,9 +219,9 @@ public final class ClaudeProcess {
         }
 
         boolean apiKeyHelper = profile != null && !profile.getApiKey().isBlank() && profile.getBaseUrl().isBlank()
-                && profile.computeConnectionType() != ClaudeProfile.ConnectionType.OPENAI_PROXY
-                && profile.computeConnectionType() != ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION;
-        LOG.info("Starting Claude: profile=" + (profile != null ? profile.getName() + " (" + profile.computeConnectionType() + ")" : "Default")
+                && profile.getConnectionType() != ClaudeProfile.ConnectionType.OPENAI_PROXY
+                && profile.getConnectionType() != ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION;
+        LOG.info("Starting Claude: profile=" + (profile != null ? profile.getName() + " (" + profile.getConnectionType() + ")" : "Default")
                 + ", apiKeyHelper=" + (apiKeyHelper ? "SET" : "NOT SET")
                 + ", ANTHROPIC_AUTH_TOKEN=" + (!env.getOrDefault("ANTHROPIC_AUTH_TOKEN", "").isBlank() ? "SET" : "NOT SET")
                 + ", ANTHROPIC_BASE_URL=" + env.getOrDefault("ANTHROPIC_BASE_URL", "(not set)")

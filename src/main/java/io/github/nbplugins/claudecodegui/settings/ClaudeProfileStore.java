@@ -38,7 +38,8 @@ public final class ClaudeProfileStore {
     private static final String KEY_DEFAULT_PROFILE = "defaultProfile";
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .enable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL);
     private static final TypeReference<List<ClaudeProfile>> LIST_TYPE =
             new TypeReference<>() {};
 
@@ -64,27 +65,7 @@ public final class ClaudeProfileStore {
                 .get(KEY_DEFAULT_PROFILE, null);
         if (defaultJson != null) {
             try {
-                ClaudeProfile stored = MAPPER.readValue(defaultJson, ClaudeProfile.class);
-                def.setToken(stored.getToken());
-                def.setApiKey(stored.getApiKey());
-                def.setBaseUrl(stored.getBaseUrl());
-                def.setProxyMode(stored.getProxyMode());
-                def.setHttpProxy(stored.getHttpProxy());
-                def.setHttpsProxy(stored.getHttpsProxy());
-                def.setNoProxy(stored.getNoProxy());
-                def.setExtraEnvVars(stored.getExtraEnvVars());
-                def.setExtraCliArgs(stored.getExtraCliArgs());
-                def.setModelAliases(stored.getModelAliases());
-                def.setCustomModels(stored.getCustomModels());
-                def.setModelOrder(stored.getModelOrder());
-                def.setExplicitPromptCachingModels(stored.getExplicitPromptCachingModels());
-                def.setStorageDir(stored.getStorageDir());
-                def.setOpenaiSubscription(stored.isOpenaiSubscription());
-                def.setChatgptAccessToken(stored.getChatgptAccessToken());
-                def.setChatgptRefreshToken(stored.getChatgptRefreshToken());
-                def.setChatgptAccountId(stored.getChatgptAccountId());
-                def.setChatgptTokenExpiresAt(stored.getChatgptTokenExpiresAt());
-                def.setChatgptEmail(stored.getChatgptEmail());
+                def = parseDefaultProfile(defaultJson);
             } catch (Exception e) {
                 LOG.warning("Could not parse stored Default profile JSON, using defaults. Cause: " + e);
                 def.setExtraCliArgs(ClaudeCodePreferences.getDefaultExtraCliArgs());
@@ -106,6 +87,21 @@ public final class ClaudeProfileStore {
         }
 
         return result;
+    }
+
+    /**
+     * Parses a stored Default profile. The whole profile is deserialised (so no field can be
+     * forgotten), then the identity is forced to the built-in Default.
+     *
+     * @param json the stored Default profile JSON, in the current or an older plugin format
+     * @return the Default profile
+     * @throws java.io.IOException if the JSON cannot be parsed
+     */
+    static ClaudeProfile parseDefaultProfile(String json) throws java.io.IOException {
+        ClaudeProfile def = MAPPER.readValue(json, ClaudeProfile.class);
+        def.setId(ClaudeProfile.DEFAULT_ID);
+        def.setName(ClaudeProfile.DEFAULT_NAME);
+        return def;
     }
 
     /**

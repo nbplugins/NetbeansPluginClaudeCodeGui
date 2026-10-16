@@ -1,3 +1,4 @@
+- Fixed "OpenAI-compatible API" connection type being reset to "Claude-compatible API" on the Default profile (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/191)
 - Improved the IDE log (messages.log): per-request and per-click diagnostics (tab label polling, PreToolUse hooks with file contents, diff tabs, choice menus, permission prompts) are now written only when debug logging is enabled, so the log is no longer flooded and no longer contains edited code
 
 # 1.3.28 (2026-10-07)

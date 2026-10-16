@@ -155,9 +155,8 @@ class ClaudeProfilesPanelFlushTest {
 
         invoke(panel, "flushFormToCurrentProfile");
 
-        assertTrue(work.isOpenaiSubscription());
-        assertFalse(work.isOpenaiProxy());
-        assertEquals("", work.getApiKey());
+        assertEquals(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION, work.getConnectionType());
+                assertEquals("", work.getApiKey());
         assertEquals("", work.getBaseUrl());
         assertEquals("", work.getToken());
     }
@@ -190,7 +189,7 @@ class ClaudeProfilesPanelFlushTest {
     @Test
     void flush_switchingAwayFromChatgptSubscription_clearsFlag() throws Exception {
         ClaudeProfile work = ClaudeProfile.createNamed("Work");
-        work.setOpenaiSubscription(true);
+        work.setConnectionType(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION);
         work.setChatgptAccessToken("access");
         work.setChatgptRefreshToken("refresh");
 
@@ -204,7 +203,7 @@ class ClaudeProfilesPanelFlushTest {
 
         invoke(panel, "flushFormToCurrentProfile");
 
-        assertFalse(work.isOpenaiSubscription());
+        assertNotEquals(ClaudeProfile.ConnectionType.OPENAI_SUBSCRIPTION, work.getConnectionType());
         // Switching connection type does not sign the user out — chatgpt* tokens
         // are only cleared explicitly via the "Sign out" button.
         assertTrue(work.isSignedIntoChatgpt());
