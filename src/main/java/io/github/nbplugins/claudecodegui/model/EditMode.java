@@ -13,7 +13,8 @@ import java.util.Optional;
  * ordinal comparisons ({@code >=}, {@code <=}) express permission thresholds naturally.
  *
  * <p>Screen-text mapping (used by {@code ScreenContentDetector.detectEditMode}), checked
- * against the single bottom-most non-blank screen line only:
+ * against the mode-footer line (the bottom-most non-blank line, or one just above it
+ * that starts with the {@code ⏸}/{@code ⏵} mode glyph):
  * <ul>
  *   <li>{@link #PLAN} — bottom line contains {@code "plan mode"} or {@code "plan-mode"}</li>
  *   <li>{@link #DEFAULT} — bottom line contains {@code "manual mode on"}, or (fallback for

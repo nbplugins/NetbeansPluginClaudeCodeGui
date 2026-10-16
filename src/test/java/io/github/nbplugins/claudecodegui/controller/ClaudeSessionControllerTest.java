@@ -977,6 +977,45 @@ class ClaudeSessionControllerTest {
         assertEquals(5, (int) tabsSent.get(), "5 tabs must have been sent");
     }
 
+    /**
+     * Regression: selecting a second mode while a Shift+Tab switch is still running
+     * started a second worker thread. Both sent Shift+Tabs concurrently, each steering
+     * toward its own target, so the mode kept cycling and landed on an arbitrary mode.
+     * A new request must instead be picked up by the single running worker.
+     */
+    @Test
+    void onEditModeComboChanged_secondRequestDuringSwitch_isHandledBySameWorker() throws Exception {
+        // Simulated CC cycle (2.1.x order): DEFAULT → ACCEPT_EDITS → PLAN → AUTO → DEFAULT
+        EditMode[] cycle = {EditMode.DEFAULT, EditMode.ACCEPT_EDITS, EditMode.PLAN, EditMode.AUTO};
+        java.util.concurrent.atomic.AtomicInteger ccMode = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.Set<Thread> senders = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        m.setEditMode(EditMode.DEFAULT);
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override boolean isConnected() { return true; }
+            @Override Optional<EditMode> detectCurrentMode() { return Optional.of(cycle[ccMode.get()]); }
+            @Override void sendOneShiftTab() {
+                senders.add(Thread.currentThread());
+                ccMode.updateAndGet(i -> (i + 1) % cycle.length);
+            }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        c.onEditModeComboChanged(EditMode.AUTO);
+        c.onEditModeComboChanged(EditMode.PLAN);
+
+        java.lang.reflect.Field inProgress = ClaudeSessionController.class.getDeclaredField("modeSwitchInProgress");
+        inProgress.setAccessible(true);
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (inProgress.getBoolean(c) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5);
+        }
+
+        assertFalse(inProgress.getBoolean(c), "switch must finish");
+        assertEquals(EditMode.PLAN, cycle[ccMode.get()], "must end on the most recently requested mode");
+        assertEquals(1, senders.size(), "Shift+Tabs must be sent by a single worker thread");
+    }
+
     private static void setModeSwitchPollMs(ClaudeSessionController c, int ms) throws Exception {
         java.lang.reflect.Field f = ClaudeSessionController.class.getDeclaredField("modeSwitchPollMs");
         f.setAccessible(true);

@@ -501,9 +501,12 @@ public final class ScreenContentDetector {
     /**
      * Detect the Claude CLI edit mode from the rendered screen footer.
      *
-     * <p>Only the single bottom-most non-blank line is inspected — text further up the
-     * screen (e.g. a permission-prompt tip or menu option that merely mentions a mode by
-     * name) must never be mistaken for the actual mode-footer line.
+     * <p>The bottom-most non-blank line is inspected first. Claude Code 2.1.x renders
+     * extra footer lines below the mode indicator while idle (e.g. {@code ● high · /effort}),
+     * so the next two lines up are also checked — but only when they start with the
+     * mode glyph ({@code ⏸} or {@code ⏵}). Text further up the screen (e.g. a
+     * permission-prompt tip or menu option that merely mentions a mode by name) must
+     * never be mistaken for the actual mode-footer line.
      *
      * <p>Possible return values:
      * <ul>
@@ -529,7 +532,20 @@ public final class ScreenContentDetector {
         if (lines == null || lines.isEmpty()) return Optional.empty();
         List<String> bottom = bottomNonBlankLines(lines, 3);
         if (bottom.isEmpty()) return Optional.empty();
-        String lower = bottom.get(0).toLowerCase();
+        Optional<EditMode> mode = editModeFromFooterLine(bottom.get(0));
+        if (mode.isPresent()) return mode;
+        for (int i = 1; i < bottom.size(); i++) {
+            String line = bottom.get(i).strip();
+            if (line.startsWith("⏸") || line.startsWith("⏵")) {
+                return editModeFromFooterLine(line);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** Maps a single mode-footer line to its {@link EditMode}; see {@link #detectEditMode}. */
+    private static Optional<EditMode> editModeFromFooterLine(String line) {
+        String lower = line.toLowerCase();
         if (lower.contains("plan mode") || lower.contains("plan-mode")) {
             return Optional.of(EditMode.PLAN);
         }
@@ -548,7 +564,7 @@ public final class ScreenContentDetector {
         // "  esc to interrupt" with two leading spaces is the reliable Ask/default-mode signal,
         // kept as a fallback for older Claude Code versions that never emit "manual mode on".
         // Without leading spaces the screen is in an unknown / transitioning state.
-        if (bottom.get(0).startsWith("  esc to interrupt")) {
+        if (line.startsWith("  esc to interrupt")) {
             return Optional.of(EditMode.DEFAULT);
         }
         return Optional.empty();

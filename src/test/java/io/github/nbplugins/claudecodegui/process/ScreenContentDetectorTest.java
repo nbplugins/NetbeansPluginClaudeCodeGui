@@ -291,6 +291,44 @@ class ScreenContentDetectorTest {
         assertEquals(EditMode.DEFAULT, result.get());
     }
 
+    /**
+     * Regression: Claude Code 2.1.x renders the effort indicator on its own line
+     * <em>below</em> the mode indicator while idle (captured by
+     * claude-launch-tests/test_edit_mode_footer.py). Inspecting only the bottom-most
+     * line made every idle mode undetectable, so the combo fell back to "Ask on Edit"
+     * whenever Claude went idle and Shift+Tab switching cycled blindly.
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "  ⏵⏵ auto mode on (shift+tab to cycle)                    0 tokens | AUTO",
+            "  ⏸ manual mode on · ? for shortcuts                      0 tokens | DEFAULT",
+            "  ⏵⏵ accept edits on (shift+tab to cycle)                 0 tokens | ACCEPT_EDITS",
+            "  ⏸ plan mode on (shift+tab to cycle)                     0 tokens | PLAN",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)           0 tokens | BYPASS_PERMISSIONS"
+    })
+    void detectEditModeWhenEffortLineRenderedBelowModeLine(String modeLine, EditMode expected) {
+        List<String> lines = new ArrayList<>(List.of(
+                "❯ ",
+                "────────────────────────────────────────────────────────────",
+                modeLine,
+                "                                              ● high · /effort"
+        ));
+        for (int i = 0; i < 5; i++) lines.add("");
+        assertEquals(java.util.Optional.of(expected), detector.detectEditMode(lines));
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeNotAcceptEditsWhenOnlyMentionedInMenuOptionAboveBottom() {
+        // A line above the bottom one is only trusted when it starts with the mode glyph;
+        // a menu option that merely mentions a mode must not be picked up.
+        List<String> lines = List.of(
+                " Would you like to proceed?",
+                " ❯ 1. Yes, and auto-accept edits",
+                "   2. Yes, and manually approve edits",
+                "   3. No, keep planning");
+        assertTrue(detector.detectEditMode(lines).isEmpty());
+    }
+
     // -------------------------------------------------------------------------
     // detectPlanName
     // -------------------------------------------------------------------------
