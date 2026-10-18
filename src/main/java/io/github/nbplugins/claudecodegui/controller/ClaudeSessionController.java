@@ -122,6 +122,9 @@ public class ClaudeSessionController {
      */
     private EditMode editModeSwitchTarget;
 
+    /** Incremented on every switch request; tells a newer request from an equal one. Guarded by the lock. */
+    private long editModeSwitchGeneration;
+
     /** Poll interval (ms) per read attempt inside {@link #trySendShiftTabsUntilMode}; 1 in tests. */
     int modeSwitchPollMs = 100;
     /**
@@ -812,9 +815,11 @@ public class ClaudeSessionController {
      */
     private void sendShiftTabsUntilMode(EditMode targetMode) {
         if (!isConnected()) return;
+        final long startGeneration;
         synchronized (editModeSwitchLock) {
             boolean running = editModeSwitchTarget != null;
             editModeSwitchTarget = targetMode;
+            startGeneration = ++editModeSwitchGeneration;
             if (running) {
                 LOG.fine("sendShiftTabsUntilMode: switch in progress, retargeting to " + targetMode);
                 return;
@@ -824,6 +829,7 @@ public class ClaudeSessionController {
         model.setLifecycle(SessionLifecycle.WORKING);
         Thread t = new Thread(() -> {
             EditMode target = targetMode;
+            long generation = startGeneration;
             try {
                 while (target != null) {
                     try {
@@ -833,11 +839,12 @@ public class ClaudeSessionController {
                         LOG.warning("sendShiftTabsUntilMode failed: " + ex.getMessage());
                     }
                     synchronized (editModeSwitchLock) {
-                        if (editModeSwitchTarget == target) {
+                        if (editModeSwitchGeneration == generation) {
                             editModeSwitchTarget = null;
                             modeSwitchInProgress = false;
                         }
                         target = editModeSwitchTarget;
+                        generation = editModeSwitchGeneration;
                     }
                 }
             } catch (InterruptedException ex) {

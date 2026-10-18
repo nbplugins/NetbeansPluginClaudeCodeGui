@@ -1084,6 +1084,36 @@ class ClaudeSessionControllerTest {
         assertTrue(calls.get() >= 2, "queued retarget must be served after the active switch failed");
     }
 
+    @Test
+    void onEditModeComboChanged_sameModeRequestedAgainDuringFailingSwitch_isStillServed() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch requestsIssued = new java.util.concurrent.CountDownLatch(1);
+        ClaudeSessionModel m = new ClaudeSessionModel();
+        m.setEditMode(EditMode.DEFAULT);
+        ClaudeSessionController c = new ClaudeSessionController(m, Collections::emptyList) {
+            @Override boolean isConnected() { return true; }
+            @Override Optional<EditMode> detectCurrentMode() { return Optional.of(EditMode.DEFAULT); }
+            @Override void sendOneShiftTab() throws java.io.IOException {
+                if (calls.incrementAndGet() == 1) {
+                    try { requestsIssued.await(2, java.util.concurrent.TimeUnit.SECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    throw new java.io.IOException("write failed");
+                }
+            }
+        };
+        setModeSwitchPollMs(c, 1);
+
+        c.onEditModeComboChanged(EditMode.PLAN);   // A, fails
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (calls.get() < 1 && System.currentTimeMillis() < deadline) Thread.sleep(5);
+        c.onEditModeComboChanged(EditMode.ACCEPT_EDITS); // B
+        c.onEditModeComboChanged(EditMode.PLAN);         // A again: slot equals the failed target
+        requestsIssued.countDown();
+        deadline = System.currentTimeMillis() + 5_000;
+        while (calls.get() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(5);
+        assertTrue(calls.get() >= 2, "the latest request must be served even if it equals the failed target");
+    }
+
     private static void setModeSwitchPollMs(ClaudeSessionController c, int ms) throws Exception {
         java.lang.reflect.Field f = ClaudeSessionController.class.getDeclaredField("modeSwitchPollMs");
         f.setAccessible(true);
