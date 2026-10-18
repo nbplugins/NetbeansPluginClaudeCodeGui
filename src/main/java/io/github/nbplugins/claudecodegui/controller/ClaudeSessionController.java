@@ -826,7 +826,12 @@ public class ClaudeSessionController {
             EditMode target = targetMode;
             try {
                 while (target != null) {
-                    switchEditMode(target);
+                    try {
+                        switchEditMode(target);
+                    } catch (IOException | RuntimeException ex) {
+                        // a failed switch must not drop a newer request queued meanwhile
+                        LOG.warning("sendShiftTabsUntilMode failed: " + ex.getMessage());
+                    }
                     synchronized (editModeSwitchLock) {
                         if (editModeSwitchTarget == target) {
                             editModeSwitchTarget = null;
@@ -835,8 +840,8 @@ public class ClaudeSessionController {
                         target = editModeSwitchTarget;
                     }
                 }
-            } catch (IOException | InterruptedException | RuntimeException ex) {
-                LOG.warning("sendShiftTabsUntilMode failed: " + ex.getMessage());
+            } catch (InterruptedException ex) {
+                LOG.warning("sendShiftTabsUntilMode interrupted");
                 synchronized (editModeSwitchLock) {
                     editModeSwitchTarget = null;
                     modeSwitchInProgress = false;
