@@ -119,7 +119,17 @@ jobs:
           if [[ "$STATUS" == "200" ]]; then
             echo "Version $VERSION already published to Maven Central, skipping."
           else
-            mvn deploy -P release -DskipTests --batch-mode
+            if ! mvn deploy -P release -DskipTests --batch-mode; then
+              echo "::group::Maven Central bundle diagnostics"
+              echo "--- target/central-staging ---"
+              find target/central-staging -printf '%y %s %P\n' 2>/dev/null | sort -k3
+              echo "--- central-bundle.zip ---"
+              unzip -l target/central-publishing/central-bundle.zip 2>/dev/null || true
+              echo "--- target/*.asc, *.nbm, *.jar ---"
+              ls -la target/*.asc target/*.nbm target/*.jar 2>/dev/null || true
+              echo "::endgroup::"
+              exit 1
+            fi
           fi
         env:
           MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
