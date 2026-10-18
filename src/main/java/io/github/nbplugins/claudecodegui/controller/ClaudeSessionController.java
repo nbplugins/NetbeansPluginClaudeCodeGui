@@ -768,7 +768,10 @@ public class ClaudeSessionController {
             } catch (IOException | InterruptedException ex) {
                 LOG.warning("sendShiftTab failed: " + ex.getMessage());
             } finally {
-                modeSwitchInProgress = false;
+                // a running sendShiftTabsUntilMode worker owns the flag
+                synchronized (editModeSwitchLock) {
+                    if (editModeSwitchTarget == null) modeSwitchInProgress = false;
+                }
             }
         }, "shift-tab");
         t.setDaemon(true);
@@ -832,7 +835,7 @@ public class ClaudeSessionController {
                         target = editModeSwitchTarget;
                     }
                 }
-            } catch (IOException | InterruptedException ex) {
+            } catch (IOException | InterruptedException | RuntimeException ex) {
                 LOG.warning("sendShiftTabsUntilMode failed: " + ex.getMessage());
                 synchronized (editModeSwitchLock) {
                     editModeSwitchTarget = null;

@@ -104,6 +104,8 @@ def dump(term, label):
 def main():
     work = '--work' in sys.argv
     claude = shutil.which('claude')
+    if claude is None:
+        sys.exit('claude not found on PATH')
     cwd = tempfile.mkdtemp(prefix='cc-mode-footer-')
     term = Term([claude], cwd)
     try:
