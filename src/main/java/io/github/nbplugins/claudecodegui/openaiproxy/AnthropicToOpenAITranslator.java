@@ -274,11 +274,8 @@ public final class AnthropicToOpenAITranslator {
 
             if ("user".equals(role)) {
                 convertUserMessage(content, openaiMessages);
-                int n = openaiMessages.size();
-                if (pendingReminder != null && n >= 2 && openaiMessages.get(n - 2) == pendingReminder
-                        && "user".equals(openaiMessages.get(n - 1).path("role").asText())) {
-                    mergeReminderIntoUser(pendingReminder, (ObjectNode) openaiMessages.get(n - 1));
-                    openaiMessages.remove(n - 2);
+                if (pendingReminder != null) {
+                    placePendingReminder(pendingReminder, openaiMessages);
                 }
                 pendingReminder = null;
             } else if ("assistant".equals(role)) {
@@ -291,6 +288,35 @@ public final class AnthropicToOpenAITranslator {
                 }
             }
         }
+    }
+
+    /**
+     * Called right after a user turn was converted while {@code reminder} (a standalone user
+     * message) sits before it. Folds the reminder into the user message that follows it, or,
+     * when the turn produced {@code tool} messages (answers to the preceding assistant
+     * {@code tool_calls}), moves the reminder after them so the call/result pair stays adjacent.
+     */
+    private static void placePendingReminder(ObjectNode reminder, ArrayNode out) {
+        int idx = -1;
+        for (int i = out.size() - 1; i >= 0; i--) {
+            if (out.get(i) == reminder) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0 || idx == out.size() - 1) return;
+
+        JsonNode last = out.get(out.size() - 1);
+        if (idx == out.size() - 2 && "user".equals(last.path("role").asText())) {
+            mergeReminderIntoUser(reminder, (ObjectNode) last);
+            out.remove(idx);
+            return;
+        }
+        for (int i = idx + 1; i < out.size(); i++) {
+            if (!"tool".equals(out.get(i).path("role").asText())) return;
+        }
+        out.remove(idx);
+        out.add(reminder);
     }
 
     /** Moves the text of a standalone reminder user message to the start of {@code target}. */

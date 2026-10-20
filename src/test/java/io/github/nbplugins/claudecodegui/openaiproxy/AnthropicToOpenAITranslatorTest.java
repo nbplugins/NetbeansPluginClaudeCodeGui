@@ -165,6 +165,27 @@ class AnthropicToOpenAITranslatorTest {
         assertEquals("<system-reminder>\nEnv\n</system-reminder>", parts.get(2).path("text").asText());
     }
 
+    @Test
+    void translateRequest_reminderBetweenToolUseAndToolResult_movedAfterToolMessages() throws Exception {
+        JsonNode req = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"model\":\"m\",\"system\":\"Base\",\"messages\":["
+                + "{\"role\":\"user\",\"content\":\"Hi\"},"
+                + "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{}}]},"
+                + "{\"role\":\"system\",\"content\":\"Env\"},"
+                + "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"ok\"}]}]}");
+
+        JsonNode messages = AnthropicToOpenAITranslator.translateRequest(req).path("messages");
+
+        assertEquals(5, messages.size());
+        assertEquals("assistant", messages.get(2).path("role").asText());
+        assertTrue(messages.get(2).has("tool_calls"));
+        assertEquals("tool", messages.get(3).path("role").asText());
+        assertEquals("t1", messages.get(3).path("tool_call_id").asText());
+        assertEquals("user", messages.get(4).path("role").asText());
+        assertEquals("<system-reminder>\nEnv\n</system-reminder>", messages.get(4).path("content").asText());
+        assertOnlyLeadingSystem(messages);
+    }
+
     private static void assertOnlyLeadingSystem(JsonNode messages) {
         for (int i = 1; i < messages.size(); i++) {
             assertNotEquals("system", messages.get(i).path("role").asText(),
