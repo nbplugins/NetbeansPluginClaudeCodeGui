@@ -265,17 +265,47 @@ public final class AnthropicToOpenAITranslator {
     }
 
     private static void convertMessages(JsonNode anthropicMessages, ArrayNode openaiMessages) {
+        // Standalone user message created from a mid-conversation system message; folded into
+        // the next user message so that two user turns never follow each other.
+        ObjectNode pendingReminder = null;
         for (JsonNode msg : anthropicMessages) {
             String role = msg.path("role").asText();
             JsonNode content = msg.path("content");
 
             if ("user".equals(role)) {
                 convertUserMessage(content, openaiMessages);
+                int n = openaiMessages.size();
+                if (pendingReminder != null && n >= 2 && openaiMessages.get(n - 2) == pendingReminder
+                        && "user".equals(openaiMessages.get(n - 1).path("role").asText())) {
+                    mergeReminderIntoUser(pendingReminder, (ObjectNode) openaiMessages.get(n - 1));
+                    openaiMessages.remove(n - 2);
+                }
+                pendingReminder = null;
             } else if ("assistant".equals(role)) {
                 convertAssistantMessage(content, openaiMessages);
+                pendingReminder = null;
             } else if ("system".equals(role)) {
-                addMidConversationSystem(extractSystemText(content), openaiMessages);
+                ObjectNode created = addMidConversationSystem(extractSystemText(content), openaiMessages);
+                if (created != null) {
+                    pendingReminder = created;
+                }
             }
+        }
+    }
+
+    /** Moves the text of a standalone reminder user message to the start of {@code target}. */
+    private static void mergeReminderIntoUser(ObjectNode reminder, ObjectNode target) {
+        String reminderText = reminder.path("content").asText();
+        JsonNode targetContent = target.path("content");
+        if (targetContent.isTextual()) {
+            target.put("content", reminderText + "\n\n" + targetContent.asText());
+        } else if (targetContent.isArray()) {
+            ArrayNode parts = MAPPER.createArrayNode();
+            ObjectNode part = parts.addObject();
+            part.put("type", "text");
+            part.put("text", reminderText);
+            parts.addAll((ArrayNode) targetContent);
+            target.set("content", parts);
         }
     }
 
@@ -287,8 +317,8 @@ public final class AnthropicToOpenAITranslator {
      * message; later it becomes a {@code <system-reminder>} block in a user message
      * (appended to the preceding user message, as text or an extra text part, when there is one).
      */
-    private static void addMidConversationSystem(String text, ArrayNode out) {
-        if (text.isBlank()) return;
+    private static ObjectNode addMidConversationSystem(String text, ArrayNode out) {
+        if (text.isBlank()) return null;
 
         boolean onlySystemSoFar = true;
         for (JsonNode m : out) {
@@ -302,12 +332,12 @@ public final class AnthropicToOpenAITranslator {
                 ObjectNode sysMsg = out.addObject();
                 sysMsg.put("role", "system");
                 sysMsg.put("content", text);
-                return;
+                return null;
             }
             ObjectNode lead = (ObjectNode) out.get(0);
             if (lead.path("content").isTextual()) {
                 lead.put("content", lead.path("content").asText() + "\n\n" + text);
-                return;
+                return null;
             }
             // content-part array (explicit cache breakpoint): leave it intact, use a user message
         }
@@ -316,15 +346,18 @@ public final class AnthropicToOpenAITranslator {
         JsonNode last = out.isEmpty() ? null : out.get(out.size() - 1);
         if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isTextual()) {
             ((ObjectNode) last).put("content", last.path("content").asText() + "\n\n" + reminder);
+            return null;
         } else if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isArray()) {
             // multipart (image) user turn: add a text part instead of a second consecutive user turn
             ObjectNode part = ((ArrayNode) last.path("content")).addObject();
             part.put("type", "text");
             part.put("text", reminder);
+            return null;
         } else {
             ObjectNode userMsg = out.addObject();
             userMsg.put("role", "user");
             userMsg.put("content", reminder);
+            return userMsg;
         }
     }
 

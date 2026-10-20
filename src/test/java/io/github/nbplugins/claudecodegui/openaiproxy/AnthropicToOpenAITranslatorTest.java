@@ -107,7 +107,43 @@ class AnthropicToOpenAITranslatorTest {
         assertEquals("explicit", messages.get(0).path("content").get(0)
                 .path("prompt_cache_breakpoint").path("mode").asText());
         assertEquals(1, messages.get(0).path("content").size());
+        assertEquals(2, messages.size());
+        assertEquals("user", messages.get(1).path("role").asText());
+        assertEquals("<system-reminder>\nEnv\n</system-reminder>\n\nHi", messages.get(1).path("content").asText());
         assertOnlyLeadingSystem(messages);
+    }
+
+    @Test
+    void translateRequest_reminderBeforeImagePrompt_mergedIntoThatUserTurn() throws Exception {
+        JsonNode req = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"model\":\"gpt-5.6-terra\",\"system\":\"Base\",\"messages\":["
+                + "{\"role\":\"system\",\"content\":\"Env\"},"
+                + "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Look\"},"
+                + "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"AAAA\"}}]}]}");
+
+        JsonNode messages = AnthropicToOpenAITranslator.translateRequest(req, null, true).path("messages");
+
+        assertEquals(2, messages.size());
+        JsonNode parts = messages.get(1).path("content");
+        assertTrue(parts.isArray());
+        assertEquals(3, parts.size());
+        assertEquals("<system-reminder>\nEnv\n</system-reminder>", parts.get(0).path("text").asText());
+        assertEquals("Look", parts.get(1).path("text").asText());
+        assertEquals("image_url", parts.get(2).path("type").asText());
+    }
+
+    @Test
+    void translateRequest_reminderFollowedByAssistant_staysStandaloneUserMessage() throws Exception {
+        JsonNode req = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"model\":\"gpt-5.6-terra\",\"system\":\"Base\",\"messages\":["
+                + "{\"role\":\"system\",\"content\":\"Env\"},"
+                + "{\"role\":\"assistant\",\"content\":\"Hi\"}]}");
+
+        JsonNode messages = AnthropicToOpenAITranslator.translateRequest(req, null, true).path("messages");
+
+        assertEquals(3, messages.size());
+        assertEquals("user", messages.get(1).path("role").asText());
+        assertEquals("assistant", messages.get(2).path("role").asText());
     }
 
     @Test
