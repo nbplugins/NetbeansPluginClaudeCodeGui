@@ -186,6 +186,42 @@ class AnthropicToOpenAITranslatorTest {
         assertOnlyLeadingSystem(messages);
     }
 
+    @Test
+    void translateRequest_reminderBetweenTwoUserTurns_coalescedIntoOneUserTurn() throws Exception {
+        JsonNode req = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"model\":\"m\",\"system\":\"Base\",\"messages\":["
+                + "{\"role\":\"user\",\"content\":\"A\"},"
+                + "{\"role\":\"system\",\"content\":\"S\"},"
+                + "{\"role\":\"user\",\"content\":\"B\"}]}");
+
+        JsonNode messages = AnthropicToOpenAITranslator.translateRequest(req).path("messages");
+
+        assertEquals(2, messages.size());
+        assertEquals("user", messages.get(1).path("role").asText());
+        assertEquals("A\n\n<system-reminder>\nS\n</system-reminder>\n\nB",
+                messages.get(1).path("content").asText());
+    }
+
+    @Test
+    void translateRequest_reminderBetweenTextAndImageUserTurns_coalescedIntoMultipartTurn() throws Exception {
+        JsonNode req = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"model\":\"m\",\"system\":\"Base\",\"messages\":["
+                + "{\"role\":\"user\",\"content\":\"A\"},"
+                + "{\"role\":\"system\",\"content\":\"S\"},"
+                + "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Look\"},"
+                + "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"AAAA\"}}]}]}");
+
+        JsonNode messages = AnthropicToOpenAITranslator.translateRequest(req).path("messages");
+
+        assertEquals(2, messages.size());
+        JsonNode parts = messages.get(1).path("content");
+        assertTrue(parts.isArray());
+        assertEquals(3, parts.size());
+        assertEquals("A\n\n<system-reminder>\nS\n</system-reminder>", parts.get(0).path("text").asText());
+        assertEquals("Look", parts.get(1).path("text").asText());
+        assertEquals("image_url", parts.get(2).path("type").asText());
+    }
+
     private static void assertOnlyLeadingSystem(JsonNode messages) {
         for (int i = 1; i < messages.size(); i++) {
             assertNotEquals("system", messages.get(i).path("role").asText(),

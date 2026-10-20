@@ -291,15 +291,17 @@ public final class AnthropicToOpenAITranslator {
     }
 
     /**
-     * Called right after a user turn was converted while {@code reminder} (a standalone user
-     * message) sits before it. Folds the reminder into the user message that follows it, or,
-     * when the turn produced {@code tool} messages (answers to the preceding assistant
-     * {@code tool_calls}), moves the reminder after them so the call/result pair stays adjacent.
+     * Called right after a user turn was converted while {@code carrier} (the user message that
+     * received a mid-conversation system text, possibly a standalone reminder) sits before it.
+     * Folds the following user message into the carrier so two user turns never follow each
+     * other; when the turn produced only {@code tool} messages (answers to the preceding
+     * assistant {@code tool_calls}), moves a standalone reminder after them so the
+     * call/result pair stays adjacent.
      */
-    private static void placePendingReminder(ObjectNode reminder, ArrayNode out) {
+    private static void placePendingReminder(ObjectNode carrier, ArrayNode out) {
         int idx = -1;
         for (int i = out.size() - 1; i >= 0; i--) {
-            if (out.get(i) == reminder) {
+            if (out.get(i) == carrier) {
                 idx = i;
                 break;
             }
@@ -308,31 +310,38 @@ public final class AnthropicToOpenAITranslator {
 
         JsonNode last = out.get(out.size() - 1);
         if (idx == out.size() - 2 && "user".equals(last.path("role").asText())) {
-            mergeReminderIntoUser(reminder, (ObjectNode) last);
-            out.remove(idx);
+            appendUserContent(carrier, (ObjectNode) last);
+            out.remove(out.size() - 1);
             return;
         }
+        boolean afterToolCalls = idx > 0 && out.get(idx - 1).has("tool_calls");
+        if (!afterToolCalls) return;
         for (int i = idx + 1; i < out.size(); i++) {
             if (!"tool".equals(out.get(i).path("role").asText())) return;
         }
         out.remove(idx);
-        out.add(reminder);
+        out.add(carrier);
     }
 
-    /** Moves the text of a standalone reminder user message to the start of {@code target}. */
-    private static void mergeReminderIntoUser(ObjectNode reminder, ObjectNode target) {
-        String reminderText = reminder.path("content").asText();
-        JsonNode targetContent = target.path("content");
-        if (targetContent.isTextual()) {
-            target.put("content", reminderText + "\n\n" + targetContent.asText());
-        } else if (targetContent.isArray()) {
-            ArrayNode parts = MAPPER.createArrayNode();
-            ObjectNode part = parts.addObject();
-            part.put("type", "text");
-            part.put("text", reminderText);
-            parts.addAll((ArrayNode) targetContent);
-            target.set("content", parts);
+    /** Appends the content of user message {@code next} to user message {@code target}. */
+    private static void appendUserContent(ObjectNode target, ObjectNode next) {
+        JsonNode a = target.path("content");
+        JsonNode b = next.path("content");
+        if (a.isTextual() && b.isTextual()) {
+            target.put("content", a.asText() + "\n\n" + b.asText());
+            return;
         }
+        ArrayNode parts = MAPPER.createArrayNode();
+        for (JsonNode side : new JsonNode[] {a, b}) {
+            if (side.isArray()) {
+                parts.addAll((ArrayNode) side);
+            } else {
+                ObjectNode part = parts.addObject();
+                part.put("type", "text");
+                part.put("text", side.asText());
+            }
+        }
+        target.set("content", parts);
     }
 
     /**
@@ -372,13 +381,13 @@ public final class AnthropicToOpenAITranslator {
         JsonNode last = out.isEmpty() ? null : out.get(out.size() - 1);
         if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isTextual()) {
             ((ObjectNode) last).put("content", last.path("content").asText() + "\n\n" + reminder);
-            return null;
+            return (ObjectNode) last;
         } else if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isArray()) {
             // multipart (image) user turn: add a text part instead of a second consecutive user turn
             ObjectNode part = ((ArrayNode) last.path("content")).addObject();
             part.put("type", "text");
             part.put("text", reminder);
-            return null;
+            return (ObjectNode) last;
         } else {
             ObjectNode userMsg = out.addObject();
             userMsg.put("role", "user");
