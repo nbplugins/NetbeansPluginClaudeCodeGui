@@ -285,7 +285,7 @@ public final class AnthropicToOpenAITranslator {
      * reject a {@code system} message that is not at the very beginning, so it is never
      * emitted in place: before any other message it is merged into the leading system
      * message; later it becomes a {@code <system-reminder>} block in a user message
-     * (appended to the preceding plain-text user message when there is one).
+     * (appended to the preceding user message, as text or an extra text part, when there is one).
      */
     private static void addMidConversationSystem(String text, ArrayNode out) {
         if (text.isBlank()) return;
@@ -316,6 +316,11 @@ public final class AnthropicToOpenAITranslator {
         JsonNode last = out.isEmpty() ? null : out.get(out.size() - 1);
         if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isTextual()) {
             ((ObjectNode) last).put("content", last.path("content").asText() + "\n\n" + reminder);
+        } else if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isArray()) {
+            // multipart (image) user turn: add a text part instead of a second consecutive user turn
+            ObjectNode part = ((ArrayNode) last.path("content")).addObject();
+            part.put("type", "text");
+            part.put("text", reminder);
         } else {
             ObjectNode userMsg = out.addObject();
             userMsg.put("role", "user");

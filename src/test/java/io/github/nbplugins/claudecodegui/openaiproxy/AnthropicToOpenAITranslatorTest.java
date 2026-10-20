@@ -110,6 +110,25 @@ class AnthropicToOpenAITranslatorTest {
         assertOnlyLeadingSystem(messages);
     }
 
+    @Test
+    void translateRequest_midConversationSystemMessage_afterImagePrompt_staysInSameUserTurn() throws Exception {
+        JsonNode req = AnthropicToOpenAITranslator.MAPPER.readTree(
+                "{\"model\":\"m\",\"messages\":["
+                + "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Look\"},"
+                + "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"AAAA\"}}]},"
+                + "{\"role\":\"system\",\"content\":\"Env\"}]}");
+
+        JsonNode messages = AnthropicToOpenAITranslator.translateRequest(req).path("messages");
+
+        assertEquals(1, messages.size());
+        JsonNode parts = messages.get(0).path("content");
+        assertTrue(parts.isArray());
+        assertEquals(3, parts.size());
+        assertEquals("image_url", parts.get(1).path("type").asText());
+        assertEquals("text", parts.get(2).path("type").asText());
+        assertEquals("<system-reminder>\nEnv\n</system-reminder>", parts.get(2).path("text").asText());
+    }
+
     private static void assertOnlyLeadingSystem(JsonNode messages) {
         for (int i = 1; i < messages.size(); i++) {
             assertNotEquals("system", messages.get(i).path("role").asText(),
