@@ -19,7 +19,9 @@ import java.util.Map;
  *
  * <h2>Request (Anthropic → OpenAI)</h2>
  * <ul>
- *   <li>{@code system} field → prepended as {@code {"role":"system",...}} message</li>
+ *   <li>{@code system} field → prepended as {@code {"role":"system",...}} message;
+ *       mid-conversation {@code role:"system"} messages are merged into it or turned into
+ *       {@code <system-reminder>} user text (strict templates require system first)</li>
  *   <li>User text content blocks → flattened to string</li>
  *   <li>User tool_result blocks → converted to {@code role:"tool"} messages</li>
  *   <li>Assistant tool_use blocks → converted to {@code tool_calls}</li>
@@ -272,15 +274,52 @@ public final class AnthropicToOpenAITranslator {
             } else if ("assistant".equals(role)) {
                 convertAssistantMessage(content, openaiMessages);
             } else if ("system".equals(role)) {
-                // Mid-conversation system message (Claude Code >= 2.1.288, e.g. the
-                // "# Environment" block) — kept in place instead of being dropped.
-                String text = extractSystemText(content);
-                if (!text.isBlank()) {
-                    ObjectNode sysMsg = openaiMessages.addObject();
-                    sysMsg.put("role", "system");
-                    sysMsg.put("content", text);
-                }
+                addMidConversationSystem(extractSystemText(content), openaiMessages);
             }
+        }
+    }
+
+    /**
+     * Adds a mid-conversation system message (Claude Code &ge; 2.1.288, e.g. the
+     * "# Environment" block). Chat Completions providers with strict chat templates (vLLM)
+     * reject a {@code system} message that is not at the very beginning, so it is never
+     * emitted in place: before any other message it is merged into the leading system
+     * message; later it becomes a {@code <system-reminder>} block in a user message
+     * (appended to the preceding plain-text user message when there is one).
+     */
+    private static void addMidConversationSystem(String text, ArrayNode out) {
+        if (text.isBlank()) return;
+
+        boolean onlySystemSoFar = true;
+        for (JsonNode m : out) {
+            if (!"system".equals(m.path("role").asText())) {
+                onlySystemSoFar = false;
+                break;
+            }
+        }
+        if (onlySystemSoFar) {
+            if (out.isEmpty()) {
+                ObjectNode sysMsg = out.addObject();
+                sysMsg.put("role", "system");
+                sysMsg.put("content", text);
+                return;
+            }
+            ObjectNode lead = (ObjectNode) out.get(0);
+            if (lead.path("content").isTextual()) {
+                lead.put("content", lead.path("content").asText() + "\n\n" + text);
+                return;
+            }
+            // content-part array (explicit cache breakpoint): leave it intact, use a user message
+        }
+
+        String reminder = "<system-reminder>\n" + text + "\n</system-reminder>";
+        JsonNode last = out.isEmpty() ? null : out.get(out.size() - 1);
+        if (last != null && "user".equals(last.path("role").asText()) && last.path("content").isTextual()) {
+            ((ObjectNode) last).put("content", last.path("content").asText() + "\n\n" + reminder);
+        } else {
+            ObjectNode userMsg = out.addObject();
+            userMsg.put("role", "user");
+            userMsg.put("content", reminder);
         }
     }
 
