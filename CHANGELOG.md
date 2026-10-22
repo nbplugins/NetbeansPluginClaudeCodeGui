@@ -1,3 +1,4 @@
+# 1.3
 - Fixed OpenAI-compatible models with strict chat templates (e.g. vLLM behind LiteLLM) failing every request with "System message must be at the beginning"
 # 1.3.39 (2026-10-18)
 - Fixed the edit-mode selector with Claude Code 2.1.x: it no longer jumps to "Ask on Edit" whenever Claude goes idle, and choosing a mode no longer makes Claude cycle through modes and stop on the wrong one; choosing another mode while a switch is still running now switches to that mode instead of cycling
