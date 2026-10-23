@@ -782,6 +782,7 @@ The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protoc
 | `permission_prompt` | Shows proposed file changes in the diff panel and waits for your approval |
 | `show_markdown` | Renders markdown text directly in a Markdown Preview tab; accepts the markdown content plus optional title and file path |
 | `show_markdown_file` | Opens a live-updating Markdown Preview tab for an existing `.md` file on disk; the tab automatically refreshes when the file changes |
+| `regenerate_form_code` | Regenerates the GUI Builder code (`initComponents()` and the variables declaration) of a Swing form's `.java` file from its edited `.form` file, exactly as the NetBeans GUI Builder does, and saves the form (NetBeans re-saves the `.form` in its own formatting). Claude calls it after changing a `.form` file. An open designer is reloaded from it. Refused if the form has unsaved changes in the IDE |
 
 ### Prompts that work well with IDE tools
 

@@ -1,3 +1,4 @@
+- Added the `regenerate_form_code` MCP tool: after Claude edits a Swing GUI Builder `.form` file, it regenerates the form's `initComponents()` and variable declarations in the `.java` file exactly as the NetBeans GUI Builder does and saves the form, instead of Claude hand-editing the generated code; an open GUI Builder designer is reloaded from the edited `.form`, and Claude is told when the generated code was already up to date
 # 1.3.42 (2026-10-22)
 - Fixed OpenAI-compatible models with strict chat templates (e.g. vLLM behind LiteLLM) failing every request with "System message must be at the beginning"
 # 1.3.39 (2026-10-18)
