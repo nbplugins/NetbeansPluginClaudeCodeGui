@@ -530,6 +530,7 @@ public final class ScreenContentDetector {
      */
     public Optional<EditMode> detectEditMode(List<String> lines) {
         if (lines == null || lines.isEmpty()) return Optional.empty();
+        lines = stripAgentPanel(lines);
         List<String> bottom = bottomNonBlankLines(lines, 3);
         if (bottom.isEmpty()) return Optional.empty();
         Optional<EditMode> mode = editModeFromFooterLine(bottom.get(0));
@@ -541,6 +542,28 @@ public final class ScreenContentDetector {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * Cuts off the background-agent panel that newer Claude Code versions render below the
+     * mode footer ({@code ● main} followed by one row per agent), so that the footer is again
+     * among the bottom lines regardless of how many agents are listed. Only rows below the
+     * input prompt are considered, so a {@code ● main} line in the response is never cut.
+     */
+    static List<String> stripAgentPanel(List<String> lines) {
+        int promptRow = -1;
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            if (INPUT_PROMPT.matcher(lines.get(i).trim()).find()) {
+                promptRow = i;
+                break;
+            }
+        }
+        for (int i = lines.size() - 1; i > promptRow; i--) {
+            if (lines.get(i).strip().startsWith("\u25CF main")) {
+                return lines.subList(0, i);
+            }
+        }
+        return lines;
     }
 
     /** Maps a single mode-footer line to its {@link EditMode}; see {@link #detectEditMode}. */
@@ -618,6 +641,7 @@ public final class ScreenContentDetector {
      */
     public DetectedSessionState detectSessionState(List<String> lines) {
         if (lines == null || lines.isEmpty()) return DetectedSessionState.UNKNOWN;
+        lines = stripAgentPanel(lines);
 
         // Search all lines (bottom-up) for an input prompt adjacent to a separator line.
         // Claude Code uses the alternate screen buffer and draws content from the top,
