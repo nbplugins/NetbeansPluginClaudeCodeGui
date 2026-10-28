@@ -194,7 +194,8 @@ class ClaudeSessionControllerTest {
         ClaudeSessionModel m2 = new ClaudeSessionModel();
         ClaudeSessionController c2 = new ClaudeSessionController(m2, () -> workingScreen);
 
-        m2.setWorkingDirectory(new java.io.File("/tmp/test2"));
+        java.io.File workDir = new java.io.File("/tmp/test2");
+        m2.setWorkingDirectory(workDir);
         m2.setEditMode(EditMode.ACCEPT_EDITS);
         m2.setLifecycle(SessionLifecycle.WORKING);
 
@@ -210,7 +211,7 @@ class ClaudeSessionControllerTest {
                 "acceptEdits must not be overwritten by screen poll while WORKING");
         assertEquals(EditMode.ACCEPT_EDITS,
                 io.github.nbplugins.claudecodegui.model.ClaudeSessionModel.EDIT_MODE_REGISTRY
-                        .get("/tmp/test2"),
+                        .get(workDir.getAbsolutePath()),
                 "Registry must still hold acceptEdits");
     }
 

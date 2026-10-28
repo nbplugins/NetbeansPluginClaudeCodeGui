@@ -251,7 +251,9 @@ public class NetBeansMCPHandler {
         tools.add(createToolDefinition("openFile", "Opens a file in the editor", "OpenFileParams"));
         tools.add(createToolDefinition("getWorkspaceFolders", "Get list of workspace folders (open projects)", "getWorkspaceFolders"));
         tools.add(createToolDefinition("getOpenEditors", "Get list of currently open editor tabs", "getOpenEditors"));
-        tools.add(createToolDefinition("getCurrentSelection", "Get the current text selection in the active editor", "getCurrentSelection"));
+        // getCurrentSelection is deprecated and no longer advertised: the prompt panel
+        // attaches the editor selection to each prompt as an @path#L.. mention.
+        // The case in handleToolsCall stays so existing callers keep working.
         tools.add(createToolDefinition("close_tab", "Close an open editor tab", "CloseTabParams"));
         tools.add(createToolDefinition("getDiagnostics", "Get diagnostic information (errors, warnings) for files", "GetDiagnosticsParams"));
         tools.add(createToolDefinition("checkDocumentDirty", "Check if a document has unsaved changes", "CheckDocumentDirtyParams"));

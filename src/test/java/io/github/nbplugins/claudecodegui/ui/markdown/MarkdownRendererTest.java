@@ -53,6 +53,13 @@ class MarkdownRendererTest {
                 "HTML mismatch for case '" + caseName + "'");
     }
 
+    @Test
+    void toHtmlHandlesCrlfLineEndings() {
+        String md = "1. first\n2. second\n\n```\ncode\n```\n";
+        assertEquals(MarkdownRenderer.toHtml(md).strip(),
+                MarkdownRenderer.toHtml(md.replace("\n", "\r\n")).strip());
+    }
+
     // -------------------------------------------------------------------------
     // esc()
     // -------------------------------------------------------------------------

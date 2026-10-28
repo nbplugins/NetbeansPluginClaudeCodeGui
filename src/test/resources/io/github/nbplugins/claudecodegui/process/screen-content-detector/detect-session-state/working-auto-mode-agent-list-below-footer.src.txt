@@ -1,0 +1,11 @@
+* Simmering… (32m 29s · ↓ 7.5k tokens)
+  ⎿  Tip: Use /clear to start fresh when switching topics and free up context
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── j2k-conversion-plugin-stage ─
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on · 3 shells · esc to interrupt · ← 1 agent · ↓ to manage         ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+
+  ● main
+  ◯ Plan     Parsing superclasses in java-analysis-impl classes                                                                  2h 18m 31s · ↓ 145.7k tokens
+  ◯ Explore  Reading mutabilityUtils.kt getImmutableLocalVariablesInBlock                                                             23m 6s · ↓ 90.5k tokens

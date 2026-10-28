@@ -40,14 +40,27 @@ public final class ClaudeSessionStore {
      * Computes the directory-name hash that Claude Code uses to map a working
      * directory to a sessions subdirectory.
      *
-     * <p>The algorithm is: replace every {@code /} in the absolute path string
-     * with {@code -}.
+     * <p>The algorithm is: replace every non-alphanumeric character in the
+     * absolute path string with {@code -} (see {@link #sanitizePath(String)}).
      *
      * @param workingDir absolute path to the working directory
      * @return directory hash string
      */
     static String computeHash(Path workingDir) {
-        return workingDir.toAbsolutePath().toString().replace('/', '-');
+        return sanitizePath(workingDir.toAbsolutePath().toString());
+    }
+
+    /**
+     * Replaces every character other than {@code [a-zA-Z0-9]} with {@code -},
+     * matching Claude Code's project directory naming, e.g.
+     * {@code /home/user/my_project} → {@code -home-user-my-project} and
+     * {@code D:\Projects\foo} → {@code D--Projects-foo}.
+     *
+     * @param absolutePath absolute path string
+     * @return sanitized directory name
+     */
+    static String sanitizePath(String absolutePath) {
+        return absolutePath.replaceAll("[^a-zA-Z0-9]", "-");
     }
 
     // -------------------------------------------------------------------------

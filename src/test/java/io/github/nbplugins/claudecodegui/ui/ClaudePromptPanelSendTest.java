@@ -1,5 +1,6 @@
 package io.github.nbplugins.claudecodegui.ui;
 
+import io.github.nbplugins.claudecodegui.ui.common.EditorSelection;
 import java.io.File;
 import java.util.Collections;
 import java.util.List;
@@ -219,6 +220,102 @@ class ClaudePromptPanelSendTest {
         callDoSend();
 
         assertNull(sentText.get(), "onSend must NOT be called when text is empty");
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests: editor selection attached on send
+    // -------------------------------------------------------------------------
+
+    private void setSelection(EditorSelection s) throws Exception {
+        SwingUtilities.invokeAndWait(() -> panel.setEditorSelection(s));
+    }
+
+    private EditorSelection selectionInTempDir(int start, int end) {
+        return new EditorSelection(new File(tempDir, "src/Foo.java").getAbsolutePath(), start, end);
+    }
+
+    private javax.swing.JPanel getSelectionChip() throws Exception {
+        java.lang.reflect.Field f = ClaudePromptPanel.class.getDeclaredField("selectionChip");
+        f.setAccessible(true);
+        return (javax.swing.JPanel) f.get(panel);
+    }
+
+    @Test
+    void selectionIsPrependedOnSend() throws Exception {
+        buildPanel(tempDir.getAbsolutePath());
+        setSelection(selectionInTempDir(12, 20));
+        setInputText("explain this");
+
+        callDoSend();
+
+        assertEquals("@src/Foo.java#L12-20 explain this", sentText.get());
+    }
+
+    @Test
+    void selectionStaysAttachedForNextPrompt() throws Exception {
+        buildPanel(tempDir.getAbsolutePath());
+        setSelection(selectionInTempDir(3, 3));
+        setInputText("first");
+        callDoSend();
+        setInputText("second");
+        callDoSend();
+
+        assertEquals("@src/Foo.java#L3 second", sentText.get());
+    }
+
+    @Test
+    void chipVisibleOnlyWithSelection() throws Exception {
+        buildPanel(tempDir.getAbsolutePath());
+        assertFalse(getSelectionChip().isVisible(), "chip hidden without selection");
+        setSelection(selectionInTempDir(1, 2));
+        assertTrue(getSelectionChip().isVisible(), "chip visible with selection");
+        setSelection(null);
+        assertFalse(getSelectionChip().isVisible(), "chip hidden after selection cleared");
+    }
+
+    @Test
+    void dismissedSelectionIsNotSentUntilSelectionChanges() throws Exception {
+        buildPanel(tempDir.getAbsolutePath());
+        setSelection(selectionInTempDir(1, 2));
+        SwingUtilities.invokeAndWait(() -> {
+            for (java.awt.Component c : getChipChildren()) {
+                if (c instanceof javax.swing.JButton b) b.doClick();
+            }
+        });
+        assertFalse(getSelectionChip().isVisible(), "chip hidden after dismiss");
+
+        setInputText("no selection please");
+        callDoSend();
+        assertEquals("no selection please", sentText.get());
+
+        setSelection(selectionInTempDir(5, 6));
+        assertTrue(getSelectionChip().isVisible(), "a new selection shows the chip again");
+        setInputText("now with it");
+        callDoSend();
+        assertEquals("@src/Foo.java#L5-6 now with it", sentText.get());
+    }
+
+    private java.awt.Component[] getChipChildren() {
+        try {
+            return getSelectionChip().getComponents();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
+    void slashAndShellCommandsAreNotPrefixed() {
+        String m = "@src/Foo.java#L1-2";
+        assertEquals("/model", ClaudePromptPanel.withSelectionMention("/model", m));
+        assertEquals("  /clear", ClaudePromptPanel.withSelectionMention("  /clear", m));
+        assertEquals("!ls", ClaudePromptPanel.withSelectionMention("!ls", m));
+    }
+
+    @Test
+    void mentionNotDuplicatedWhenAlreadyInText() {
+        String m = "@src/Foo.java#L1-2";
+        assertEquals("look at " + m + " please",
+                ClaudePromptPanel.withSelectionMention("look at " + m + " please", m));
     }
 
     @Test
