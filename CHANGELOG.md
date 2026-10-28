@@ -1,7 +1,12 @@
+- Added the `regenerate_form_code` MCP tool: after Claude edits a Swing form (`.form`), it can regenerate the form's code in the IDE, including new event handler methods, instead of editing the generated code by hand
+- Fixed the resume-session list being empty on Windows and for project paths containing characters such as `_` or `.`
+- Fixed Markdown preview of files with Windows (CRLF) line endings: lists and code blocks inside lists are now rendered instead of shown as plain text
 # 1.3.45 (2026-10-28)
 - Fixed edit-mode detection and switching while background agents or shells are listed under the status line
 # 1.3.42 (2026-10-22)
 - Fixed OpenAI-compatible models with strict chat templates (e.g. vLLM behind LiteLLM) failing every request with "System message must be at the beginning"
+- Added automatic attaching of selected editor lines to prompts: when you select code in an editor, a chip above the input area shows the range (e.g. `⧉ src/Foo.java#L12-20`), and sending a prompt adds it as an `@src/Foo.java#L12-20` reference so Claude reads exactly those lines; click × on the chip to leave it out. Claude is no longer offered the `getCurrentSelection` IDE tool, since the selection now comes with the prompt
+- Added the `regenerate_form_code` MCP tool: after Claude edits a Swing GUI Builder `.form` file, it regenerates the form's `initComponents()` and variable declarations in the `.java` file exactly as the NetBeans GUI Builder does and saves the form, instead of Claude hand-editing the generated code; an open GUI Builder designer is reloaded from the edited `.form`, and Claude is told when the generated code was already up to date
 # 1.3.39 (2026-10-18)
 - Fixed the edit-mode selector with Claude Code 2.1.x: it no longer jumps to "Ask on Edit" whenever Claude goes idle, and choosing a mode no longer makes Claude cycle through modes and stop on the wrong one; choosing another mode while a switch is still running now switches to that mode instead of cycling
 - Fixed "OpenAI-compatible API" connection type being reset to "Claude-compatible API" on the Default profile (https://github.com/nbplugins/NetbeansPluginClaudeCodeGui/issues/191)

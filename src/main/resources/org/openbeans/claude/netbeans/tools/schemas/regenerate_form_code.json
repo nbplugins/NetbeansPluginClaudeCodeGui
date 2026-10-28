@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "filePath": {
+      "type": "string",
+      "description": "Absolute path to the GUI Builder form's .form file (or its .java file)"
+    }
+  },
+  "required": ["filePath"]
+}

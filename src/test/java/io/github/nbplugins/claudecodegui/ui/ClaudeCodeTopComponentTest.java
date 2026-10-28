@@ -143,12 +143,23 @@ class ClaudeCodeTopComponentTest {
             org.junit.jupiter.api.Assumptions.assumeTrue(fo != null,
                     "FileUtil.toFileObject returned null — skipping in headless env");
 
+            org.netbeans.api.project.Project project = new org.netbeans.api.project.Project() {
+                @Override
+                public org.openide.filesystems.FileObject getProjectDirectory() {
+                    return fo;
+                }
+
+                @Override
+                public org.openide.util.Lookup getLookup() {
+                    return org.openide.util.Lookup.EMPTY;
+                }
+            };
             io.github.nbplugins.claudecodegui.actions.OpenWithClaudeAction action =
                     new io.github.nbplugins.claudecodegui.actions.OpenWithClaudeAction();
             javax.swing.Action ctx = action.createContextAwareInstance(
-                    org.openide.util.lookup.Lookups.fixed(fo));
+                    org.openide.util.lookup.Lookups.fixed(project));
             assertTrue(ctx.isEnabled(),
-                    "Context action must be enabled for an existing directory FileObject");
+                    "Context action must be enabled for a project with an existing directory");
         } finally {
             tmpDir.delete();
         }

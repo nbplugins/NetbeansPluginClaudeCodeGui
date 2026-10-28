@@ -17,7 +17,7 @@ class SessionModePanelTest {
     /** Creates a fake sessions directory with one .jsonl stub so hasAnySessions() returns true. */
     private Path withSession(Path workingDir) throws IOException {
         // ClaudeSessionStore hashes the path by replacing / with -
-        String hash = workingDir.toAbsolutePath().toString().replace("/", "-");
+        String hash = workingDir.toAbsolutePath().toString().replaceAll("[^a-zA-Z0-9]", "-");
         Path sessionsSubDir = workingDir.resolve(".claude").resolve("projects").resolve(hash);
         Files.createDirectories(sessionsSubDir);
         Files.writeString(sessionsSubDir.resolve("fake-session.jsonl"), "{}");

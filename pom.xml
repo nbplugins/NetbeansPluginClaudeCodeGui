@@ -145,6 +145,67 @@
                             </source>
                         </configuration>
                     </execution>
+                    <!--
+                        Some published NetBeans module jars list their module dependencies in
+                        Maven-Class-Path, not just their bundled libraries. NbModuleSuite turns that
+                        attribute into the module's private Class-Path, so the module gets its own copies
+                        of the openide APIs (e.g. a Lookup that sees no services). The integration tests
+                        (failsafe below) use copies of these jars without the module entries.
+                    -->
+                    <execution>
+                        <id>patch-nb-test-modules</id>
+                        <phase>process-test-classes</phase>
+                        <goals><goal>execute</goal></goals>
+                        <configuration>
+                            <source>
+                                import java.util.jar.JarEntry
+                                import java.util.jar.JarFile
+                                import java.util.jar.JarOutputStream
+                                import java.util.jar.Manifest
+
+                                def toPatch = ['org.netbeans.modules:org-netbeans-modules-form',
+                                               'org.netbeans.api:org-netbeans-modules-autoupdate-services',
+                                               'org.netbeans.modules:org-netbeans-libs-freemarker']
+                                def isModule = { String entry ->
+                                    entry.startsWith('org.netbeans.api:') || entry.startsWith('org.netbeans.modules:')
+                                }
+                                def out = new File(project.build.directory, 'nb-patched-modules')
+                                out.mkdirs()
+
+                                project.artifacts.findAll { it.type == 'jar' }.each { artifact ->
+                                    def jar = new JarFile(artifact.file)
+                                    def manifest = jar.manifest
+                                    def mavenCP = manifest?.mainAttributes?.getValue('Maven-Class-Path')
+                                    if (mavenCP == null || !mavenCP.split(' ').any(isModule)) {
+                                        jar.close()
+                                        return
+                                    }
+                                    String ga = "${artifact.groupId}:${artifact.artifactId}"
+                                    if (!toPatch.contains(ga)) {
+                                        throw new IllegalStateException("${ga} lists modules in Maven-Class-Path: "
+                                            + "add it to patch-nb-test-modules and to the failsafe classpath excludes/additions")
+                                    }
+                                    def patched = new Manifest(manifest)
+                                    patched.mainAttributes.putValue('Maven-Class-Path',
+                                        mavenCP.split(' ').findAll { !isModule(it) }.join(' '))
+                                    new File(out, artifact.file.name).withOutputStream { os ->
+                                        def jos = new JarOutputStream(os, patched)
+                                        jar.entries().each { entry ->
+                                            if (entry.name.equalsIgnoreCase('META-INF/MANIFEST.MF')) {
+                                                return
+                                            }
+                                            jos.putNextEntry(new JarEntry(entry.name))
+                                            jar.getInputStream(entry).withStream { jos &lt;&lt; it }
+                                            jos.closeEntry()
+                                        }
+                                        jos.finish()
+                                    }
+                                    jar.close()
+                                    log.info("Patched Maven-Class-Path of ${artifact.file.name} for the integration tests")
+                                }
+                            </source>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
             <plugin>
@@ -218,6 +279,39 @@
                     </execution>
                 </executions>
             </plugin>
+            <!--
+                Lays out a minimal NetBeans "platform" cluster for the NbModuleSuite integration
+                tests (*IT): NbModuleSuite boots the module system from platform/lib and platform/core
+                of the cluster found under the all.clusters directory (see surefire below),
+                like an IDE installation. All other modules are enabled from the test classpath.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>nb-platform-lib</id>
+                        <phase>process-test-classes</phase>
+                        <goals><goal>copy-dependencies</goal></goals>
+                        <configuration>
+                            <includeScope>test</includeScope>
+                            <includeArtifactIds>org-netbeans-bootstrap,org-openide-modules,org-openide-util,org-openide-util-lookup,org-openide-util-ui</includeArtifactIds>
+                            <outputDirectory>${project.build.directory}/nb-clusters/platform/lib</outputDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>nb-platform-core</id>
+                        <phase>process-test-classes</phase>
+                        <goals><goal>copy-dependencies</goal></goals>
+                        <configuration>
+                            <includeScope>test</includeScope>
+                            <includeArtifactIds>org-netbeans-core-startup,org-netbeans-core-startup-base,org-openide-filesystems,org-netbeans-libs-asm,asm,asm-tree,asm-commons</includeArtifactIds>
+                            <outputDirectory>${project.build.directory}/nb-clusters/platform/core</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
@@ -225,11 +319,86 @@
                 <configuration>
                     <includes>
                         <include>**/*Test.java</include>
-                        <include>**/*IT.java</include>
                     </includes>
                     <forkCount>1</forkCount>
                     <reuseForks>false</reuseForks>
                 </configuration>
+            </plugin>
+            <!--
+                NbModuleSuite integration tests (*IT). They run in the package phase, after the module
+                jar is built: NbModuleSuite enables classpath modules only from jars (rewriting their
+                Maven-Class-Path), not from target/classes. -DskipTests skips them too.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.2.5</version>
+                <!--
+                    NbModuleSuite creates its tests lazily inside the module system, so the JUnit
+                    Platform vintage engine sees an empty suite and prunes it - use the JUnit 4 provider.
+                -->
+                <dependencies>
+                    <dependency>
+                        <groupId>org.apache.maven.surefire</groupId>
+                        <artifactId>surefire-junit4</artifactId>
+                        <version>3.2.5</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <classesDirectory>${project.build.directory}/${project.build.finalName}.jar</classesDirectory>
+                    <!-- Replaced by the copies made by patch-nb-test-modules (groovy-maven-plugin above) -->
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>org.netbeans.modules:org-netbeans-modules-form</classpathDependencyExclude>
+                        <classpathDependencyExclude>org.netbeans.api:org-netbeans-modules-autoupdate-services</classpathDependencyExclude>
+                        <classpathDependencyExclude>org.netbeans.modules:org-netbeans-libs-freemarker</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                    <additionalClasspathElements>
+                        <additionalClasspathElement>${project.build.directory}/nb-patched-modules/org-netbeans-modules-form-${netbeans.version}.jar</additionalClasspathElement>
+                        <additionalClasspathElement>${project.build.directory}/nb-patched-modules/org-netbeans-modules-autoupdate-services-${netbeans.version}.jar</additionalClasspathElement>
+                        <additionalClasspathElement>${project.build.directory}/nb-patched-modules/org-netbeans-libs-freemarker-${netbeans.version}.jar</additionalClasspathElement>
+                    </additionalClasspathElements>
+                    <forkCount>1</forkCount>
+                    <reuseForks>false</reuseForks>
+                    <!-- NbModuleSuite builds the module system from the jars in java.class.path -->
+                    <useManifestOnlyJar>false</useManifestOnlyJar>
+                    <systemPropertyVariables>
+                        <all.clusters>${project.build.directory}/nb-clusters</all.clusters>
+                    </systemPropertyVariables>
+                    <!-- The subset of the IDE launcher's options (etc/netbeans.conf) the tested modules need -->
+                    <argLine>
+                        --add-opens=java.base/java.lang=ALL-UNNAMED
+                        --add-opens=java.base/java.lang.ref=ALL-UNNAMED
+                        --add-opens=java.base/java.net=ALL-UNNAMED
+                        --add-opens=java.base/java.nio=ALL-UNNAMED
+                        --add-opens=java.base/java.security=ALL-UNNAMED
+                        --add-opens=java.base/java.util=ALL-UNNAMED
+                        --add-opens=java.desktop/java.awt=ALL-UNNAMED
+                        --add-opens=java.desktop/java.awt.event=ALL-UNNAMED
+                        --add-opens=java.desktop/javax.swing=ALL-UNNAMED
+                        --add-opens=java.desktop/javax.swing.text=ALL-UNNAMED
+                        --add-opens=java.prefs/java.util.prefs=ALL-UNNAMED
+                        --add-exports=java.desktop/sun.awt=ALL-UNNAMED
+                        --add-exports=java.desktop/com.sun.beans.editors=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED
+                        --add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED
+                    </argLine>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -489,6 +658,88 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
             <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- JUnit 4 runtime for the NbTestCase / NbModuleSuite integration tests (*IT) -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- NetBeans runtime container started by NbModuleSuite -->
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-bootstrap</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-core-startup</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-masterfs</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-editor-mimelookup-impl</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-editor-settings-storage</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Swing GUI Builder (form module) and Java support for RegenerateFormCodeIT -->
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-form-nb</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-java-guards</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Implementations of capabilities that the modules above require (OpenIDE-Module-Needs/Requires) -->
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-editor-actions</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-libs-freemarker</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-java-source-queriesimpl</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-parsing-nb</artifactId>
+            <version>${netbeans.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.netbeans.modules</groupId>
+            <artifactId>org-netbeans-modules-projectapi-nb</artifactId>
+            <version>${netbeans.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

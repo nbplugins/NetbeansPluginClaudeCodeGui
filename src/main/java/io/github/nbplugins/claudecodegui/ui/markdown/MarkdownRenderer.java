@@ -226,6 +226,8 @@ public final class MarkdownRenderer {
      * @return the corresponding HTML fragment (no {@code <html>/<body>} wrapper)
      */
     public static String toHtml(String markdown) {
+        // Files with Windows line endings would otherwise leave '\r' at line ends and break block parsing.
+        markdown = markdown.replace("\r\n", "\n").replace('\r', '\n');
         StringBuilder html = new StringBuilder();
         String[] parts = markdown.split("```[^\\n]*\\n", -1);
         boolean continueList = false;

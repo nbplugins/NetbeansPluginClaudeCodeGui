@@ -59,6 +59,7 @@ import io.github.nbplugins.claudecodegui.mcp.tools.GetOpenEditors;
 import io.github.nbplugins.claudecodegui.mcp.tools.OpenDiff;
 import io.github.nbplugins.claudecodegui.mcp.tools.OpenFile;
 import io.github.nbplugins.claudecodegui.mcp.tools.PermissionPromptTool;
+import io.github.nbplugins.claudecodegui.mcp.tools.RegenerateFormCode;
 import io.github.nbplugins.claudecodegui.mcp.tools.ShowMarkdown;
 import io.github.nbplugins.claudecodegui.mcp.tools.ShowMarkdownFile;
 import org.netbeans.api.project.ui.OpenProjects;
@@ -102,6 +103,7 @@ public class NetBeansMCPHandler {
     private final OpenDiff openDiffTool;
     private final OpenFile openFileTool;
     private final PermissionPromptTool permissionPromptTool;
+    private final RegenerateFormCode regenerateFormCodeTool;
     private final SaveDocument saveDocument;
     private final ShowMarkdown showMarkdownTool;
     private final ShowMarkdownFile showMarkdownFileTool;
@@ -119,6 +121,7 @@ public class NetBeansMCPHandler {
         this.openDiffTool = new OpenDiff();
         this.openFileTool = new OpenFile();
         this.permissionPromptTool = new PermissionPromptTool();
+        this.regenerateFormCodeTool = new RegenerateFormCode();
         this.saveDocument = new SaveDocument();
         this.showMarkdownTool = new ShowMarkdown();
         this.showMarkdownFileTool = new ShowMarkdownFile();
@@ -248,7 +251,9 @@ public class NetBeansMCPHandler {
         tools.add(createToolDefinition("openFile", "Opens a file in the editor", "OpenFileParams"));
         tools.add(createToolDefinition("getWorkspaceFolders", "Get list of workspace folders (open projects)", "getWorkspaceFolders"));
         tools.add(createToolDefinition("getOpenEditors", "Get list of currently open editor tabs", "getOpenEditors"));
-        tools.add(createToolDefinition("getCurrentSelection", "Get the current text selection in the active editor", "getCurrentSelection"));
+        // getCurrentSelection is deprecated and no longer advertised: the prompt panel
+        // attaches the editor selection to each prompt as an @path#L.. mention.
+        // The case in handleToolsCall stays so existing callers keep working.
         tools.add(createToolDefinition("close_tab", "Close an open editor tab", "CloseTabParams"));
         tools.add(createToolDefinition("getDiagnostics", "Get diagnostic information (errors, warnings) for files", "GetDiagnosticsParams"));
         tools.add(createToolDefinition("checkDocumentDirty", "Check if a document has unsaved changes", "CheckDocumentDirtyParams"));
@@ -266,6 +271,9 @@ public class NetBeansMCPHandler {
                 "Open a live-updating Markdown Preview tab for a .md file. "
               + "The tab refreshes automatically when the file changes on disk.",
                 "show_markdown_file"));
+        tools.add(createToolDefinition(regenerateFormCodeTool.getName(),
+                regenerateFormCodeTool.getDescription(),
+                "regenerate_form_code"));
 
         ObjectNode result = responseBuilder.objectNode();
         result.set("tools", tools);
@@ -342,6 +350,11 @@ public class NetBeansMCPHandler {
                 case "show_markdown_file":
                     result = this.showMarkdownFileTool.run(
                             this.showMarkdownFileTool.parseArguments(arguments));
+                    break;
+
+                case "regenerate_form_code":
+                    result = this.regenerateFormCodeTool.run(
+                            this.regenerateFormCodeTool.parseArguments(arguments));
                     break;
 
                 default:

@@ -21,15 +21,31 @@ class ClaudeSessionStoreTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void computeHash_replacesSeparatorsWithDashes() {
-        Path p = Path.of("/home/user/my-project");
-        assertEquals("-home-user-my-project", ClaudeSessionStore.computeHash(p));
+    void sanitizePath_replacesSeparatorsWithDashes() {
+        assertEquals("-home-user-my-project", ClaudeSessionStore.sanitizePath("/home/user/my-project"));
     }
 
     @Test
-    void computeHash_singleSegment() {
-        Path p = Path.of("/myproject");
-        assertEquals("-myproject", ClaudeSessionStore.computeHash(p));
+    void sanitizePath_singleSegment() {
+        assertEquals("-myproject", ClaudeSessionStore.sanitizePath("/myproject"));
+    }
+
+    @Test
+    void sanitizePath_windowsPath() {
+        assertEquals("D--Projects-java-my-project",
+                ClaudeSessionStore.sanitizePath("D:\\Projects\\java\\my-project"));
+    }
+
+    @Test
+    void sanitizePath_replacesAllNonAlphanumerics() {
+        assertEquals("-home-user-my-project-v2", ClaudeSessionStore.sanitizePath("/home/user/my_project.v2"));
+    }
+
+    @Test
+    void computeHash_sanitizesAbsolutePath() {
+        Path p = Path.of("myproject");
+        assertEquals(ClaudeSessionStore.sanitizePath(p.toAbsolutePath().toString()),
+                ClaudeSessionStore.computeHash(p));
     }
 
     // -------------------------------------------------------------------------

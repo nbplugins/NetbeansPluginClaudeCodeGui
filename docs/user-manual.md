@@ -30,7 +30,7 @@ NetBeans Claude Code GUI is a NetBeans IDE plugin that embeds the Claude Code CL
 - a graphical file diff (using NetBeans' built-in diff viewer) before any change is written to disk
 - a graphical panel for responding to Claude's interactive questions
 
-IDE integration (open editors, diagnostics, current selection) is exposed to Claude via the MCP protocol so that Claude always has full context about your work.
+IDE integration (open editors, diagnostics) is exposed to Claude via the MCP protocol, and code you select in the editor is attached to your prompt automatically, so that Claude always has full context about your work.
 
 ---
 
@@ -257,6 +257,16 @@ Three types of content are supported:
 | **Directory** outside the working directory | `@/absolute/path` |
 | **Image** from clipboard | Saved as a temporary PNG file; `@/tmp/....png` inserted |
 | **Plain text** | Inserted as-is |
+
+### Selected code
+
+When you select lines in a NetBeans editor, a chip appears above the input area showing the file and line range, e.g. `⧉ src/main/java/Foo.java#L12-20`. When you send a prompt, the range is added in front of it as `@src/main/java/Foo.java#L12-20`, and Claude reads exactly those lines. Select code, switch to the session tab, and ask "Explain this code" — no need to name the file.
+
+- The selection stays attached to every prompt while it is selected in the editor. Clear the selection, or click **×** on the chip, to stop attaching it. A new selection brings the chip back.
+- The path is relative to the session's working directory, or absolute if the file is outside it.
+- Slash commands (e.g. `/model`) and `!` shell commands are sent without the selection.
+- Claude reads the lines from disk, so save the file first if you have unsaved changes in the selected lines.
+- Only prompts sent from the input area get the selection; text typed directly into the terminal does not.
 
 ---
 
@@ -763,7 +773,7 @@ The session mode used on restore depends on how the session was last opened:
 
 ## 14. IDE Tools (MCP)
 
-The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protocol) server that runs in the background. These tools give Claude real-time access to your IDE state — open projects, open files, current selection, diagnostics — so it can give more relevant answers and take actions directly in the editor.
+The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protocol) server that runs in the background. These tools give Claude real-time access to your IDE state — open projects, open files, diagnostics — so it can give more relevant answers and take actions directly in the editor.
 
 ### Available tools
 
@@ -771,7 +781,6 @@ The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protoc
 |------|-------------|
 | `getWorkspaceFolders` | Lists all open projects with their paths |
 | `getOpenEditors` | Lists all currently open editor tabs |
-| `getCurrentSelection` | Returns the selected text and cursor position in the active editor |
 | `getDiagnostics` | Returns errors and warnings for specified files |
 | `openFile` | Opens a file in the editor |
 | `close_tab` | Closes an open editor tab |
@@ -782,6 +791,7 @@ The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protoc
 | `permission_prompt` | Shows proposed file changes in the diff panel and waits for your approval |
 | `show_markdown` | Renders markdown text directly in a Markdown Preview tab; accepts the markdown content plus optional title and file path |
 | `show_markdown_file` | Opens a live-updating Markdown Preview tab for an existing `.md` file on disk; the tab automatically refreshes when the file changes |
+| `regenerate_form_code` | Regenerates the GUI Builder code (`initComponents()` and the variables declaration) of a Swing form's `.java` file from its edited `.form` file, exactly as the NetBeans GUI Builder does, and saves the form (NetBeans re-saves the `.form` in its own formatting). Claude calls it after changing a `.form` file. An open designer is reloaded from it. Refused if the form has unsaved changes in the IDE |
 
 ### Prompts that work well with IDE tools
 
@@ -790,7 +800,7 @@ The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protoc
 - "List all files I have open right now."
 - "Open the test file for this class."
 
-**Current selection** (select code first, then send the prompt):
+**Selected code** (select code first, then send the prompt — see [Selected code](#selected-code)):
 - "Explain this code."
 - "Write a unit test for this method."
 - "What does this do and how can it be improved?"
@@ -799,10 +809,6 @@ The plugin exposes a set of IDE tools to Claude via an MCP (Model Context Protoc
 - "Fix all errors in this project."
 - "What warnings are in `src/main/java/com/example/Foo.java`?"
 - "There are compile errors in the open files — fix them."
-
-### Selection change notifications
-
-As you move the cursor or change the selection in any open editor, the plugin automatically notifies Claude of the current file and position. Claude always knows what you are looking at without you needing to mention it in the prompt.
 
 ### Troubleshooting MCP tools
 

@@ -498,7 +498,7 @@ class ClaudeProcessTest {
     @Test
     void appendSessionFlags_continueLast_sessionsExist_addsFlag(@TempDir Path tmpDir) throws Exception {
         // Create a fake sessions dir with one .jsonl file
-        String hash = tmpDir.toString().replace('/', '-');
+        String hash = tmpDir.toString().replaceAll("[^a-zA-Z0-9]", "-");
         Path sessionsDir = tmpDir.resolve(".claude").resolve("projects").resolve(hash);
         Files.createDirectories(sessionsDir);
         Files.writeString(sessionsDir.resolve("fake-session.jsonl"), "{}\n");
@@ -515,7 +515,7 @@ class ClaudeProcessTest {
     @Test
     void appendSessionFlags_newMode_noFlag(@TempDir Path tmpDir) throws Exception {
         // Even if sessions exist, NEW mode should not add any session flag
-        String hash = tmpDir.toString().replace('/', '-');
+        String hash = tmpDir.toString().replaceAll("[^a-zA-Z0-9]", "-");
         Path sessionsDir = tmpDir.resolve(".claude").resolve("projects").resolve(hash);
         Files.createDirectories(sessionsDir);
         Files.writeString(sessionsDir.resolve("fake-session.jsonl"), "{}\n");

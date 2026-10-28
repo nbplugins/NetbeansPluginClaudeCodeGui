@@ -3,11 +3,15 @@ package io.github.nbplugins.claudecodegui.ui;
 import io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbplugins.claudecodegui.ui.common.AtPathHighlighter;
 import io.github.nbplugins.claudecodegui.ui.common.DecoratedTextArea;
+import io.github.nbplugins.claudecodegui.ui.common.EditorSelection;
+import io.github.nbplugins.claudecodegui.ui.common.EditorSelectionTracker;
 import io.github.nbplugins.claudecodegui.ui.common.UiUtils;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
+import java.awt.Insets;
 import java.awt.Window;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyAdapter;
@@ -15,6 +19,7 @@ import java.awt.event.KeyEvent;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import javax.swing.AbstractAction;
@@ -23,6 +28,7 @@ import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JFileChooser;
+import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
@@ -48,6 +54,10 @@ import javax.swing.SwingUtilities;
  *
  * <p>Stage 16: files dropped or pasted are inserted as {@code @path} tokens directly
  * into the textarea; {@code doSend()} sends the textarea text as-is.
+ *
+ * <p>Lines selected in an IDE editor are shown in a chip above the textarea and
+ * prepended to the prompt on send as an {@code @path#L12-20} mention, unless the
+ * user dismissed the chip (see {@link EditorSelectionTracker}).
  */
 public final class ClaudePromptPanel extends JPanel {
 
@@ -91,6 +101,17 @@ public final class ClaudePromptPanel extends JPanel {
     /** Highlights {@code @path} tokens in the input area. */
     @SuppressWarnings("FieldCanBeLocal")
     private final AtPathHighlighter   pathHighlighter;
+
+    /** Chip above the input area showing the editor selection attached on send. */
+    private final JPanel selectionChip;
+    /** Label inside {@link #selectionChip}. */
+    private final JLabel selectionLabel;
+    /** Current editor selection; {@code null} when nothing is selected. */
+    private EditorSelection editorSelection;
+    /** {@code true} after the user dismissed the chip for the current selection. */
+    private boolean selectionDismissed;
+    /** Listener registered with {@link EditorSelectionTracker} while the panel is displayable. */
+    private final Consumer<EditorSelection> selectionListener = this::setEditorSelection;
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -195,7 +216,24 @@ public final class ClaudePromptPanel extends JPanel {
             @Override public void ancestorMoved(javax.swing.event.AncestorEvent e) {}
         });
 
+        selectionLabel = new JLabel();
+        JButton dismissSelection = new JButton("×");
+        dismissSelection.setToolTipText("Don't attach this selection");
+        dismissSelection.setBorderPainted(false);
+        dismissSelection.setContentAreaFilled(false);
+        dismissSelection.setFocusable(false);
+        dismissSelection.setMargin(new Insets(0, 2, 0, 2));
+        dismissSelection.addActionListener(e -> {
+            selectionDismissed = true;
+            refreshSelectionChip();
+        });
+        selectionChip = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        selectionChip.add(selectionLabel);
+        selectionChip.add(dismissSelection);
+        selectionChip.setVisible(false);
+
         JPanel centerCol = new JPanel(new BorderLayout());
+        centerCol.add(selectionChip, BorderLayout.NORTH);
         centerCol.add(new JScrollPane(inputArea), BorderLayout.CENTER);
 
         setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, Color.LIGHT_GRAY));
@@ -213,6 +251,18 @@ public final class ClaudePromptPanel extends JPanel {
                 onShiftTab.run();
             }
         });
+    }
+
+    @Override
+    public void addNotify() {
+        super.addNotify();
+        EditorSelectionTracker.getDefault().addListener(selectionListener);
+    }
+
+    @Override
+    public void removeNotify() {
+        EditorSelectionTracker.getDefault().removeListener(selectionListener);
+        super.removeNotify();
     }
 
     @Override
@@ -325,7 +375,59 @@ public final class ClaudePromptPanel extends JPanel {
         inputArea.setText("");
         inputArea.requestFocusInWindow();
         historyIndex = -1;
-        onSend.accept(text);
+        onSend.accept(withSelectionMention(text, activeSelectionMention()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Editor selection
+    // -------------------------------------------------------------------------
+
+    /**
+     * Updates the editor selection shown in the chip. A new selection resets a
+     * previous dismissal. Called by {@link EditorSelectionTracker} on the EDT.
+     *
+     * @param selection the new selection, or {@code null} when nothing is selected
+     */
+    void setEditorSelection(EditorSelection selection) {
+        if (!Objects.equals(selection, editorSelection)) {
+            editorSelection    = selection;
+            selectionDismissed = false;
+        }
+        refreshSelectionChip();
+    }
+
+    /** Returns the mention to attach on send, or {@code null} if none. */
+    private String activeSelectionMention() {
+        if (editorSelection == null || selectionDismissed) return null;
+        return editorSelection.toMention(workingDirSupplier.get());
+    }
+
+    private void refreshSelectionChip() {
+        String mention = activeSelectionMention();
+        if (mention != null) {
+            selectionLabel.setText("⧉ " + mention.substring(1));
+            selectionLabel.setToolTipText("Selected lines are attached to your prompt as " + mention);
+        }
+        if (selectionChip.isVisible() != (mention != null)) {
+            selectionChip.setVisible(mention != null);
+            revalidate();
+        }
+    }
+
+    /**
+     * Prepends the selection mention to the prompt text. Slash commands and
+     * {@code !} shell commands are left untouched, as is text that already
+     * contains the mention.
+     *
+     * @param text    the prompt text
+     * @param mention the {@code @path#L..} mention, or {@code null}
+     * @return the text to send
+     */
+    static String withSelectionMention(String text, String mention) {
+        if (mention == null || text.contains(mention)) return text;
+        String lead = text.stripLeading();
+        if (lead.startsWith("/") || lead.startsWith("!")) return text;
+        return mention + " " + text;
     }
 
     /** delta=+1 → older, delta=-1 → newer. */
