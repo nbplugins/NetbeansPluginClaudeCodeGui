@@ -33,12 +33,12 @@ public final class ClaudeSessionStore {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
-     * How much of a session file is inspected when looking for the prompt a
-     * running process just appended. The evidence is written within a second of
-     * the prompt, so the tail is enough and a long conversation does not have to
-     * be read in full on every identity scan.
+     * Size of the block read at a time when scanning a session file backwards
+     * for the prompt a running process just appended. The scan stops at the
+     * first record older than the cutoff, so the whole file is read only when
+     * the conversation is entirely newer than it.
      */
-    private static final int PROMPT_EVIDENCE_TAIL_BYTES = 512 * 1024;
+    private static final int PROMPT_EVIDENCE_BLOCK_BYTES = 512 * 1024;
 
     private ClaudeSessionStore() {}
 
@@ -226,28 +226,71 @@ public final class ClaudeSessionStore {
         if (!Files.isRegularFile(file)) return false;
         String wanted = prompt.trim();
         if (wanted.isEmpty()) return false;
-        try {
-            long size = Files.size(file);
-            int tailSize = (int) Math.min(size, PROMPT_EVIDENCE_TAIL_BYTES);
-            byte[] tail = new byte[tailSize];
-            try (java.io.RandomAccessFile raf =
-                         new java.io.RandomAccessFile(file.toFile(), "r")) {
-                raf.seek(size - tailSize);
-                raf.readFully(tail);
-            }
-            String text = new String(tail, StandardCharsets.UTF_8);
-            if (tailSize < size) {
-                // The first line is cut in the middle; it belongs to history.
-                int firstNewline = text.indexOf('\n');
-                if (firstNewline < 0) return false;
-                text = text.substring(firstNewline + 1);
-            }
-            for (String line : text.split("\n")) {
-                if (isUserMessageWith(line, sinceMillis, wanted)) return true;
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
+            // Read backwards in blocks: the newest records are the most likely
+            // match, and a long turn can push the prompt arbitrarily far from
+            // the end of the file. The scan stops as soon as a record older
+            // than the cutoff is reached, since records are appended in time
+            // order.
+            long pos = raf.length();
+            byte[] carry = new byte[0]; // tail of the line cut at the block start
+            while (pos > 0) {
+                int size = (int) Math.min(PROMPT_EVIDENCE_BLOCK_BYTES, pos);
+                long start = pos - size;
+                byte[] block = new byte[size + carry.length];
+                raf.seek(start);
+                raf.readFully(block, 0, size);
+                System.arraycopy(carry, 0, block, size, carry.length);
+                pos = start;
+
+                int firstLine = 0;
+                if (pos > 0) {
+                    // The first line is cut in the middle: its beginning is in
+                    // the block read next, so keep its bytes for that block.
+                    int newline = indexOf(block, (byte) '\n');
+                    if (newline < 0) {
+                        carry = block;
+                        continue;
+                    }
+                    carry = java.util.Arrays.copyOf(block, newline);
+                    firstLine = newline + 1;
+                }
+                String text = new String(block, firstLine, block.length - firstLine,
+                        StandardCharsets.UTF_8);
+                String[] lines = text.split("\n", -1);
+                for (int i = lines.length - 1; i >= 0; i--) {
+                    if (isUserMessageWith(lines[i], sinceMillis, wanted)) return true;
+                    if (isOlderThan(lines[i], sinceMillis)) return false;
+                }
             }
             return false;
         } catch (IOException | RuntimeException e) {
             LOG.fine("Could not read session " + file + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Returns the index of the first occurrence of {@code b} in {@code bytes}, or {@code -1}. */
+    private static int indexOf(byte[] bytes, byte b) {
+        for (int i = 0; i < bytes.length; i++) {
+            if (bytes[i] == b) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * Returns whether the JSONL {@code line} is a record dated before
+     * {@code cutoffMillis}. Records are appended in time order, so everything
+     * before such a line is older still and the backward scan can stop.
+     */
+    private static boolean isOlderThan(String line, long cutoffMillis) {
+        if (line.isBlank()) return false;
+        try {
+            JsonNode node = MAPPER.readTree(line);
+            JsonNode tsNode = node.get("timestamp");
+            if (tsNode == null || !tsNode.isTextual()) return false;
+            return Instant.parse(tsNode.asText()).toEpochMilli() < cutoffMillis;
+        } catch (Exception e) {
             return false;
         }
     }

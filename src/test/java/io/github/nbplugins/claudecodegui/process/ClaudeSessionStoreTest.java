@@ -370,6 +370,28 @@ class ClaudeSessionStoreTest {
     }
 
     @Test
+    void containsUserPromptSince_findsPromptPushedFarFromTheEnd() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(userLine("the prompt from this tab", OLD_TS.plusSeconds(60))).append('\n');
+        // A long assistant turn pushes the prompt beyond the first block read
+        // from the end of the file (~600 KiB of records).
+        String filler = "x".repeat(8 * 1024);
+        for (int i = 0; i < 80; i++) {
+            sb.append("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"")
+                    .append(filler).append("\"},\"timestamp\":\"")
+                    .append(OLD_TS.plusSeconds(61 + i)).append("\"}\n");
+        }
+        Files.writeString(file, sb.toString(), StandardCharsets.UTF_8);
+
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.plusSeconds(30).toEpochMilli(), "the prompt from this tab"));
+    }
+
+    @Test
     void containsUserPromptSince_noEvidence_returnsFalse() throws IOException {
         Path workDir = tmpDir.resolve("myproject");
         Path sessionDir = createSessionDir(tmpDir, workDir);

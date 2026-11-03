@@ -2028,6 +2028,93 @@ class ClaudeSessionControllerTest {
                 "the conversation left behind must not be renamed");
     }
 
+    /**
+     * Two tabs in the same store can submit the same prompt text ({@code continue}).
+     * Then both files hold "this tab's prompt", so the session the tab already
+     * tracks must win over a sibling's file that happens to be scanned first.
+     */
+    @Test
+    void promptEvidencePrefersTheTabsOwnSessionWhenPromptsMatch() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "sibling", "sibling");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("sibling.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "sibling"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "sibling", Set.of("own", "sibling"));
+
+        try {
+            controller.simulatePromptText("continue");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            // Both conversations received an identical prompt after that moment;
+            // the sibling's file is even newer.
+            appendUserPrompt(dir, "own", "continue", START_MS + 10_500L);
+            appendUserPrompt(dir, "sibling", "continue", START_MS + 10_600L);
+            setMtime(dir.resolve("own.jsonl"), START_MS + 11_000L);
+            setMtime(dir.resolve("sibling.jsonl"), START_MS + 11_500L);
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "the session this tab already tracks must win over an identical prompt");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A resume driven entirely from the keyboard: the user picks another tab's
+     * conversation through the TUI and types the next prompt in the terminal.
+     * That prompt is evidence for the conversation now on screen, even though it
+     * was not sent by the plugin.
+     */
+    @Test
+    void promptTypedInTheTerminalFollowsASharedResume() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            appendUserPrompt(dir, "shared", "typed in terminal", START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            controller.simulateTerminalInput(
+                    "typed in terminal\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "a prompt typed in the terminal proves the conversation on screen");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
     // -------------------------------------------------------------------------
     // prepareLaunchIdentity — captured before the process starts
     // -------------------------------------------------------------------------

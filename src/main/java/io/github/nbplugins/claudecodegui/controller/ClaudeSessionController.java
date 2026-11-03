@@ -197,10 +197,11 @@ public class ClaudeSessionController {
     private volatile long promptSubmittedAt = 0;
 
     /**
-     * Text of the last prompt submitted from the plugin. Together with
-     * {@link #promptSubmittedAt} it is the evidence that a file written after
-     * the prompt contains this tab's own messages — e.g. a conversation resumed
-     * in-process — rather than a concurrent turn of a sibling tab.
+     * Text of the last prompt submitted from the plugin or typed in the
+     * terminal. Together with {@link #promptSubmittedAt} it is the evidence that
+     * a file written after the prompt contains this tab's own messages — e.g. a
+     * conversation resumed in-process — rather than a concurrent turn of a
+     * sibling tab.
      */
     private volatile String lastPromptText;
 
@@ -217,6 +218,16 @@ public class ClaudeSessionController {
      * longer describes the session on screen.
      */
     private volatile long externalInputAt;
+
+    /**
+     * Line being typed in the terminal, assembled from the raw PTY input so
+     * that a prompt submitted from the keyboard is recognised as evidence for
+     * the conversation on screen (see {@link #onTerminalInput(byte[], long)}).
+     */
+    private final StringBuilder terminalInputLine = new StringBuilder();
+
+    /** True while an escape sequence in the terminal input is being skipped. */
+    private boolean terminalInputEscape;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -515,7 +526,7 @@ public class ClaudeSessionController {
         connector.setSessionTag(tag);
         connector.setInputListener(bytes -> {
             if (Boolean.TRUE.equals(pluginPtyWrite.get())) return;
-            externalInputAt = System.currentTimeMillis();
+            onTerminalInput(bytes, System.currentTimeMillis());
         });
         screenContentDetector.setSessionTag(tag);
 
@@ -637,6 +648,10 @@ public class ClaudeSessionController {
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
+            synchronized (terminalInputLine) {
+                terminalInputLine.setLength(0);
+                terminalInputEscape = false;
+            }
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
             releaseAllClaims();
@@ -782,11 +797,14 @@ public class ClaudeSessionController {
             // Text typed in the terminal after that prompt may have switched the
             // conversation through the TUI, in which case the old prompt is no
             // longer evidence of what is on screen: fall back to file times.
-            if (promptAt > 0 && promptAt > externalAt) {
+            // A line submitted from the terminal itself counts as the latest
+            // prompt (same millisecond), so a resume driven entirely from the
+            // keyboard is still followed.
+            if (promptAt > 0 && promptAt >= externalAt) {
                 Set<String> candidates = new HashSet<>(claimed);
                 if (activeId != null) candidates.add(activeId);
                 newest = findPromptBearingSession(dir, configDir, candidates,
-                        promptAt, promptText);
+                        activeId, promptAt, promptText);
             }
             if (newest == null) {
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
@@ -820,18 +838,35 @@ public class ClaudeSessionController {
      * conversation, so it is preferred over an mtime-only guess: a sibling tab
      * finishing its own turn also writes a file after the prompt, but that file
      * holds that tab's messages, not this tab's prompt.
+     *
+     * <p>The session this tab already tracks is checked first: two tabs can
+     * submit the same prompt ({@code continue}), and then the sibling's file
+     * matches as well — picking whichever comes first in the set would replace
+     * a correct identity with a borrowed one.
+     *
+     * @param preferred session ID to check first; may be {@code null}
      */
     private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
-                                            Set<String> candidates, long promptAt,
-                                            String promptText) {
+                                            Set<String> candidates, String preferred,
+                                            long promptAt, String promptText) {
         if (candidates.isEmpty() || promptText == null || promptText.isBlank()) return null;
+        if (preferred != null && containsPrompt(dir, configDir, preferred, promptAt, promptText)) {
+            return preferred;
+        }
         for (String sessionId : candidates) {
-            if (ClaudeSessionStore.containsUserPromptSince(
-                    dir.toPath(), configDir, sessionId, promptAt, promptText)) {
+            if (!sessionId.equals(preferred)
+                    && containsPrompt(dir, configDir, sessionId, promptAt, promptText)) {
                 return sessionId;
             }
         }
         return null;
+    }
+
+    /** Returns whether {@code sessionId} holds {@code promptText} since {@code promptAt}. */
+    private static boolean containsPrompt(java.io.File dir, java.nio.file.Path configDir,
+                                          String sessionId, long promptAt, String promptText) {
+        return ClaudeSessionStore.containsUserPromptSince(
+                dir.toPath(), configDir, sessionId, promptAt, promptText);
     }
 
     /**
@@ -2510,9 +2545,74 @@ public class ClaudeSessionController {
         writePty(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    /**
+     * Records input typed in the terminal (called from the PTY connector, on
+     * the thread that wrote to the PTY).
+     *
+     * <p>Any such input invalidates the prompt evidence captured before it: the
+     * text may drive Claude's own {@code /resume} picker and switch the
+     * conversation. A complete line submitted with Enter is the exception — it
+     * is a prompt written to the conversation on screen, so it becomes the new
+     * evidence, which is what lets a resume driven entirely from the keyboard
+     * be followed.
+     *
+     * @param bytes raw input bytes
+     * @param now   time of the input (epoch millis)
+     */
+    private void onTerminalInput(byte[] bytes, long now) {
+        String submitted;
+        synchronized (terminalInputLine) {
+            externalInputAt = now;
+            submitted = appendTerminalInput(bytes);
+        }
+        if (submitted != null) {
+            lastPromptText = submitted;
+            promptSubmittedAt = now;
+            scheduleIdentityRefresh();
+        }
+    }
+
+    /**
+     * Consumes {@code bytes} into {@link #terminalInputLine} and returns the
+     * line when Enter was pressed, or {@code null}.
+     *
+     * <p>Escape sequences (cursor keys, the {@code /resume} picker) and control
+     * characters are dropped so that only typed text is kept.
+     */
+    private String appendTerminalInput(byte[] bytes) {
+        String submitted = null;
+        String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == 0x1b) {
+                terminalInputEscape = true;
+            } else if (terminalInputEscape) {
+                if (c >= 0x40 && c <= 0x7e) terminalInputEscape = false;
+            } else if (c == '\r' || c == '\n') {
+                String line = terminalInputLine.toString().trim();
+                terminalInputLine.setLength(0);
+                if (!line.isEmpty()) submitted = line;
+            } else if (c == 0x7f || c == 0x08) {
+                if (terminalInputLine.length() > 0) {
+                    terminalInputLine.setLength(terminalInputLine.length() - 1);
+                }
+            } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
+                terminalInputLine.setLength(0);
+            } else if (c >= 0x20) {
+                terminalInputLine.append(c);
+            }
+        }
+        return submitted;
+    }
+
     /** Package-private for tests: simulates typing in the terminal at {@code millis}. */
     void simulateExternalInput(long millis) {
         externalInputAt = millis;
+    }
+
+    /** Package-private for tests: simulates raw terminal input arriving at {@code millis}. */
+    void simulateTerminalInput(byte[] bytes, long millis) {
+        onTerminalInput(bytes, millis);
     }
 
     /**
