@@ -23,8 +23,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
@@ -103,6 +105,18 @@ public class ClaudeSessionController {
 
     /** {@code true} once the first byte/line from the PTY has been received. */
     private volatile boolean firstOutputReceived = false;
+
+    /**
+     * Controllers whose PTY process is currently running. Tabs that share a
+     * project / config store use this set to publish (and claim) their own
+     * session before another tab decides which file to rename.
+     */
+    private static final Set<ClaudeSessionController> LIVE_SESSIONS =
+            ConcurrentHashMap.newKeySet();
+
+    /** Session ID → live controllers running that session. */
+    private static final Map<String, Set<ClaudeSessionController>> SESSION_CLAIMS =
+            new ConcurrentHashMap<>();
 
     /**
      * Effective Claude config dir of the running session, captured at launch.
@@ -205,6 +219,17 @@ public class ClaudeSessionController {
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
     }
 
+    /**
+     * Package-private for tests: marks this controller as a live session, so
+     * that other controllers treat {@code sessionId} as owned by another tab.
+     */
+    void simulateLiveSession(java.nio.file.Path configDir, String sessionId,
+                             Set<String> preStartIds) {
+        simulateActiveSession(configDir, sessionId, preStartIds);
+        LIVE_SESSIONS.add(this);
+        claimSession(sessionId);
+    }
+
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
     void simulatePtyLine(String line) {
         synchronized (recentPtyLines) {
@@ -302,6 +327,9 @@ public class ClaudeSessionController {
         processStartedAt = System.currentTimeMillis();
         firstOutputReceived = false;
 
+        LIVE_SESSIONS.add(this);
+        claimSession(activeSessionId);
+
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
         screenContentDetector.setSessionTag(tag);
@@ -395,6 +423,8 @@ public class ClaudeSessionController {
         synchronized (recentPtyLines) { recentPtyLines.clear(); }
         processStartedAt = 0;
         firstOutputReceived = false;
+        LIVE_SESSIONS.remove(this);
+        releaseAllClaims();
         activeConfigDir = null;
         activeSessionId = null;
         preStartSessionIds = Set.of();
@@ -409,9 +439,10 @@ public class ClaudeSessionController {
      * Stops the PTY process and, if {@code sessionName} is non-blank, appends a
      * {@code custom-title} entry to the JSONL file of the session that was running.
      *
-     * <p>The target session and config dir are captured at launch, so the rename
+     * <p>The target session and config dir are tracked from launch, so the rename
      * works for named profiles (isolated config dir), profiles that map to
-     * {@code ~/.claude}, and several sessions sharing the same project.
+     * {@code ~/.claude}, several sessions sharing the same project, and
+     * conversations switched with {@code /resume} inside the running process.
      *
      * @param sessionName name to persist, or {@code null}/blank to skip renaming
      */
@@ -447,16 +478,111 @@ public class ClaudeSessionController {
      * Returns the ID of the session currently being displayed, resolving the
      * file created by this run for {@link SessionMode#NEW} sessions.
      *
+     * <p>The identity is not fixed at launch: Claude can switch conversations
+     * inside the running process (its own {@code /resume} picker), in which case
+     * the file written most recently belongs to the new session. Other live tabs
+     * sharing the same store are asked to publish — and claim — their own
+     * sessions first, so their files are never mistaken for this one's.
+     *
      * @return session ID, or {@code null} if it cannot be determined
      */
     public String resolveActiveSessionId() {
-        String known = activeSessionId;
-        if (known != null) return known;
         java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
         java.nio.file.Path configDir = activeConfigDir;
-        if (dir == null || configDir == null) return null;
-        return ClaudeSessionStore.findSessionIdCreatedAfter(
-                dir.toPath(), configDir, preStartSessionIds, processStartedAt);
+        if (dir == null || configDir == null) return activeSessionId;
+
+        publishOtherSessions(dir, configDir);
+        refreshBaseIdentity();
+
+        if (processStartedAt > 0) {
+            // Claude writes only to the active conversation, so the session file
+            // it touched last is the one being displayed — this catches session
+            // switches made inside the TUI without a process restart.
+            String newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                    dir.toPath(), configDir, processStartedAt, claimedByOthers());
+            if (newest != null && !newest.equals(activeSessionId)) {
+                LOG.fine("Active session switched to " + newest + " in " + configDir);
+                String previous = activeSessionId;
+                activeSessionId = newest;
+                claimSession(newest);
+                releaseClaim(previous);
+            }
+        }
+        return activeSessionId;
+    }
+
+    /**
+     * Asks other live tabs on the same project and config store to resolve and
+     * claim their sessions. Two passes so that a tab which first learns its own
+     * session also has it advertised to the others before they decide.
+     */
+    private void publishOtherSessions(java.io.File dir, java.nio.file.Path configDir) {
+        for (int pass = 0; pass < 2; pass++) {
+            for (ClaudeSessionController other : LIVE_SESSIONS) {
+                if (other != this && configDir.equals(other.activeConfigDir)
+                        && dir.equals(other.workingDir)) {
+                    other.refreshBaseIdentity();
+                }
+            }
+        }
+    }
+
+    /**
+     * Resolves the session ID known at launch when it is still unknown: for
+     * {@link SessionMode#NEW} this is the file created after the launch that is
+     * not in the pre-launch snapshot and not claimed by another live tab.
+     * Claims the resolved ID so other tabs can see it.
+     */
+    private synchronized void refreshBaseIdentity() {
+        if (activeSessionId == null) {
+            java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+            java.nio.file.Path configDir = activeConfigDir;
+            if (dir != null && configDir != null) {
+                Set<String> exclude = new HashSet<>(preStartSessionIds);
+                exclude.addAll(claimedByOthers());
+                activeSessionId = ClaudeSessionStore.findSessionIdCreatedAfter(
+                        dir.toPath(), configDir, exclude, processStartedAt);
+            }
+        }
+        claimSession(activeSessionId);
+    }
+
+    private void claimSession(String sessionId) {
+        if (sessionId != null) {
+            SESSION_CLAIMS
+                    .computeIfAbsent(sessionId, k -> ConcurrentHashMap.newKeySet())
+                    .add(this);
+        }
+    }
+
+    private void releaseClaim(String sessionId) {
+        if (sessionId == null) return;
+        SESSION_CLAIMS.computeIfPresent(sessionId, (id, owners) -> {
+            owners.remove(this);
+            return owners.isEmpty() ? null : owners;
+        });
+    }
+
+    /** Removes all claims held by this controller (called when the process stops). */
+    private void releaseAllClaims() {
+        for (Set<ClaudeSessionController> owners : SESSION_CLAIMS.values()) {
+            owners.remove(this);
+        }
+        SESSION_CLAIMS.entrySet().removeIf(e -> e.getValue().isEmpty());
+    }
+
+    /** Session IDs claimed by other live controllers. */
+    private Set<String> claimedByOthers() {
+        Set<String> ids = new HashSet<>();
+        SESSION_CLAIMS.forEach((id, owners) -> {
+            for (ClaudeSessionController owner : owners) {
+                if (owner != this && LIVE_SESSIONS.contains(owner)) {
+                    ids.add(id);
+                    return;
+                }
+            }
+        });
+        return ids;
     }
 
     /**

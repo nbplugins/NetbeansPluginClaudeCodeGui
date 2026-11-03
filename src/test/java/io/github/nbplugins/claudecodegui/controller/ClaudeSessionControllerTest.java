@@ -3,6 +3,7 @@ package io.github.nbplugins.claudecodegui.controller;
 import io.github.nbplugins.claudecodegui.model.ClaudeSessionModel;
 import io.github.nbplugins.claudecodegui.model.EditMode;
 import io.github.nbplugins.claudecodegui.model.SessionLifecycle;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +33,12 @@ class ClaudeSessionControllerTest {
     void setUp() {
         model = new ClaudeSessionModel();
         controller = new ClaudeSessionController(model, Collections::emptyList);
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Drops the controller from the live-session / claim registries.
+        controller.stopProcess();
     }
 
     // -------------------------------------------------------------------------
@@ -1383,6 +1390,9 @@ class ClaudeSessionControllerTest {
     @org.junit.jupiter.api.io.TempDir
     java.nio.file.Path tmpDir;
 
+    /** Fixed launch timestamp; tests set file mtimes relative to it. */
+    private static final long START_MS = 1_700_000_000_000L;
+
     private static String hashOf(java.nio.file.Path workDir) {
         return workDir.toAbsolutePath().toString().replace('/', '-');
     }
@@ -1401,9 +1411,9 @@ class ClaudeSessionControllerTest {
                         + "\",\"timestamp\":\"2024-01-01T10:00:00Z\",\"type\":\"summary\"}\n");
     }
 
-    private static void touch(java.nio.file.Path file) throws java.io.IOException {
+    private static void setMtime(java.nio.file.Path file, long millis) throws java.io.IOException {
         java.nio.file.Files.setLastModifiedTime(file,
-                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+                java.nio.file.attribute.FileTime.fromMillis(millis));
     }
 
     private static long countCustomTitles(java.nio.file.Path file, String value)
@@ -1421,9 +1431,10 @@ class ClaudeSessionControllerTest {
         java.nio.file.Path profileDir = tmpDir.resolve("profiles").resolve("Work");
         java.nio.file.Path dir = sessionDir(profileDir, work);
         writeSession(dir, "s1", "slug");
+        setMtime(dir.resolve("s1.jsonl"), START_MS - 1_000L);
 
         model.setWorkingDirectory(work.toFile());
-        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateProcessStart(START_MS, true);
         controller.simulateActiveSession(profileDir, "s1", Set.of("s1"));
 
         controller.stopAndRename("My Session");
@@ -1442,26 +1453,64 @@ class ClaudeSessionControllerTest {
         java.nio.file.Path work = tmpDir.resolve("project");
         java.nio.file.Path dir = sessionDir(config, work);
 
-        // Another tab's session, modified more recently than our launch.
+        // Another tab is running "other-tab" and wrote it after our launch.
         writeSession(dir, "other-tab", "other");
-        touch(dir.resolve("other-tab.jsonl"));
+        setMtime(dir.resolve("other-tab.jsonl"), START_MS + 500L);
+        ClaudeSessionController otherTab =
+                new ClaudeSessionController(new ClaudeSessionModel(), Collections::emptyList);
+        otherTab.simulateProcessStart(START_MS - 500L, true);
+        otherTab.simulateLiveSession(config, "other-tab", Set.of("other-tab"));
+
         // Snapshot taken right before our process launched.
         Set<String> before = Set.of("other-tab");
         writeSession(dir, "this-session", "this");
+        setMtime(dir.resolve("this-session.jsonl"), START_MS + 1_000L);
 
         model.setWorkingDirectory(work.toFile());
-        controller.simulateProcessStart(System.currentTimeMillis() - 1_000L, true);
+        controller.simulateProcessStart(START_MS, true);
         controller.simulateActiveSession(config, null, before);
 
-        controller.stopAndRename("Closed Session");
+        try {
+            controller.stopAndRename("Closed Session");
 
-        assertEquals("Closed Session",
+            assertEquals("Closed Session",
+                    io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "this-session").customTitle(),
+                    "the session created by this run must be renamed");
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "other-tab").customTitle(),
+                    "another tab's session must not be touched");
+        } finally {
+            otherTab.stopProcess();
+        }
+    }
+
+    @Test
+    void stopAndRename_followsSessionSwitchedInProcess() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "first", "first");
+        setMtime(dir.resolve("first.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "second", "second");
+        // The TUI's /resume picker switched conversations after the launch:
+        // the second file is the one the process writes.
+        setMtime(dir.resolve("second.jsonl"), START_MS + 2_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, "first", Set.of("first", "second"));
+
+        controller.stopAndRename("Switched Name");
+
+        assertEquals("Switched Name",
                 io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
-                        .findSession(work, config, "this-session").customTitle(),
-                "the session created by this run must be renamed");
+                        .findSession(work, config, "second").customTitle(),
+                "the name must go to the conversation the process switched to");
         assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
-                        .findSession(work, config, "other-tab").customTitle(),
-                "another tab's session must not be touched");
+                        .findSession(work, config, "first").customTitle(),
+                "the conversation left by the switch must not be renamed");
     }
 
     @Test
@@ -1470,11 +1519,12 @@ class ClaudeSessionControllerTest {
         java.nio.file.Path work = tmpDir.resolve("project");
         java.nio.file.Path dir = sessionDir(config, work);
         writeSession(dir, "resumed", "old");
+        setMtime(dir.resolve("resumed.jsonl"), START_MS - 5_000L);
         writeSession(dir, "newer", "newer");
-        touch(dir.resolve("newer.jsonl"));
+        setMtime(dir.resolve("newer.jsonl"), START_MS - 1_000L);
 
         model.setWorkingDirectory(work.toFile());
-        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateProcessStart(START_MS, true);
         controller.simulateActiveSession(config, "resumed", Set.of("resumed", "newer"));
 
         controller.stopAndRename("Resumed Name");
@@ -1496,9 +1546,10 @@ class ClaudeSessionControllerTest {
         java.nio.file.Files.writeString(dir.resolve("s1.jsonl"),
                 "{\"type\":\"custom-title\",\"customTitle\":\"Same\",\"sessionId\":\"s1\"}\n",
                 java.nio.file.StandardOpenOption.APPEND);
+        setMtime(dir.resolve("s1.jsonl"), START_MS - 1_000L);
 
         model.setWorkingDirectory(work.toFile());
-        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateProcessStart(START_MS, true);
         controller.simulateActiveSession(config, "s1", Set.of("s1"));
 
         controller.stopAndRename("Same");
@@ -1513,9 +1564,10 @@ class ClaudeSessionControllerTest {
         java.nio.file.Path work = tmpDir.resolve("project");
         java.nio.file.Path dir = sessionDir(config, work);
         writeSession(dir, "s1", "slug");
+        setMtime(dir.resolve("s1.jsonl"), START_MS - 1_000L);
 
         model.setWorkingDirectory(work.toFile());
-        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateProcessStart(START_MS, true);
         controller.simulateActiveSession(config, "s1", Set.of("s1"));
 
         controller.stopAndRename("   ");

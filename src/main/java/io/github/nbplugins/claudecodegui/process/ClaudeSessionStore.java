@@ -172,6 +172,28 @@ public final class ClaudeSessionStore {
         return newest != null ? sessionIdOf(newest) : null;
     }
 
+    /**
+     * Returns the ID of the session file modified most recently, considering only
+     * files whose mtime is at least {@code sinceMillis} and whose ID is not in
+     * {@code excludeIds}.
+     *
+     * <p>Unlike {@link #findSessionIdCreatedAfter} there is no fallback to older
+     * files: this is used to detect which conversation a running process is
+     * currently writing after it may have switched sessions in-process.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param sinceMillis     earliest acceptable file modification time (epoch millis)
+     * @param excludeIds      session IDs to ignore (e.g. owned by other tabs); may be {@code null}
+     * @return session ID, or {@code null} if no file was modified since {@code sinceMillis}
+     */
+    public static String findLatestSessionIdWrittenSince(Path workingDir, Path claudeConfigDir,
+                                                         long sinceMillis, Set<String> excludeIds) {
+        Path newest = newestSessionFile(
+                sessionsDir(workingDir, claudeConfigDir), excludeIds, sinceMillis);
+        return newest != null ? sessionIdOf(newest) : null;
+    }
+
     private static Path newestSessionFile(Path dir, Set<String> excludeIds, long minMtimeMillis) {
         if (!Files.isDirectory(dir)) {
             return null;
