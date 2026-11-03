@@ -1625,6 +1625,72 @@ class ClaudeSessionControllerTest {
     }
 
     @Test
+    void newSessionResumingSavedConversation_resolvesAfterPrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // The saved conversation exists before the NEW tab is launched.
+        writeSession(dir, "saved", "saved");
+        setMtime(dir.resolve("saved.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, null, Set.of("saved"));
+
+        // The TUI's /resume picker switches to the saved conversation, and a
+        // prompt from the plugin rewrites it.
+        controller.simulatePromptSubmittedAt(START_MS + 2_000L);
+        setMtime(dir.resolve("saved.jsonl"), START_MS + 3_000L);
+
+        controller.stopAndRename("Resumed Name");
+
+        assertEquals("Resumed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "saved").customTitle(),
+                "a saved conversation resumed before the first JSONL of the "
+                        + "new session must still be renamable");
+    }
+
+    @Test
+    void staleExitCallback_doesNotReleaseTheReplacementRun() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // First run of this tab.
+        writeSession(dir, "old", "old");
+        setMtime(dir.resolve("old.jsonl"), START_MS - 5_000L);
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "old", Set.of());
+        long oldGeneration = controller.simulateProcessGeneration();
+
+        // Save & Switch restarts the tab before the old waiter reports its exit.
+        controller.stopProcess();
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS + 4_000L);
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "b", Set.of());
+        controller.simulateProcessExitAt(oldGeneration);
+
+        // A sibling started later must still see "b" as owned by this tab.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 3_000L, true);
+        tabB.simulateLiveSession(config, null, Set.of("old"));
+        try {
+            assertNull(tabB.resolveActiveSessionId(),
+                    "a late exit callback of the replaced process must not "
+                            + "release the new run's claim");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    @Test
     void stopAndRename_usesResumeSessionId() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
         java.nio.file.Path work = tmpDir.resolve("project");

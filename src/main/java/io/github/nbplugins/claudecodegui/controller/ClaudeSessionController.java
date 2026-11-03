@@ -119,6 +119,14 @@ public class ClaudeSessionController {
             new ConcurrentHashMap<>();
 
     /**
+     * Guards {@link #claudeProcess} replacement against a late exit callback:
+     * every started process gets a new {@link #processGeneration}, and the
+     * callback only releases ownership when its generation is still current.
+     */
+    private final Object processOwnershipLock = new Object();
+    private long processGeneration;
+
+    /**
      * Effective Claude config dir of the running session, captured at launch.
      * Used so that renaming targets the same store the process writes to.
      */
@@ -131,7 +139,12 @@ public class ClaudeSessionController {
      */
     private volatile String activeSessionId;
 
-    /** Session IDs that already existed when the current session was launched. */
+    /**
+     * Session IDs that already existed when the current session was launched.
+     * They are only ineligible for an unresolved {@code NEW} session and only
+     * before the plugin has submitted a prompt (see
+     * {@link #refreshSessionIdentity()}).
+     */
     private volatile Set<String> preStartSessionIds = Set.of();
 
     /**
@@ -229,6 +242,11 @@ public class ClaudeSessionController {
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
     }
 
+    /** Package-private for tests: records a prompt submitted from the plugin. */
+    void simulatePromptSubmittedAt(long millis) {
+        promptSubmittedAt = millis;
+    }
+
     /**
      * Package-private for tests: marks this controller as a live session, so
      * that other controllers treat {@code sessionId} as owned by another tab.
@@ -308,7 +326,11 @@ public class ClaudeSessionController {
                              JediTermWidget widget) throws IOException {
         String tag = "[" + dir.getName() + "] ";
         workingDir = dir;
-        claudeProcess = new ClaudeProcess();
+        long generation;
+        synchronized (processOwnershipLock) {
+            claudeProcess = new ClaudeProcess();
+            generation = ++processGeneration;
+        }
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
         customModelIds = profile != null ? new ArrayList<>(profile.getComboModelIds()) : List.of();
 
@@ -381,14 +403,14 @@ public class ClaudeSessionController {
 
         // Waiter thread: releases the session claims as soon as the process exits,
         // even when it exits from inside the terminal without an explicit stop.
-        ClaudeProcess ownerProcess = claudeProcess;
+        long exitedGeneration = generation;
         Thread waiter = new Thread(() -> {
             try {
                 process.waitFor();
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
             } finally {
-                onProcessExited(ownerProcess);
+                onProcessExited(exitedGeneration);
             }
         }, "claude-waiter");
         waiter.setDaemon(true);
@@ -424,11 +446,15 @@ public class ClaudeSessionController {
         if (connector != null) {
             connector.setLineListener(null);
         }
-        if (claudeProcess != null) {
-            claudeProcess.stop();
+        ClaudeProcess processToStop = claudeProcess;
+        if (processToStop != null) {
+            processToStop.stop();
         }
         connector = null;
-        claudeProcess = null;
+        synchronized (processOwnershipLock) {
+            claudeProcess = null;
+            processGeneration++;
+        }
         terminalWidget = null;
         modelComboPopulated = false;
         modelDiscoveryInProgress = false;
@@ -528,9 +554,13 @@ public class ClaudeSessionController {
         long since = Math.max(processStartedAt, promptSubmittedAt);
         if (dir != null && configDir != null && since > 0) {
             Set<String> exclude = new HashSet<>(claimedByOthers());
-            if (activeSessionId == null) {
-                // A session that existed before the launch cannot be the new one
-                // created by this process, even if something else touched it.
+            if (activeSessionId == null && promptSubmittedAt <= 0) {
+                // Without a prompt of our own there is nothing that proves a
+                // write belongs to this tab, so a file that existed before the
+                // launch stays ineligible: it may have been touched by another
+                // Claude process. After a prompt, anything written since it is
+                // ours — including a saved conversation resumed from the TUI
+                // before this session created a file of its own.
                 exclude.addAll(preStartSessionIds);
             }
             String newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
@@ -619,21 +649,35 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Releases live-session bookkeeping when the PTY exits on its own (Claude
-     * quit or crashed while the tab stayed open). Ignored when a newer process
-     * has already replaced it.
+     * Releases live-session bookkeeping when the PTY of {@code generation} exits
+     * on its own (Claude quit or crashed while the tab stayed open). The check
+     * and the cleanup are atomic with process replacement, so a late callback
+     * from a process that has already been stopped and replaced by a restart
+     * cannot wipe the new run's ownership.
      */
-    private void onProcessExited(ClaudeProcess owner) {
-        synchronized (this) {
-            if (claudeProcess != owner) return;
+    private void onProcessExited(long generation) {
+        synchronized (processOwnershipLock) {
+            if (generation != processGeneration) return;
+            LIVE_SESSIONS.remove(this);
+            releaseAllClaims();
         }
-        LIVE_SESSIONS.remove(this);
-        releaseAllClaims();
     }
 
     /** Package-private for tests: simulates the PTY exiting without stopProcess(). */
     void simulateProcessExit() {
-        onProcessExited(claudeProcess);
+        simulateProcessExitAt(simulateProcessGeneration());
+    }
+
+    /** Package-private for tests: the ownership generation of the current run. */
+    long simulateProcessGeneration() {
+        synchronized (processOwnershipLock) {
+            return processGeneration;
+        }
+    }
+
+    /** Package-private for tests: replays the exit callback of an older run. */
+    void simulateProcessExitAt(long generation) {
+        onProcessExited(generation);
     }
 
     /**
