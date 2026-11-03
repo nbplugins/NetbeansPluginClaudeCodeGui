@@ -1578,7 +1578,7 @@ class ClaudeSessionControllerTest {
             writeSession(dir, "c", "c");
             setMtime(dir.resolve("c.jsonl"), START_MS + 3_000L);
             for (int i = 0; i < 10; i++) {
-                controller.pollScreenState();
+                controller.simulateIdentityTick();
             }
 
             // Tab B switches to the conversation A left behind and prompts, so
@@ -1688,6 +1688,36 @@ class ClaudeSessionControllerTest {
         } finally {
             tabB.stopProcess();
         }
+    }
+
+    @Test
+    void scanStartedBeforeRestart_doesNotPublishAfterReplacement() throws Exception {
+        java.nio.file.Path storeA = tmpDir.resolve("configA");
+        java.nio.file.Path storeB = tmpDir.resolve("configB");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dirA = sessionDir(storeA, work);
+        java.nio.file.Path dirB = sessionDir(storeB, work);
+        writeSession(dirA, "old", "old");
+        setMtime(dirA.resolve("old.jsonl"), START_MS + 2_000L);
+        writeSession(dirB, "new", "new");
+        setMtime(dirB.resolve("new.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(storeA, "old", Set.of("old"));
+        long staleGeneration = controller.simulateProcessGeneration();
+
+        // Save & Switch restarts the tab into another profile / store before
+        // the background scan finishes.
+        controller.stopProcess();
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateActiveSession(storeB, "new", Set.of("new"));
+
+        controller.simulatePublishStaleScanResult(staleGeneration, "old");
+
+        assertEquals("new", controller.resolveActiveSessionId(),
+                "a scan started before the restart must not overwrite the "
+                        + "identity of the replaced run");
     }
 
     @Test

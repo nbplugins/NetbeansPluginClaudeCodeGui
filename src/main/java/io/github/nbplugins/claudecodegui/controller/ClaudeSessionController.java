@@ -119,12 +119,27 @@ public class ClaudeSessionController {
             new ConcurrentHashMap<>();
 
     /**
+     * Worker for the periodic session-store scans, shared by all controllers so
+     * that the Swing EDT never enumerates the session history.
+     */
+    private static final java.util.concurrent.ExecutorService IDENTITY_SCANNER =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "session-id-scan");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /**
      * Guards {@link #claudeProcess} replacement against a late exit callback:
      * every started process gets a new {@link #processGeneration}, and the
      * callback only releases ownership when its generation is still current.
      */
     private final Object processOwnershipLock = new Object();
     private long processGeneration;
+
+    /** True while a background identity scan of this controller is queued. */
+    private final java.util.concurrent.atomic.AtomicBoolean identityScanPending =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
      * Effective Claude config dir of the running session, captured at launch.
@@ -240,6 +255,11 @@ public class ClaudeSessionController {
         activeConfigDir = configDir;
         activeSessionId = sessionId;
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
+    }
+
+    /** Package-private for tests: one tick of the periodic identity refresh. */
+    void simulateIdentityTick() {
+        refreshSessionIdentityIfDue();
     }
 
     /** Package-private for tests: records a prompt submitted from the plugin. */
@@ -546,25 +566,56 @@ public class ClaudeSessionController {
      * launch that has not written anything — the identity captured at launch is
      * kept.
      *
+     * <p>Safe to call from any thread: the parameters are captured and the
+     * result is published under {@link #processOwnershipLock}, and a scan that
+     * started before a process restart is discarded instead of overwriting the
+     * new run's identity. The filesystem lookup itself runs outside the lock.
+     *
      * @return {@code true} if an identity is known
      */
-    synchronized boolean refreshSessionIdentity() {
-        java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
-        java.nio.file.Path configDir = activeConfigDir;
-        long since = Math.max(processStartedAt, promptSubmittedAt);
-        if (dir != null && configDir != null && since > 0) {
-            Set<String> exclude = new HashSet<>(claimedByOthers());
-            if (activeSessionId == null && promptSubmittedAt <= 0) {
-                // Without a prompt of our own there is nothing that proves a
-                // write belongs to this tab, so a file that existed before the
-                // launch stays ineligible: it may have been touched by another
-                // Claude process. After a prompt, anything written since it is
-                // ours — including a saved conversation resumed from the TUI
-                // before this session created a file of its own.
-                exclude.addAll(preStartSessionIds);
+    boolean refreshSessionIdentity() {
+        long generation;
+        java.io.File dir;
+        java.nio.file.Path configDir;
+        long since;
+        Set<String> exclude = new HashSet<>();
+        synchronized (processOwnershipLock) {
+            generation = processGeneration;
+            dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+            configDir = activeConfigDir;
+            since = Math.max(processStartedAt, promptSubmittedAt);
+            if (dir != null && configDir != null && since > 0) {
+                exclude.addAll(claimedByOthers());
+                if (activeSessionId == null && promptSubmittedAt <= 0) {
+                    // Without a prompt of our own there is nothing that proves a
+                    // write belongs to this tab, so a file that existed before
+                    // the launch stays ineligible: it may have been touched by
+                    // another Claude process. After a prompt, anything written
+                    // since it is ours — including a saved conversation resumed
+                    // from the TUI before this session created a file of its own.
+                    exclude.addAll(preStartSessionIds);
+                }
             }
-            String newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+        }
+        String newest = null;
+        if (dir != null && configDir != null && since > 0) {
+            newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                     dir.toPath(), configDir, since, exclude);
+        }
+        return publishIdentityScanResult(generation, newest, dir);
+    }
+
+    /**
+     * Publishes a scan result, unless the process was stopped or restarted while
+     * the scan ran — in that case the result describes a store the current run
+     * does not use and must not overwrite its identity.
+     */
+    private boolean publishIdentityScanResult(long generation, String newest,
+                                              java.io.File dir) {
+        synchronized (processOwnershipLock) {
+            if (generation != processGeneration) {
+                return activeSessionId != null;
+            }
             if (newest != null && !newest.equals(activeSessionId)) {
                 String previous = activeSessionId;
                 activeSessionId = newest;
@@ -573,32 +624,49 @@ public class ClaudeSessionController {
                 LOG.fine("Session of " + dir + " is now " + newest
                         + (previous != null ? " (was " + previous + ")" : ""));
             }
+            claimSession(activeSessionId);
+            return activeSessionId != null;
         }
-        claimSession(activeSessionId);
-        return activeSessionId != null;
+    }
+
+    /** Package-private for tests: publishes a result scanned for an older process run. */
+    boolean simulatePublishStaleScanResult(long generation, String newest) {
+        return publishIdentityScanResult(generation, newest, null);
     }
 
     /**
-     * Samples the session identity for a few seconds after a prompt, so a new
-     * session file is claimed as soon as it appears and an in-process switch is
-     * noticed without waiting for the screen poll.
+     * Runs the periodic identity refresh when it is due: on every call while a
+     * {@code NEW} session is still unknown after a prompt, otherwise every
+     * tenth call (~5 s at the 500 ms poll cadence). Call from a worker thread —
+     * it touches the session directory.
      */
-    private void startIdentityResolver() {
-        java.nio.file.Path configDir = activeConfigDir;
-        if (configDir == null) return;
-        Thread t = new Thread(() -> {
-            for (int i = 0; i < 10; i++) {
+    void refreshSessionIdentityIfDue() {
+        boolean unresolvedAfterPrompt = activeSessionId == null && promptSubmittedAt > 0;
+        if (unresolvedAfterPrompt || ++identityPollTicks % 10 == 0) {
+            refreshSessionIdentity();
+        }
+    }
+
+    /**
+     * Queues one periodic identity refresh on the shared worker, so that the
+     * screen poll never enumerates the session store on the EDT. At most one
+     * scan per controller is in flight at a time.
+     */
+    private void scheduleIdentityRefresh() {
+        if (!identityScanPending.compareAndSet(false, true)) return;
+        try {
+            IDENTITY_SCANNER.execute(() -> {
                 try {
-                    Thread.sleep(300);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
+                    refreshSessionIdentityIfDue();
+                } catch (RuntimeException e) {
+                    LOG.fine("Session identity scan failed: " + e);
+                } finally {
+                    identityScanPending.set(false);
                 }
-                refreshSessionIdentity();
-            }
-        }, "session-id-resolve");
-        t.setDaemon(true);
-        t.start();
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            identityScanPending.set(false);
+        }
     }
 
     private void claimSession(String sessionId) {
@@ -710,7 +778,7 @@ public class ClaudeSessionController {
             model.addPromptToHistory(text);
         }
         promptSubmittedAt = System.currentTimeMillis();
-        startIdentityResolver();
+        scheduleIdentityRefresh();
 
         Thread t = new Thread(() -> {
             try {
@@ -1546,13 +1614,9 @@ public class ClaudeSessionController {
     void pollScreenState() {
         // Keep the session identity — and the cross-tab claims that follow from
         // it — in sync with the file Claude is writing, so a conversation switch
-        // made inside the TUI is noticed by every tab. A still-unknown identity
-        // right after a prompt is retried on every tick; otherwise the directory
-        // scan runs every ~5 s.
-        boolean unresolvedAfterPrompt = activeSessionId == null && promptSubmittedAt > 0;
-        if (unresolvedAfterPrompt || ++identityPollTicks % 10 == 0) {
-            refreshSessionIdentity();
-        }
+        // made inside the TUI is noticed by every tab. The scan enumerates the
+        // session store, so it runs on a worker instead of this (EDT) tick.
+        scheduleIdentityRefresh();
         List<String> lines = screenLines.get();
 
         // Plan name
