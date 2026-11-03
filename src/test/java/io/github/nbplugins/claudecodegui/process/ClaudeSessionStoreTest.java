@@ -304,6 +304,26 @@ class ClaudeSessionStoreTest {
                 workDir, tmpDir, BASE_MTIME, java.util.Set.of()));
     }
 
+    @Test
+    void listSessionIdsWrittenSince_returnsNewestFirstAndSkipsExcluded() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "old", OLD_TS, BASE_MTIME);
+        writeTimedSession(sessionDir, "mid", OLD_TS, BASE_MTIME + 1_000L);
+        writeTimedSession(sessionDir, "new", OLD_TS, BASE_MTIME + 2_000L);
+
+        assertEquals(java.util.List.of("new", "mid"),
+                ClaudeSessionStore.listSessionIdsWrittenSince(
+                        workDir, tmpDir, BASE_MTIME + 500L, java.util.Set.of("old"), 8));
+        assertEquals(java.util.List.of("new"),
+                ClaudeSessionStore.listSessionIdsWrittenSince(
+                        workDir, tmpDir, BASE_MTIME + 500L, java.util.Set.of("old"), 1),
+                "the limit must keep the newest files");
+        assertTrue(ClaudeSessionStore.listSessionIdsWrittenSince(
+                        workDir, tmpDir, BASE_MTIME + 5_000L, java.util.Set.of(), 8).isEmpty(),
+                "files older than the cutoff are not candidates");
+    }
+
     // -------------------------------------------------------------------------
     // containsUserPromptSince
     // -------------------------------------------------------------------------

@@ -2116,6 +2116,102 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * After joining another tab's conversation and submitting a prompt there,
+     * the identity scan may only run after the user started typing the next
+     * draft. A draft edit must not invalidate the submitted prompt's evidence,
+     * or the conversation on screen is renamed in place of this tab's old one.
+     */
+    @Test
+    void draftTypingDoesNotInvalidateTheSubmittedPrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The user joins B's conversation in the TUI and submits a prompt.
+            appendUserPrompt(dir, "b", "joined b", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+            controller.simulateTerminalInput(
+                    "joined b\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 10_000L);
+
+            // ... then starts typing the next prompt without submitting it.
+            controller.simulateTerminalInput(
+                    "draft".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_500L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "typing a draft must not discard the submitted prompt's evidence");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A NEW tab and a live tab can submit the same text. The sibling's record
+     * may land while the NEW tab's own file is still being created, so the tab
+     * briefly adopts the sibling; its own file must win the identity back as
+     * soon as it appears instead of the borrowed one pinning itself forever.
+     */
+    @Test
+    void newTabWithTheSamePromptAsASibling_takesItsOwnFileWhenItAppears() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "sibling", "sibling");
+        setMtime(dir.resolve("sibling.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "sibling", Set.of("sibling"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("sibling"));
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            // The sibling submits the same text and its record lands after this
+            // tab's prompt, while this tab's own file does not exist yet.
+            appendUserPrompt(dir, "sibling", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("sibling.jsonl"), START_MS + 10_600L);
+            assertEquals("sibling", controller.resolveActiveSessionId(),
+                    "with nothing of its own yet, the tab can only follow the shared prompt");
+
+            // This tab's own conversation appears, holding the same prompt.
+            writeSession(dir, "own", "own");
+            appendUserPrompt(dir, "own", "hello", START_MS + 11_000L);
+            setMtime(dir.resolve("own.jsonl"), START_MS + 11_200L);
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "the tab's own conversation must win over a sibling with the same prompt");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * Cursor keys and other escape sequences must be consumed as a whole: their
      * final byte must not leak into the buffered line, or the recorded prompt
      * would no longer match the one actually submitted and the identity scan

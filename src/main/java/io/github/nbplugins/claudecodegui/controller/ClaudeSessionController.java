@@ -81,6 +81,13 @@ public class ClaudeSessionController {
      */
     private static final long SESSION_MTIME_GRANULARITY_MS = 2_000L;
 
+    /**
+     * Maximum number of session files written since a prompt inspected for the
+     * tab's own conversation. Reading a JSONL is not free, and the file of the
+     * running process is always among the most recently written ones.
+     */
+    private static final int PROMPT_EVIDENCE_CANDIDATES = 8;
+
     private final ClaudeSessionModel model;
 
     /**
@@ -212,10 +219,12 @@ public class ClaudeSessionController {
     private final ThreadLocal<Boolean> pluginPtyWrite = ThreadLocal.withInitial(() -> false);
 
     /**
-     * Time (epoch millis) of the last PTY input typed in the terminal rather
-     * than sent by the plugin. Such input can change the conversation (an
-     * in-process {@code /resume}), so prompt evidence captured before it no
-     * longer describes the session on screen.
+     * Time (epoch millis) of the last line submitted in the terminal rather
+     * than sent by the plugin. Enter can act on the TUI (e.g. choose a session
+     * in the {@code /resume} picker) without producing a prompt this tab
+     * recognises, so prompt evidence captured before it no longer describes the
+     * session on screen. Draft edits do not move it: typing the next prompt
+     * must not invalidate the evidence of the one already submitted.
      */
     private volatile long externalInputAt;
 
@@ -683,6 +692,7 @@ public class ClaudeSessionController {
                 terminalEscapeParams.setLength(0);
                 terminalInputPaste = false;
                 terminalPasteAfterCR = false;
+                terminalLineEntered = false;
             }
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -794,6 +804,7 @@ public class ClaudeSessionController {
         String activeId;
         Set<String> exclude = new HashSet<>();
         Set<String> claimed = new HashSet<>();
+        Set<String> otherLiveClaims = new HashSet<>();
         synchronized (processOwnershipLock) {
             generation = processGeneration;
             scanId = ++scanSequence;
@@ -806,6 +817,7 @@ public class ClaudeSessionController {
             activeId = activeSessionId;
             if (dir != null && configDir != null && since > 0) {
                 claimed.addAll(claimedByOthers(dir, configDir));
+                otherLiveClaims.addAll(claimedByOtherLiveTabs(dir, configDir));
                 exclude.addAll(claimed);
                 if (activeSessionId == null && promptSubmittedAt <= 0) {
                     // Without a prompt of our own there is nothing that proves a
@@ -833,10 +845,31 @@ public class ClaudeSessionController {
             // prompt (same millisecond), so a resume driven entirely from the
             // keyboard is still followed.
             if (promptAt > 0 && promptAt >= externalAt) {
-                Set<String> candidates = new HashSet<>(claimed);
-                if (activeId != null) candidates.add(activeId);
-                newest = findPromptBearingSession(dir, configDir, candidates,
-                        activeId, promptAt, promptText);
+                // First look for the tab's own conversation: a file nobody else
+                // claims that already holds this prompt. It must win over a
+                // sibling's file with the same text, because a NEW tab's own
+                // file appears a moment after the sibling that submitted the
+                // same prompt — adopting the sibling then would pin this tab to
+                // another tab's conversation.
+                Set<String> ownExclude = new HashSet<>(exclude);
+                ownExclude.addAll(otherLiveClaims);
+                Set<String> own = new HashSet<>(ClaudeSessionStore.listSessionIdsWrittenSince(
+                        dir.toPath(), configDir, since, ownExclude, PROMPT_EVIDENCE_CANDIDATES));
+                // A session another live tab writes is not this tab's own, even
+                // when it is the identity currently tracked (a false adoption).
+                String ownPreferred = activeId != null && !otherLiveClaims.contains(activeId)
+                        ? activeId : null;
+                newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
+                        promptAt, promptText);
+                if (newest == null) {
+                    // Only then may a conversation another live tab writes be
+                    // adopted: that is an in-process /resume from this terminal.
+                    Set<String> borrowed = new HashSet<>(claimed);
+                    borrowed.addAll(otherLiveClaims);
+                    if (activeId != null) borrowed.add(activeId);
+                    newest = findPromptBearingSession(dir, configDir, borrowed, activeId,
+                            promptAt, promptText);
+                }
             }
             if (newest == null) {
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
@@ -1037,6 +1070,33 @@ public class ClaudeSessionController {
                 return owners.isEmpty() ? null : owners;
             });
         }
+    }
+
+    /**
+     * Session IDs claimed by another live controller in the same store, even
+     * when this controller claims them too. A conversation shared with another
+     * tab is not this tab's own, so its own-prompt evidence must not be taken
+     * from it; {@link #claimedByOthers} answers the different question of which
+     * files a scan must not consider at all.
+     */
+    private Set<String> claimedByOtherLiveTabs(java.io.File dir, java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, owners) -> {
+            if (!key.configDir().equals(wantedConfig)
+                    || !key.projectDir().equals(wantedProject)) {
+                return;
+            }
+            for (ClaudeSessionController owner : owners) {
+                if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+                    ids.add(key.sessionId());
+                    return;
+                }
+            }
+        });
+        return ids;
     }
 
     /**
@@ -2594,9 +2654,15 @@ public class ClaudeSessionController {
      */
     private String onTerminalInput(byte[] bytes, long now) {
         String submitted;
+        boolean entered;
         synchronized (terminalInputLine) {
-            externalInputAt = now;
+            terminalLineEntered = false;
             submitted = appendTerminalInput(bytes);
+            entered = terminalLineEntered;
+            terminalLineEntered = false;
+        }
+        if (entered) {
+            externalInputAt = now;
         }
         if (submitted != null) {
             lastPromptText = submitted;
@@ -2658,6 +2724,7 @@ public class ClaudeSessionController {
                 String line = terminalInputLine.toString().trim();
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
+                terminalLineEntered = true;
                 if (!line.isEmpty()) submitted = line;
             } else if (c == 0x7f || c == 0x08) {
                 if (terminalInputCursor > 0) {
@@ -2672,6 +2739,9 @@ public class ClaudeSessionController {
         }
         return submitted;
     }
+
+    /** Set when {@link #appendTerminalInput(byte[])} saw Enter, cleared by the caller. */
+    private boolean terminalLineEntered;
 
     /** Inserts {@code c} at the cursor and advances it. */
     private void insertTerminalChar(char c) {

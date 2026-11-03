@@ -203,6 +203,56 @@ public final class ClaudeSessionStore {
     }
 
     /**
+     * Returns up to {@code limit} IDs of session files modified at or after
+     * {@code sinceMillis}, newest first, skipping {@code excludeIds}.
+     *
+     * <p>Used to look for this tab's own conversation among the files written
+     * since its prompt: another session can be newer than the one this process
+     * is writing, so a single newest-file lookup is not enough.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param sinceMillis     earliest acceptable file modification time (epoch millis)
+     * @param excludeIds      session IDs to ignore (e.g. owned by other tabs); may be {@code null}
+     * @param limit           maximum number of IDs to return
+     * @return session IDs, newest first; empty if none match
+     */
+    public static List<String> listSessionIdsWrittenSince(Path workingDir, Path claudeConfigDir,
+                                                          long sinceMillis, Set<String> excludeIds,
+                                                          int limit) {
+        if (limit <= 0) return List.of();
+        Path dir = sessionsDir(workingDir, claudeConfigDir);
+        if (!Files.isDirectory(dir)) return List.of();
+        List<java.util.Map.Entry<Long, String>> found = new ArrayList<>();
+        try (Stream<Path> files = Files.list(dir)) {
+            for (Path file : (Iterable<Path>) files::iterator) {
+                String name = file.getFileName().toString();
+                if (!name.endsWith(".jsonl")) continue;
+                String id = sessionIdOf(file);
+                if (excludeIds != null && excludeIds.contains(id)) continue;
+                long mtime;
+                try {
+                    mtime = Files.getLastModifiedTime(file).toMillis();
+                } catch (IOException e) {
+                    continue;
+                }
+                if (mtime < sinceMillis) continue;
+                found.add(java.util.Map.entry(mtime, id));
+            }
+        } catch (IOException e) {
+            LOG.fine("Could not scan sessions in " + dir + ": " + e.getMessage());
+            return List.of();
+        }
+        found.sort(java.util.Map.Entry.<Long, String>comparingByKey().reversed());
+        List<String> ids = new ArrayList<>();
+        for (java.util.Map.Entry<Long, String> entry : found) {
+            ids.add(entry.getValue());
+            if (ids.size() >= limit) break;
+        }
+        return ids;
+    }
+
+    /**
      * Returns whether the session file contains a user message with
      * {@code prompt} whose timestamp is at or after {@code sinceMillis}.
      *
