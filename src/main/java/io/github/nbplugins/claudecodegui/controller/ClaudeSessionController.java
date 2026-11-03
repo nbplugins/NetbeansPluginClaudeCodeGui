@@ -226,8 +226,16 @@ public class ClaudeSessionController {
      */
     private final StringBuilder terminalInputLine = new StringBuilder();
 
-    /** True while an escape sequence in the terminal input is being skipped. */
-    private boolean terminalInputEscape;
+    /**
+     * Escape-sequence parser state: {@code 0} outside a sequence, {@code 1}
+     * right after {@code ESC}, {@code 2} inside a CSI sequence ({@code ESC [}),
+     * {@code 3} inside an SS3 sequence ({@code ESC O}).
+     *
+     * <p>A sequence is skipped as a whole: the {@code [} that opens a CSI is a
+     * parameter byte, not a final one, and treating it as final would let
+     * cursor keys (e.g. {@code ESC [ D}) leak {@code D} into the typed line.
+     */
+    private int terminalInputEscape;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -650,7 +658,7 @@ public class ClaudeSessionController {
             externalInputAt = 0;
             synchronized (terminalInputLine) {
                 terminalInputLine.setLength(0);
-                terminalInputEscape = false;
+                terminalInputEscape = 0;
             }
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -2558,8 +2566,9 @@ public class ClaudeSessionController {
      *
      * @param bytes raw input bytes
      * @param now   time of the input (epoch millis)
+     * @return the line submitted with this input, or {@code null}
      */
-    private void onTerminalInput(byte[] bytes, long now) {
+    private String onTerminalInput(byte[] bytes, long now) {
         String submitted;
         synchronized (terminalInputLine) {
             externalInputAt = now;
@@ -2570,6 +2579,7 @@ public class ClaudeSessionController {
             promptSubmittedAt = now;
             scheduleIdentityRefresh();
         }
+        return submitted;
     }
 
     /**
@@ -2585,9 +2595,17 @@ public class ClaudeSessionController {
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (c == 0x1b) {
-                terminalInputEscape = true;
-            } else if (terminalInputEscape) {
-                if (c >= 0x40 && c <= 0x7e) terminalInputEscape = false;
+                terminalInputEscape = 1;
+            } else if (terminalInputEscape == 1) {
+                // ESC [ starts a CSI sequence, ESC O an SS3 one; any other
+                // character ends a two-character escape (ESC x).
+                terminalInputEscape = c == '[' ? 2 : c == 'O' ? 3 : 0;
+            } else if (terminalInputEscape == 2) {
+                // CSI: parameter and intermediate bytes (0x20–0x3f) precede
+                // the final byte (0x40–0x7e), which ends the sequence.
+                if (c >= 0x40 && c <= 0x7e) terminalInputEscape = 0;
+            } else if (terminalInputEscape == 3) {
+                terminalInputEscape = 0; // SS3: exactly one character after ESC O
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
                 terminalInputLine.setLength(0);
@@ -2610,9 +2628,14 @@ public class ClaudeSessionController {
         externalInputAt = millis;
     }
 
-    /** Package-private for tests: simulates raw terminal input arriving at {@code millis}. */
-    void simulateTerminalInput(byte[] bytes, long millis) {
-        onTerminalInput(bytes, millis);
+    /**
+     * Package-private for tests: simulates raw terminal input arriving at
+     * {@code millis}.
+     *
+     * @return the line submitted by this input, or {@code null}
+     */
+    String simulateTerminalInput(byte[] bytes, long millis) {
+        return onTerminalInput(bytes, millis);
     }
 
     /**

@@ -173,6 +173,19 @@ public class ClaudeSessionTab extends TopComponent
      */
     private volatile long startRequestSeq;
 
+    /**
+     * Directory of a launch whose preparation is still running, or {@code null}.
+     *
+     * <p>{@link ClaudeSessionModel#getWorkingDirectory()} is only updated when
+     * the process actually starts, so while the launch is being prepared it
+     * still names the previous project. Restart actions offered in that window
+     * must use this directory instead.
+     */
+    private volatile File pendingLaunchDir;
+
+    /** Effective config dir of a launch still being prepared, or {@code null}. */
+    private volatile Path pendingLaunchConfigDir;
+
     // -------------------------------------------------------------------------
     // MVC
     // -------------------------------------------------------------------------
@@ -844,6 +857,10 @@ public class ClaudeSessionTab extends TopComponent
             }
         }
         final Path capturedConfigDir = configDir;
+        // Until the process starts, the model still describes the previous
+        // project; restart actions must follow this launch instead.
+        pendingLaunchDir = dir;
+        pendingLaunchConfigDir = capturedConfigDir;
         controller.setHangCallback(
             (cmd, err) -> showStartError(cmd, err, model.getWorkingDirectory(), capturedConfigDir));
         updateDisplayName(dir);
@@ -1269,12 +1286,13 @@ public class ClaudeSessionTab extends TopComponent
     }
 
     public void openSwitchDialog(SessionMode initialMode) {
-        File workingDir = model.getWorkingDirectory();
+        File workingDir = currentOrPendingDirectory();
         if (workingDir == null) return;
 
         // The controller captured the effective config dir and session ID at launch,
         // so the dialog lists/prefills the same store the running process uses.
-        Path claudeConfigDir = controller.getActiveConfigDir();
+        // While a launch is pending, its config dir is the one the process will use.
+        Path claudeConfigDir = currentOrPendingConfigDir();
         String currentId = controller.resolveActiveSessionId();
         SavedSession current = currentId != null
                 ? ClaudeSessionStore.findSession(workingDir.toPath(), claudeConfigDir, currentId)
@@ -1316,8 +1334,31 @@ public class ClaudeSessionTab extends TopComponent
         return slug != null && !slug.isBlank() ? slug : "";
     }
 
+    /**
+     * Directory the Save &amp; Switch dialog and restart actions operate on: the
+     * launch still being prepared (if any), otherwise the running session's.
+     *
+     * <p>{@code model.getWorkingDirectory()} is only updated when the process
+     * starts, so during a pending launch it still names the previous project.
+     */
+    private File currentOrPendingDirectory() {
+        File pending = pendingLaunchDir;
+        return pending != null ? pending : model.getWorkingDirectory();
+    }
+
+    /**
+     * Effective Claude config dir matching {@link #currentOrPendingDirectory()}.
+     *
+     * @return the running session's config dir, else the pending launch's,
+     *         else {@code null} for the default store
+     */
+    private Path currentOrPendingConfigDir() {
+        Path active = controller.getActiveConfigDir();
+        return active != null ? active : pendingLaunchConfigDir;
+    }
+
     public void onSaveAndSwitch(String sessionName, SessionMode mode, String resumeId) {
-        File dir = model.getWorkingDirectory();
+        File dir = currentOrPendingDirectory();
         String profileName = selectorPanel.getSelectedProfileName();
         String extraCliArgs = selectorPanel.getExtraCliArgs();
 
@@ -1336,8 +1377,14 @@ public class ClaudeSessionTab extends TopComponent
 
         // Restart with new mode
         if (dir != null) {
-            startSession(dir, profileName, extraCliArgs, mode, resumeId);
+            restartSession(dir, profileName, extraCliArgs, mode, resumeId);
         }
+    }
+
+    /** Restarts the session with the chosen mode. Protected to allow overriding in tests. */
+    protected void restartSession(File dir, String profileName, String extraCliArgs,
+                                  SessionMode mode, String resumeId) {
+        startSession(dir, profileName, extraCliArgs, mode, resumeId);
     }
 
     /** Closes this tab. Protected to allow overriding in tests. */
@@ -1355,6 +1402,8 @@ public class ClaudeSessionTab extends TopComponent
         // The layout is gone: a launch whose preparation is still running would
         // otherwise attach its process to the closed, detached widget.
         startRequestSeq++;
+        pendingLaunchDir = null;
+        pendingLaunchConfigDir = null;
         if (terminalWidget != null) {
             terminalWidget.close();
             terminalWidget = null;

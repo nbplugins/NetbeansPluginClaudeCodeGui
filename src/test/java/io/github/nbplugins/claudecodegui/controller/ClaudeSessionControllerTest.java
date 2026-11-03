@@ -2115,6 +2115,31 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * Cursor keys and other escape sequences must be consumed as a whole: their
+     * final byte must not leak into the buffered line, or the recorded prompt
+     * would no longer match the one actually submitted and the identity scan
+     * could not confirm the conversation on screen.
+     */
+    @Test
+    void escapeSequencesDoNotCorruptATerminalPrompt() {
+        byte[] enter = {'\r'};
+        assertNull(controller.simulateTerminalInput(
+                "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS));
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 1); // Left
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 2); // Right
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'H'}, START_MS + 3); // Home
+        controller.simulateTerminalInput(
+                new byte[]{0x1b, '[', '3', '~'}, START_MS + 4);                     // Delete
+        controller.simulateTerminalInput(
+                new byte[]{0x1b, '[', '1', ';', '5', 'D'}, START_MS + 5);           // Ctrl+Left
+        controller.simulateTerminalInput(new byte[]{0x1b, 'O', 'A'}, START_MS + 6); // SS3 Up
+        controller.simulateTerminalInput(new byte[]{0x1b, 'x'}, START_MS + 7);      // Alt+x
+
+        assertEquals("hello", controller.simulateTerminalInput(enter, START_MS + 8),
+                "escape sequences must not append their bytes to the typed prompt");
+    }
+
     // -------------------------------------------------------------------------
     // prepareLaunchIdentity — captured before the process starts
     // -------------------------------------------------------------------------
