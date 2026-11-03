@@ -288,6 +288,25 @@ public final class SessionModePanel extends JPanel {
     }
 
     /**
+     * Shows an already loaded session list for the given directory / profile.
+     * Selecting the same session that was selected before keeps "Resume
+     * specific" usable across a refresh. Must be called on the EDT.
+     *
+     * @param newWorkingDir      working directory the sessions belong to
+     * @param newClaudeConfigDir config dir the sessions belong to (null → ~/.claude)
+     * @param newExcludeSession  session ID to exclude, or null
+     * @param sessions           sessions loaded by the caller
+     */
+    public void applySessions(Path newWorkingDir, Path newClaudeConfigDir,
+                              String newExcludeSession, List<SavedSession> sessions) {
+        this.workingDir      = newWorkingDir;
+        this.claudeConfigDir = newClaudeConfigDir;
+        this.excludeSession  = newExcludeSession;
+        setSessions(sessions);
+        updateHistoryRadiosEnabled();
+    }
+
+    /**
      * Returns {@code true} if the current selection is valid: any mode except
      * {@link SessionMode#RESUME_SPECIFIC}, or RESUME_SPECIFIC with a row selected.
      *
@@ -358,11 +377,46 @@ public final class SessionModePanel extends JPanel {
             tableModel.setSessions(List.of());
             return;
         }
-        List<SavedSession> sessions = ClaudeSessionStore.listSessions(workingDir, claudeConfigDir);
+        setSessions(ClaudeSessionStore.listSessions(workingDir, claudeConfigDir));
+    }
+
+    /**
+     * Replaces the table contents, keeping the row that was selected before the
+     * update selected (the table model fires {@code fireTableDataChanged()},
+     * which otherwise drops the selection and silently turns "Resume specific"
+     * into an invalid choice).
+     */
+    private void setSessions(List<SavedSession> loaded) {
+        String selectedId = selectedSessionId();
+        List<SavedSession> sessions = new ArrayList<>(loaded);
         if (excludeSession != null) {
             sessions.removeIf(s -> excludeSession.equals(s.sessionId()));
         }
         tableModel.setSessions(sessions);
+        if (selectedId != null) {
+            selectSessionById(selectedId);
+        }
+    }
+
+    /** Session ID of the selected row, regardless of the selected mode. */
+    private String selectedSessionId() {
+        int viewRow = sessionTable.getSelectedRow();
+        if (viewRow < 0) return null;
+        int modelRow = sessionTable.convertRowIndexToModel(viewRow);
+        return tableModel.getSessionId(modelRow);
+    }
+
+    /** Selects the row with the given session ID, if the table still contains it. */
+    void selectSessionById(String sessionId) {
+        for (int row = 0; row < tableModel.getRowCount(); row++) {
+            if (sessionId.equals(tableModel.getSessionId(row))) {
+                int viewRow = sessionTable.convertRowIndexToView(row);
+                if (viewRow >= 0) {
+                    sessionTable.setRowSelectionInterval(viewRow, viewRow);
+                }
+                return;
+            }
+        }
     }
 
     private void onRename() {

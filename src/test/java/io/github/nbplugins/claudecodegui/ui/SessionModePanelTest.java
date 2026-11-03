@@ -1,9 +1,12 @@
 package io.github.nbplugins.claudecodegui.ui;
 
+import io.github.nbplugins.claudecodegui.model.SavedSession;
 import io.github.nbplugins.claudecodegui.model.SessionMode;
+import io.github.nbplugins.claudecodegui.process.ClaudeSessionStore;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,9 +27,26 @@ class SessionModePanelTest {
         return workingDir.resolve(".claude");
     }
 
+    /**
+     * Creates a sessions directory with timestamped JSONL stubs so that
+     * {@link ClaudeSessionStore#listSessions} returns them as table rows.
+     */
+    private Path withSessions(Path workingDir, String... sessionIds) throws IOException {
+        Path configDir = workingDir.resolve(".claude");
+        String hash = workingDir.toAbsolutePath().toString().replace("/", "-");
+        Path sessionsSubDir = configDir.resolve("projects").resolve(hash);
+        Files.createDirectories(sessionsSubDir);
+        for (String id : sessionIds) {
+            Files.writeString(sessionsSubDir.resolve(id + ".jsonl"),
+                    "{\"sessionId\":\"" + id + "\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n");
+        }
+        return configDir;
+    }
+
     // -------------------------------------------------------------------------
     // No-sessions: radios disabled and selection falls back to NEW
     // -------------------------------------------------------------------------
+
 
     @Test
     void noSessions_continueAndResumeDisabled() {
@@ -118,6 +138,71 @@ class SessionModePanelTest {
     void nullWorkingDir_defaultIsNew() {
         SessionModePanel panel = new SessionModePanel(null, null, null, false);
         assertEquals(SessionMode.NEW, panel.getSelectedMode());
+    }
+
+    // -------------------------------------------------------------------------
+    // Selection survives session-list refreshes
+    // -------------------------------------------------------------------------
+
+    @Test
+    void applySessions_keepsSelectedSessionById() throws IOException {
+        Path configDir = withSessions(sessionDir, "session-a", "session-b");
+        SessionModePanel panel = new SessionModePanel(sessionDir, configDir, null, false);
+        panel.setMode(SessionMode.RESUME_SPECIFIC);
+        panel.selectSessionById("session-a");
+        assertEquals("session-a", panel.getSelectedSessionId());
+
+        List<SavedSession> reloaded = ClaudeSessionStore.listSessions(sessionDir, configDir);
+        panel.applySessions(sessionDir, configDir, null, reloaded);
+
+        assertEquals("session-a", panel.getSelectedSessionId(),
+                "The selected session must survive a background refresh");
+        assertTrue(panel.isSelectionValid(),
+                "Resume specific must stay valid while the selected session is still listed");
+    }
+
+    @Test
+    void reload_keepsSelectedSessionById() throws IOException {
+        Path configDir = withSessions(sessionDir, "session-a", "session-b");
+        SessionModePanel panel = new SessionModePanel(sessionDir, configDir, null, false);
+        panel.setMode(SessionMode.RESUME_SPECIFIC);
+        panel.selectSessionById("session-b");
+
+        panel.reload(sessionDir, configDir, null);
+
+        assertEquals("session-b", panel.getSelectedSessionId(),
+                "Reloading the same directory must keep the selected session");
+        assertTrue(panel.isSelectionValid());
+    }
+
+    @Test
+    void applySessions_dropsSelectionWhenTheSessionIsGone() throws IOException {
+        Path configDir = withSessions(sessionDir, "session-a");
+        SessionModePanel panel = new SessionModePanel(sessionDir, configDir, null, false);
+        panel.setMode(SessionMode.RESUME_SPECIFIC);
+        panel.selectSessionById("session-a");
+        assertTrue(panel.isSelectionValid());
+
+        panel.applySessions(sessionDir, configDir, null, List.of());
+
+        assertNull(panel.getSelectedSessionId());
+        assertFalse(panel.isSelectionValid(),
+                "Resume specific without a row must not be accepted by the Open button");
+    }
+
+    @Test
+    void applySessions_excludedSessionIsNotSelected() throws IOException {
+        Path configDir = withSessions(sessionDir, "session-a", "session-b");
+        SessionModePanel panel = new SessionModePanel(sessionDir, configDir, null, false);
+        panel.setMode(SessionMode.RESUME_SPECIFIC);
+        panel.selectSessionById("session-a");
+
+        List<SavedSession> reloaded = ClaudeSessionStore.listSessions(sessionDir, configDir);
+        panel.applySessions(sessionDir, configDir, "session-a", reloaded);
+
+        assertNull(panel.getSelectedSessionId(),
+                "The excluded (current) session must not stay selected");
+        assertFalse(panel.isSelectionValid());
     }
 
     // -------------------------------------------------------------------------

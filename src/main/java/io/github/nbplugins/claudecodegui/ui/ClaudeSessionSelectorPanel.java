@@ -399,7 +399,10 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
 
     private void reloadSessionModePanel() {
         if (sessionModePanel != null) {
-            reloadSessionTable();
+            sessionModePanel.reload(
+                    resolveDir() != null ? resolveDir().toPath() : null,
+                    resolveClaudeConfigDir(),
+                    null);
             sessionModePanel.setMode(ClaudeCodePreferences.getContextMenuSessionMode());
         }
     }
@@ -408,19 +411,41 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
      * Reloads the session list of the embedded mode panel without changing the
      * selected mode.  Called after a session stops so a name saved by the
      * Save &amp; Switch dialog is visible immediately.
+     *
+     * <p>The transcript files are parsed on a worker (the reload runs while the
+     * tab tears down its chat UI); only the table update happens on the EDT.
      */
     public void refreshSessionList() {
-        if (sessionModePanel != null) {
-            reloadSessionTable();
+        if (sessionModePanel == null) return;
+        File dir = resolveDir();
+        java.nio.file.Path workingDir = dir != null ? dir.toPath() : null;
+        java.nio.file.Path configDir = resolveClaudeConfigDir();
+        if (workingDir == null) {
+            sessionModePanel.reload(null, configDir, null);
+            return;
         }
+        long requestId = ++sessionListRequestSeq;
+        Thread loader = new Thread(() -> {
+            java.util.List<io.github.nbplugins.claudecodegui.model.SavedSession> sessions;
+            try {
+                sessions = io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .listSessions(workingDir, configDir);
+            } catch (RuntimeException e) {
+                LOG.fine("Could not reload the session list: " + e);
+                sessions = java.util.List.of();
+            }
+            java.util.List<io.github.nbplugins.claudecodegui.model.SavedSession> loaded = sessions;
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (requestId != sessionListRequestSeq) return; // superseded
+                sessionModePanel.applySessions(workingDir, configDir, null, loaded);
+            });
+        }, "session-list-reload");
+        loader.setDaemon(true);
+        loader.start();
     }
 
-    private void reloadSessionTable() {
-        sessionModePanel.reload(
-                resolveDir() != null ? resolveDir().toPath() : null,
-                resolveClaudeConfigDir(),
-                null);
-    }
+    /** Sequence of the last asynchronous refresh, to drop superseded results. */
+    private long sessionListRequestSeq;
 
     private File resolveDir() {
         Object item = pathCombo != null ? pathCombo.getSelectedItem() : null;
@@ -466,6 +491,12 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
 
         if (!isProjectDirectory(dir)) {
             saveToHistory(dir.getAbsolutePath());
+        }
+
+        if (!sessionModePanel.isSelectionValid()) {
+            showError(NbBundle.getMessage(ClaudeSessionSelectorPanel.class,
+                    "ERR_NoSessionSelected"));
+            return;
         }
 
         errorLabel.setVisible(false);
