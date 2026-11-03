@@ -2126,13 +2126,13 @@ class ClaudeSessionControllerTest {
         byte[] enter = {'\r'};
         assertNull(controller.simulateTerminalInput(
                 "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS));
-        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 1); // Left
-        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 2); // Right
-        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'H'}, START_MS + 3); // Home
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 1); // Up
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'B'}, START_MS + 2); // Down
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'Z'}, START_MS + 3); // Shift+Tab
         controller.simulateTerminalInput(
-                new byte[]{0x1b, '[', '3', '~'}, START_MS + 4);                     // Delete
+                new byte[]{0x1b, '[', '5', '~'}, START_MS + 4);                     // PgUp
         controller.simulateTerminalInput(
-                new byte[]{0x1b, '[', '1', ';', '5', 'D'}, START_MS + 5);           // Ctrl+Left
+                new byte[]{0x1b, '[', '6', '~'}, START_MS + 5);                     // PgDn
         controller.simulateTerminalInput(new byte[]{0x1b, 'O', 'A'}, START_MS + 6); // SS3 Up
         controller.simulateTerminalInput(new byte[]{0x1b, 'x'}, START_MS + 7);      // Alt+x
 
@@ -2175,6 +2175,45 @@ class ClaudeSessionControllerTest {
 
         assertEquals("a\nb",
                 controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 3));
+    }
+
+    /**
+     * A prompt corrected with Left-arrow is submitted differently from the keys
+     * pressed: the buffered line must apply the cursor move, or the recorded
+     * prompt does not match the conversation and the evidence is lost.
+     */
+    @Test
+    void cursorEditsReconstructTheSubmittedPrompt() {
+        controller.simulateTerminalInput(
+                "helo".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 1); // Left
+        controller.simulateTerminalInput(
+                "l".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 2);
+
+        assertEquals("hello",
+                controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 3),
+                "the character typed after Left must land before the last one");
+    }
+
+    @Test
+    void homeEndDeleteAndBackspaceEditTheSubmittedPrompt() {
+        controller.simulateTerminalInput(
+                "ac".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'H'}, START_MS + 1);      // Home
+        controller.simulateTerminalInput(
+                "0".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 2);    // "0ac"
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'F'}, START_MS + 3);      // End
+        controller.simulateTerminalInput(
+                "d".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 4);    // "0acd"
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'H'}, START_MS + 5);      // Home
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 6);      // Right
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 7);      // Right
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', '3', '~'}, START_MS + 8); // Delete "c"
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 9);      // Left
+        controller.simulateTerminalInput(new byte[]{0x7f}, START_MS + 10);               // Backspace "0"
+
+        assertEquals("ad",
+                controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 11));
     }
 
     // -------------------------------------------------------------------------

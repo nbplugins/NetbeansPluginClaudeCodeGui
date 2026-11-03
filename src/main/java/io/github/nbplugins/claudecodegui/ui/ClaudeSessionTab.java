@@ -564,7 +564,9 @@ public class ClaudeSessionTab extends TopComponent
     @Override
     public void writeExternal(ObjectOutput out) throws IOException {
         super.writeExternal(out);
-        File dir = model.getWorkingDirectory();
+        // Persist the project being launched if one is still being prepared:
+        // the model still names the previous project in that window.
+        File dir = currentOrPendingDirectory();
         out.writeUTF(dir != null ? dir.getAbsolutePath() : "");
         out.writeUTF(selectorPanel.getSelectedProfileName());
         out.writeUTF(selectorPanel.getExtraCliArgs());

@@ -76,6 +76,37 @@ class ClaudeSessionTabPendingLaunchTest {
         }
     }
 
+    /**
+     * NetBeans persists open tabs while a launch may still be preparing; the
+     * saved path must be the project being launched, not the previous one.
+     */
+    @Test
+    void persistingDuringAPendingLaunchStoresThatLaunchesDirectory() throws Exception {
+        Path tmp = Files.createTempDirectory("pending-launch-save-test");
+        try {
+            File previous = tmp.resolve("project-a").toFile();
+            File pending = tmp.resolve("project-b").toFile();
+            ClaudeSessionTab tab = new ClaudeSessionTab();
+            modelOf(tab).setWorkingDirectory(previous);
+            setField(tab, "pendingLaunchDir", pending);
+
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            try (java.io.ObjectOutputStream out = new java.io.ObjectOutputStream(bos)) {
+                tab.writeExternal(out);
+            }
+            String serialized = new String(bos.toByteArray(),
+                    java.nio.charset.StandardCharsets.ISO_8859_1);
+
+            // The superclass metadata (tab name/tooltip) may still describe the
+            // previous project until the launch starts; the restored path is the
+            // project being launched.
+            assertTrue(serialized.contains(pending.getAbsolutePath()),
+                    "the saved path must be the project being launched");
+        } finally {
+            tmp.toFile().delete();
+        }
+    }
+
     private static String pathToRestore(ClaudeSessionTab tab) throws Exception {
         Field f = ClaudeSessionTab.class.getDeclaredField("pathToRestore");
         f.setAccessible(true);

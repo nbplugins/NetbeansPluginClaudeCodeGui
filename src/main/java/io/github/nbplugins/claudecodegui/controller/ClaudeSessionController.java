@@ -227,6 +227,13 @@ public class ClaudeSessionController {
     private final StringBuilder terminalInputLine = new StringBuilder();
 
     /**
+     * Insertion point within {@link #terminalInputLine}, in characters. Cursor
+     * keys move it so that text inserted after an edit (typing over a typo,
+     * Delete, Backspace) lands where the user sees it.
+     */
+    private int terminalInputCursor;
+
+    /**
      * Escape-sequence parser state: {@code 0} outside a sequence, {@code 1}
      * right after {@code ESC}, {@code 2} inside a CSI sequence ({@code ESC [}),
      * {@code 3} inside an SS3 sequence ({@code ESC O}).
@@ -671,6 +678,7 @@ public class ClaudeSessionController {
             externalInputAt = 0;
             synchronized (terminalInputLine) {
                 terminalInputLine.setLength(0);
+                terminalInputCursor = 0;
                 terminalInputEscape = 0;
                 terminalEscapeParams.setLength(0);
                 terminalInputPaste = false;
@@ -2603,9 +2611,10 @@ public class ClaudeSessionController {
      * line when Enter was pressed, or {@code null}.
      *
      * <p>Escape sequences (cursor keys, the {@code /resume} picker) and control
-     * characters are dropped so that only typed text is kept. Inside a
-     * bracketed paste the text is recorded as typed — including its newlines,
-     * which are part of the prompt rather than submissions.
+     * characters are dropped so that only typed text is kept; the cursor keys
+     * that edit the line (Left/Right/Home/End/Delete) are applied to it.
+     * Inside a bracketed paste the text is recorded as typed — including its
+     * newlines, which are part of the prompt rather than submissions.
      */
     private String appendTerminalInput(byte[] bytes) {
         String submitted = null;
@@ -2631,52 +2640,97 @@ public class ClaudeSessionController {
                 }
             } else if (terminalInputEscape == 3) {
                 terminalInputEscape = 0; // SS3: exactly one character after ESC O
+                if (!terminalInputPaste) applyCursorKey(c);
             } else if (terminalInputPaste) {
                 // Inside a paste every newline is part of the prompt, not a
                 // submission of the line typed so far.
                 if (c == '\r') {
-                    terminalInputLine.append('\n');
+                    insertTerminalChar('\n');
                     terminalPasteAfterCR = true;
                 } else if (c == '\n') {
-                    if (!terminalPasteAfterCR) terminalInputLine.append('\n');
+                    if (!terminalPasteAfterCR) insertTerminalChar('\n');
                     terminalPasteAfterCR = false;
                 } else if (c >= 0x20) {
-                    terminalInputLine.append(c);
+                    insertTerminalChar(c);
                     terminalPasteAfterCR = false;
                 }
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
                 terminalInputLine.setLength(0);
+                terminalInputCursor = 0;
                 if (!line.isEmpty()) submitted = line;
             } else if (c == 0x7f || c == 0x08) {
-                if (terminalInputLine.length() > 0) {
-                    terminalInputLine.setLength(terminalInputLine.length() - 1);
+                if (terminalInputCursor > 0) {
+                    terminalInputLine.deleteCharAt(--terminalInputCursor);
                 }
             } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
                 terminalInputLine.setLength(0);
+                terminalInputCursor = 0;
             } else if (c >= 0x20) {
-                terminalInputLine.append(c);
+                insertTerminalChar(c);
             }
         }
         return submitted;
     }
 
+    /** Inserts {@code c} at the cursor and advances it. */
+    private void insertTerminalChar(char c) {
+        int at = Math.min(terminalInputCursor, terminalInputLine.length());
+        terminalInputLine.insert(at, c);
+        terminalInputCursor = at + 1;
+    }
+
+    /**
+     * Applies a horizontal cursor key (Left/Right/Home/End) to the line being
+     * recorded, so that text typed after it lands where the user sees it.
+     *
+     * @param key CSI/SS3 final byte: {@code D}, {@code C}, {@code H} or {@code F}
+     */
+    private void applyCursorKey(char key) {
+        switch (key) {
+            case 'D' -> terminalInputCursor = Math.max(0, terminalInputCursor - 1);
+            case 'C' -> terminalInputCursor =
+                    Math.min(terminalInputLine.length(), terminalInputCursor + 1);
+            case 'H' -> terminalInputCursor = 0;
+            case 'F' -> terminalInputCursor = terminalInputLine.length();
+            default -> { /* Up/Down and other keys do not edit the line */ }
+        }
+    }
+
+    /** Deletes the character under the cursor (the Delete key). */
+    private void deleteTerminalCharAtCursor() {
+        if (terminalInputCursor < terminalInputLine.length()) {
+            terminalInputLine.deleteCharAt(terminalInputCursor);
+        }
+    }
+
     /**
      * Handles the final byte of a CSI sequence: the bracketed-paste markers
      * {@code ESC [ 200 ~} / {@code ESC [ 201 ~} switch paste recording on and
-     * off, every other sequence is dropped.
+     * off, cursor keys edit the recorded line, everything else is dropped.
      *
      * @param finalByte final byte of the sequence
      * @param params    parameter bytes collected before it
      */
     private void onCsiFinal(char finalByte, String params) {
-        if (finalByte != '~') return;
-        if ("200".equals(params)) {
-            terminalInputPaste = true;
-            terminalPasteAfterCR = false;
-        } else if ("201".equals(params)) {
-            terminalInputPaste = false;
-            terminalPasteAfterCR = false;
+        if (finalByte == '~') {
+            if ("200".equals(params)) {
+                terminalInputPaste = true;
+                terminalPasteAfterCR = false;
+            } else if ("201".equals(params)) {
+                terminalInputPaste = false;
+                terminalPasteAfterCR = false;
+            } else if (!terminalInputPaste) {
+                if ("3".equals(params)) {
+                    deleteTerminalCharAtCursor();
+                } else if ("1".equals(params) || "7".equals(params)) {
+                    applyCursorKey('H');
+                } else if ("4".equals(params) || "8".equals(params)) {
+                    applyCursorKey('F');
+                }
+            }
+        } else if (!terminalInputPaste) {
+            applyCursorKey(finalByte); // Left/Right/Home/End; others are ignored
         }
     }
 
