@@ -82,7 +82,7 @@ public class ClaudeSessionController {
 
     private final ScreenContentDetector screenContentDetector = new ScreenContentDetector();
 
-    private ClaudeProcess claudeProcess;
+    private volatile ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
     private java.io.File workingDir;
     private volatile JediTermWidget terminalWidget;
@@ -379,12 +379,16 @@ public class ClaudeSessionController {
         model.setWorkingDirectory(dir);
         model.loadPersistedHistory();
 
-        // Waiter thread: notifies when the process exits
+        // Waiter thread: releases the session claims as soon as the process exits,
+        // even when it exits from inside the terminal without an explicit stop.
+        ClaudeProcess ownerProcess = claudeProcess;
         Thread waiter = new Thread(() -> {
             try {
                 process.waitFor();
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
+            } finally {
+                onProcessExited(ownerProcess);
             }
         }, "claude-waiter");
         waiter.setDaemon(true);
@@ -500,86 +504,58 @@ public class ClaudeSessionController {
      * @return session ID, or {@code null} if it cannot be determined
      */
     public String resolveActiveSessionId() {
-        java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
-        java.nio.file.Path configDir = activeConfigDir;
-        if (dir == null || configDir == null) return activeSessionId;
-
-        // Other live tabs publish their own sessions when they learn them (at
-        // launch for continue/resume, at the first prompt for new sessions);
-        // never guess on another tab's behalf, or its file could be claimed here.
-        refreshBaseIdentity();
-
-        if (processStartedAt > 0) {
-            // Claude writes only to the active conversation, so the session file
-            // it touched last is the one being displayed — this catches session
-            // switches made inside the TUI without a process restart.
-            String newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
-                    dir.toPath(), configDir, processStartedAt, claimedByOthers());
-            if (newest != null && !newest.equals(activeSessionId)) {
-                LOG.fine("Active session switched to " + newest + " in " + configDir);
-                String previous = activeSessionId;
-                activeSessionId = newest;
-                claimSession(newest);
-                releaseClaim(previous);
-            }
-        }
+        refreshSessionIdentity();
         return activeSessionId;
     }
 
     /**
-     * Resolves the session ID known at launch when it is still unknown: for
-     * {@link SessionMode#NEW} this is the file created after the launch that is
-     * not in the pre-launch snapshot and not claimed by another live tab.
-     * Claims the resolved ID so other tabs can see it.
-     */
-    private synchronized void refreshBaseIdentity() {
-        if (activeSessionId == null) {
-            resolveNewSessionIdentity();
-        }
-        if (activeSessionId == null) {
-            java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
-            java.nio.file.Path configDir = activeConfigDir;
-            if (dir != null && configDir != null) {
-                Set<String> exclude = new HashSet<>(preStartSessionIds);
-                exclude.addAll(claimedByOthers());
-                activeSessionId = ClaudeSessionStore.findSessionIdCreatedAfter(
-                        dir.toPath(), configDir, exclude, processStartedAt);
-            }
-        }
-        claimSession(activeSessionId);
-    }
-
-    /**
-     * Attributes the session file written since this tab submitted its prompt
-     * (or since launch, when the prompt was typed directly into the terminal)
-     * to this tab and claims it, so no sibling tab can claim it first.
+     * Re-resolves the session the running process is writing and keeps the
+     * cross-tab claim registry in sync: when Claude switches conversations
+     * (in-process {@code /resume}), the claim on the previous session is
+     * released so a sibling tab can take it, and the new one is claimed.
      *
-     * @return {@code true} if the identity is now known
+     * <p>The identity is the newest session file written since the launch (or
+     * since the last prompt submitted from the plugin) that is not owned by
+     * another live tab. When no such file exists yet — e.g. a continue/resume
+     * launch that has not written anything — the identity captured at launch is
+     * kept.
+     *
+     * @return {@code true} if an identity is known
      */
-    synchronized boolean resolveNewSessionIdentity() {
-        if (activeSessionId != null) return true;
+    synchronized boolean refreshSessionIdentity() {
         java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
         java.nio.file.Path configDir = activeConfigDir;
         long since = Math.max(processStartedAt, promptSubmittedAt);
-        if (dir == null || configDir == null || since <= 0) return false;
-        Set<String> exclude = new HashSet<>(preStartSessionIds);
-        exclude.addAll(claimedByOthers());
-        String id = ClaudeSessionStore.findLatestSessionIdWrittenSince(
-                dir.toPath(), configDir, since, exclude);
-        if (id == null) return false;
-        activeSessionId = id;
-        claimSession(id);
-        LOG.fine("Resolved session " + id + " for " + dir + " (written since " + since + ")");
-        return true;
+        if (dir != null && configDir != null && since > 0) {
+            Set<String> exclude = new HashSet<>(claimedByOthers());
+            if (activeSessionId == null) {
+                // A session that existed before the launch cannot be the new one
+                // created by this process, even if something else touched it.
+                exclude.addAll(preStartSessionIds);
+            }
+            String newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                    dir.toPath(), configDir, since, exclude);
+            if (newest != null && !newest.equals(activeSessionId)) {
+                String previous = activeSessionId;
+                activeSessionId = newest;
+                claimSession(newest);
+                releaseClaim(previous);
+                LOG.fine("Session of " + dir + " is now " + newest
+                        + (previous != null ? " (was " + previous + ")" : ""));
+            }
+        }
+        claimSession(activeSessionId);
+        return activeSessionId != null;
     }
 
     /**
-     * Starts a short background poll that claims a new session as soon as its
-     * file appears after the first prompt. Runs briefly: once the identity is
-     * known the poll exits immediately on the next tick.
+     * Samples the session identity for a few seconds after a prompt, so a new
+     * session file is claimed as soon as it appears and an in-process switch is
+     * noticed without waiting for the screen poll.
      */
-    private void startNewSessionResolver() {
-        if (activeSessionId != null) return;
+    private void startIdentityResolver() {
+        java.nio.file.Path configDir = activeConfigDir;
+        if (configDir == null) return;
         Thread t = new Thread(() -> {
             for (int i = 0; i < 10; i++) {
                 try {
@@ -588,7 +564,7 @@ public class ClaudeSessionController {
                     Thread.currentThread().interrupt();
                     return;
                 }
-                if (resolveNewSessionIdentity()) return;
+                refreshSessionIdentity();
             }
         }, "session-id-resolve");
         t.setDaemon(true);
@@ -624,13 +600,40 @@ public class ClaudeSessionController {
         Set<String> ids = new HashSet<>();
         SESSION_CLAIMS.forEach((id, owners) -> {
             for (ClaudeSessionController owner : owners) {
-                if (owner != this && LIVE_SESSIONS.contains(owner)) {
+                if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
                     ids.add(id);
                     return;
                 }
             }
         });
         return ids;
+    }
+
+    /**
+     * Returns {@code true} while this controller's PTY is running. Controllers
+     * without a process (test seams) count as live.
+     */
+    private boolean isProcessLive() {
+        ClaudeProcess cp = claudeProcess;
+        return cp == null || cp.isRunning();
+    }
+
+    /**
+     * Releases live-session bookkeeping when the PTY exits on its own (Claude
+     * quit or crashed while the tab stayed open). Ignored when a newer process
+     * has already replaced it.
+     */
+    private void onProcessExited(ClaudeProcess owner) {
+        synchronized (this) {
+            if (claudeProcess != owner) return;
+        }
+        LIVE_SESSIONS.remove(this);
+        releaseAllClaims();
+    }
+
+    /** Package-private for tests: simulates the PTY exiting without stopProcess(). */
+    void simulateProcessExit() {
+        onProcessExited(claudeProcess);
     }
 
     /**
@@ -663,7 +666,7 @@ public class ClaudeSessionController {
             model.addPromptToHistory(text);
         }
         promptSubmittedAt = System.currentTimeMillis();
-        startNewSessionResolver();
+        startIdentityResolver();
 
         Thread t = new Thread(() -> {
             try {
@@ -1497,13 +1500,14 @@ public class ClaudeSessionController {
      * </ul>
      */
     void pollScreenState() {
-        // Claim a new session's file as soon as it appears, so that other tabs
-        // never mistake it for their own. No-op once the identity is known.
-        // Without a plugin-submitted prompt there is no attribution anchor, so
-        // the directory scan runs every ~5 s instead of on every tick.
-        if (activeSessionId == null
-                && (promptSubmittedAt > 0 || ++identityPollTicks % 10 == 0)) {
-            resolveNewSessionIdentity();
+        // Keep the session identity — and the cross-tab claims that follow from
+        // it — in sync with the file Claude is writing, so a conversation switch
+        // made inside the TUI is noticed by every tab. A still-unknown identity
+        // right after a prompt is retried on every tick; otherwise the directory
+        // scan runs every ~5 s.
+        boolean unresolvedAfterPrompt = activeSessionId == null && promptSubmittedAt > 0;
+        if (unresolvedAfterPrompt || ++identityPollTicks % 10 == 0) {
+            refreshSessionIdentity();
         }
         List<String> lines = screenLines.get();
 

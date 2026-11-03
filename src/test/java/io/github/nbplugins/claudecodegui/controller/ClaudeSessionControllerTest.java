@@ -1551,6 +1551,80 @@ class ClaudeSessionControllerTest {
     }
 
     @Test
+    void inProcessSwitch_releasesTheClaimOnThePreviousSession() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // Tab A starts on "a"; tab B starts on "b" after it.
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS + 1_000L);
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 2_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            // Tab A switches to "c" inside the TUI; the screen poll notices it
+            // after ~5 s and must release the claim on the abandoned "a".
+            writeSession(dir, "c", "c");
+            setMtime(dir.resolve("c.jsonl"), START_MS + 3_000L);
+            for (int i = 0; i < 10; i++) {
+                controller.pollScreenState();
+            }
+
+            // Tab B switches to the conversation A left behind and prompts, so
+            // "a" is the newest file it has written.
+            setMtime(dir.resolve("a.jsonl"), START_MS + 6_000L);
+            assertEquals("a", tabB.resolveActiveSessionId(),
+                    "the claim released by A's switch must let B resume that session");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    @Test
+    void processExit_releasesTheSessionClaims() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // Tab A runs "a" and its PTY exits from inside the terminal.
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+        controller.simulateProcessExit();
+
+        // Tab B starts later and switches to the now-free "a".
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS + 4_000L);
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 3_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            setMtime(dir.resolve("a.jsonl"), START_MS + 6_000L);
+            assertEquals("a", tabB.resolveActiveSessionId(),
+                    "an exited process must not keep claiming its session");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    @Test
     void stopAndRename_usesResumeSessionId() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
         java.nio.file.Path work = tmpDir.resolve("project");
