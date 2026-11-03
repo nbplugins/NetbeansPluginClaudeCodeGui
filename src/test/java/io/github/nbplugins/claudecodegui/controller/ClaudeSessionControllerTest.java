@@ -1722,6 +1722,82 @@ class ClaudeSessionControllerTest {
     }
 
     @Test
+    void newSessionWithCoarseMtime_resolvesAfterPrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // A conversation that existed before the NEW tab was launched, so it is
+        // in the pre-launch snapshot and must stay ineligible.
+        writeSession(dir, "old", "old");
+        setMtime(dir.resolve("old.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, null, Set.of("old"));
+
+        // The first turn finishes inside one coarse (1 s) timestamp bucket: the
+        // file is written after the prompt but its mtime is rounded below it.
+        controller.simulatePromptSubmittedAt(START_MS + 1_500L);
+        writeSession(dir, "fresh", "fresh");
+        setMtime(dir.resolve("fresh.jsonl"), START_MS + 1_000L);
+
+        controller.stopAndRename("Fresh Name");
+
+        assertEquals("Fresh Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "fresh").customTitle(),
+                "a session whose mtime was rounded down must still be renamable");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "old").customTitle(),
+                "the pre-launch conversation must not be renamed instead");
+    }
+
+    /**
+     * A scan queued while the process is being stopped must not start with the
+     * new run's generation and the old run's inputs: it would publish (and
+     * re-claim) the stopped session after the stop released its claims.
+     */
+    @Test
+    void stopProcess_resetsTheIdentityInputsWithTheGeneration() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        sessionDir(config, work);
+        model.setWorkingDirectory(work.toFile());
+
+        for (int i = 0; i < 500; i++) {
+            controller.simulateProcessStart(START_MS, true);
+            controller.simulateActiveSession(config, "session", Set.of("session"));
+            controller.simulatePromptSubmittedAt(START_MS + 1_000L);
+            long before = controller.simulateProcessGeneration();
+
+            java.util.concurrent.atomic.AtomicReference<ClaudeSessionController.IdentityCapture>
+                    staleCapture = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicBoolean running =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            Thread sampler = new Thread(() -> {
+                while (running.get()) {
+                    ClaudeSessionController.IdentityCapture c =
+                            controller.simulateCaptureIdentityInputs();
+                    if (c.generation() > before && (c.hasConfigDir() || c.since() != 0)) {
+                        staleCapture.compareAndSet(null, c);
+                    }
+                }
+            });
+            sampler.setDaemon(true);
+            sampler.start();
+
+            controller.stopProcess();
+            running.set(false);
+            sampler.join();
+
+            assertNull(staleCapture.get(),
+                    "a scan starting after the generation bump captured the stopped "
+                            + "run's identity inputs on iteration " + i);
+        }
+    }
+
+    @Test
     void staleExitCallback_doesNotReleaseTheReplacementRun() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
         java.nio.file.Path work = tmpDir.resolve("project");

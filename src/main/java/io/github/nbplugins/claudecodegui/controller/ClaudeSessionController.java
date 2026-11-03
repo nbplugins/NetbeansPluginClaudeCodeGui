@@ -71,6 +71,16 @@ public class ClaudeSessionController {
 
     private static final int MAX_MODEL_DISCOVERY_ATTEMPTS = 1;
 
+    /**
+     * Slack for the filesystem's modification-time granularity when matching a
+     * session file against a launch/prompt time. FAT and some network
+     * filesystems round mtimes down to 1–2 s, so a file created just after a
+     * prompt can be stamped before it. Only used as a second pass restricted to
+     * files created after the pre-launch snapshot (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private static final long SESSION_MTIME_GRANULARITY_MS = 2_000L;
+
     private final ClaudeSessionModel model;
 
     /**
@@ -488,9 +498,22 @@ public class ClaudeSessionController {
             processToStop.stop();
         }
         connector = null;
+        // The generation bump, the identity inputs and the ownership bookkeeping
+        // are reset under one lock: a scan queued between the bump and the reset
+        // would otherwise capture the new generation together with the old run's
+        // inputs and could republish (and re-claim) the stopped identity.
         synchronized (processOwnershipLock) {
             claudeProcess = null;
             processGeneration++;
+            processStartedAt = 0;
+            firstOutputReceived = false;
+            activeConfigDir = null;
+            activeSessionId = null;
+            preStartSessionIds = Set.of();
+            promptSubmittedAt = 0;
+            identityPollTicks = 0;
+            LIVE_SESSIONS.remove(this);
+            releaseAllClaims();
         }
         terminalWidget = null;
         modelComboPopulated = false;
@@ -499,15 +522,6 @@ public class ClaudeSessionController {
         customModelIds = List.of();
         standardModelCount = 0;
         synchronized (recentPtyLines) { recentPtyLines.clear(); }
-        processStartedAt = 0;
-        firstOutputReceived = false;
-        LIVE_SESSIONS.remove(this);
-        releaseAllClaims();
-        activeConfigDir = null;
-        activeSessionId = null;
-        preStartSessionIds = Set.of();
-        promptSubmittedAt = 0;
-        identityPollTicks = 0;
 
         model.setModelList(List.of(), -1);
         clearActiveChoiceMenu();
@@ -620,6 +634,18 @@ public class ClaudeSessionController {
         if (dir != null && configDir != null && since > 0) {
             newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                     dir.toPath(), configDir, since, exclude);
+            if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                // Coarse filesystem timestamps can round a file written right
+                // after the prompt below its cutoff. Retry with a slack, but only
+                // for files that did not exist at launch (the pre-launch
+                // snapshot), so a conversation touched by an unrelated process
+                // just before the prompt still cannot be adopted.
+                Set<String> relaxedExclude = new HashSet<>(exclude);
+                relaxedExclude.addAll(preStartSessionIds);
+                newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                        dir.toPath(), configDir,
+                        since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
+            }
         }
         return publishIdentityScanResult(generation, scanId, dir, configDir, newest);
     }
@@ -672,6 +698,17 @@ public class ClaudeSessionController {
     /** Package-private for tests: publishes a scan result with explicit ordering. */
     boolean simulatePublishScanResult(long generation, long scanId, String newest) {
         return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest);
+    }
+
+    /** Package-private for tests: the identity inputs {@link #refreshSessionIdentity()} captures. */
+    record IdentityCapture(long generation, boolean hasConfigDir, long since) { }
+
+    /** Package-private for tests: samples the identity inputs under the ownership lock. */
+    IdentityCapture simulateCaptureIdentityInputs() {
+        synchronized (processOwnershipLock) {
+            return new IdentityCapture(processGeneration, activeConfigDir != null,
+                    Math.max(processStartedAt, promptSubmittedAt));
+        }
     }
 
     /**
