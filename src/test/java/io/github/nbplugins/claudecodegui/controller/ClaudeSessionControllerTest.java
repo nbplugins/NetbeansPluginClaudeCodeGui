@@ -1624,6 +1624,75 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * A tab may start a saved session at the same moment the tab that already
+     * owns it exits. The starting tab's claim must survive the exiting tab's
+     * cleanup; if it were lost, a sibling scan would see the file as unowned
+     * and could adopt (and later rename) the wrong conversation.
+     */
+    @Test
+    void claimMadeWhileAnotherTabReleases_isNotLost() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        sessionDir(config, work);
+
+        ClaudeSessionModel observerModel = new ClaudeSessionModel();
+        observerModel.setWorkingDirectory(work.toFile());
+        ClaudeSessionController observer =
+                new ClaudeSessionController(observerModel, Collections::emptyList);
+        observer.simulateProcessStart(START_MS, true);
+        observer.simulateLiveSession(config, "observer", Set.of());
+
+        try {
+            for (int i = 0; i < 2_000; i++) {
+                String id = "race-" + i;
+
+                ClaudeSessionModel closingModel = new ClaudeSessionModel();
+                closingModel.setWorkingDirectory(work.toFile());
+                ClaudeSessionController closing =
+                        new ClaudeSessionController(closingModel, Collections::emptyList);
+                closing.simulateLiveSession(config, id, Set.of());
+
+                ClaudeSessionModel startingModel = new ClaudeSessionModel();
+                startingModel.setWorkingDirectory(work.toFile());
+                ClaudeSessionController starting =
+                        new ClaudeSessionController(startingModel, Collections::emptyList);
+
+                java.util.concurrent.CountDownLatch go =
+                        new java.util.concurrent.CountDownLatch(1);
+                Thread release = new Thread(() -> {
+                    await(go);
+                    closing.simulateProcessExit();
+                });
+                Thread claim = new Thread(() -> {
+                    await(go);
+                    starting.simulateLiveSession(config, id, Set.of());
+                });
+                release.start();
+                claim.start();
+                go.countDown();
+                release.join();
+                claim.join();
+
+                assertTrue(
+                        observer.simulateClaimedByOthers(work.toFile(), config).contains(id),
+                        "the claim of the starting tab was lost on iteration " + i);
+
+                starting.stopProcess();
+            }
+        } finally {
+            observer.stopProcess();
+        }
+    }
+
+    private static void await(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Test
     void newSessionResumingSavedConversation_resolvesAfterPrompt() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");

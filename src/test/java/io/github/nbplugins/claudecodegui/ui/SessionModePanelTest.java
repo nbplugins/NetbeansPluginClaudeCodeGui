@@ -16,6 +16,7 @@ class SessionModePanelTest {
 
     @TempDir Path emptyDir;
     @TempDir Path sessionDir;
+    @TempDir Path otherSessionDir;
 
     /** Creates a fake sessions directory with one .jsonl stub so hasAnySessions() returns true. */
     private Path withSession(Path workingDir) throws IOException {
@@ -203,6 +204,39 @@ class SessionModePanelTest {
         assertNull(panel.getSelectedSessionId(),
                 "The excluded (current) session must not stay selected");
         assertFalse(panel.isSelectionValid());
+    }
+
+    @Test
+    void applySessionsIfCurrent_appliesForTheShownStore() throws IOException {
+        Path configDir = withSessions(sessionDir, "session-a");
+        SessionModePanel panel = new SessionModePanel(sessionDir, configDir, null, false);
+        panel.setMode(SessionMode.RESUME_SPECIFIC);
+
+        List<SavedSession> reloaded = ClaudeSessionStore.listSessions(sessionDir, configDir);
+        assertTrue(panel.applySessionsIfCurrent(sessionDir, configDir, reloaded));
+    }
+
+    @Test
+    void applySessionsIfCurrent_discardsALoadForAnotherStore() throws IOException {
+        Path configA = withSessions(sessionDir, "session-a");
+        Path configB = withSessions(otherSessionDir, "session-b");
+
+        SessionModePanel panel = new SessionModePanel(sessionDir, configA, null, false);
+        panel.setMode(SessionMode.RESUME_SPECIFIC);
+        panel.selectSessionById("session-a");
+
+        // The user switches to another project while a load for the old one
+        // is still in flight.
+        panel.reload(otherSessionDir, configB, null);
+        panel.selectSessionById("session-b");
+
+        List<SavedSession> stale = ClaudeSessionStore.listSessions(sessionDir, configA);
+        assertFalse(panel.applySessionsIfCurrent(sessionDir, configA, stale),
+                "Sessions loaded for the previous selection must be discarded");
+
+        assertEquals("session-b", panel.getSelectedSessionId(),
+                "The table must still show the newly selected directory's sessions");
+        assertTrue(panel.isSelectionValid());
     }
 
     // -------------------------------------------------------------------------

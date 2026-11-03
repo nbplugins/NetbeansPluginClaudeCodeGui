@@ -437,7 +437,7 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
             java.util.List<io.github.nbplugins.claudecodegui.model.SavedSession> loaded = sessions;
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (requestId != sessionListRequestSeq) return; // superseded
-                sessionModePanel.applySessions(workingDir, configDir, null, loaded);
+                sessionModePanel.applySessionsIfCurrent(workingDir, configDir, loaded);
             });
         }, "session-list-reload");
         loader.setDaemon(true);

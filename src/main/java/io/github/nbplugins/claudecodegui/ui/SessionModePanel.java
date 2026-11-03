@@ -307,6 +307,31 @@ public final class SessionModePanel extends JPanel {
     }
 
     /**
+     * Applies a background-loaded session list only while the panel is still
+     * showing the directory / profile the list was loaded for.
+     *
+     * <p>A reload started for the previous selection may finish after the user
+     * switches to another project or profile. Applying it then would replace the
+     * table <em>and</em> the stored store with stale data, so the Open button
+     * would pass a session ID of the old store for the new selection. Such a
+     * load is discarded.
+     *
+     * @param loadedWorkingDir directory the sessions were loaded for
+     * @param loadedConfigDir  config dir the sessions were loaded for (null → ~/.claude)
+     * @param sessions         loaded sessions
+     * @return {@code true} if the list was applied
+     */
+    public boolean applySessionsIfCurrent(Path loadedWorkingDir, Path loadedConfigDir,
+                                          List<SavedSession> sessions) {
+        if (!java.util.Objects.equals(this.workingDir, loadedWorkingDir)
+                || !java.util.Objects.equals(this.claudeConfigDir, loadedConfigDir)) {
+            return false;
+        }
+        applySessions(loadedWorkingDir, loadedConfigDir, this.excludeSession, sessions);
+        return true;
+    }
+
+    /**
      * Returns {@code true} if the current selection is valid: any mode except
      * {@link SessionMode#RESUME_SPECIFIC}, or RESUME_SPECIFIC with a row selected.
      *

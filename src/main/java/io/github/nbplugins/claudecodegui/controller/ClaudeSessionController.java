@@ -719,11 +719,16 @@ public class ClaudeSessionController {
     private void claimSession(java.io.File dir, java.nio.file.Path configDir,
                               String sessionId) {
         SessionKey key = keyFor(dir, configDir, sessionId);
-        if (key != null) {
-            SESSION_CLAIMS
-                    .computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet())
-                    .add(this);
-        }
+        if (key == null) return;
+        // Membership and empty-entry cleanup stay inside compute() so a claim
+        // cannot be added to an owner set that a concurrent release just
+        // detached from the map (which would silently lose the claim).
+        SESSION_CLAIMS.compute(key, (k, owners) -> {
+            Set<ClaudeSessionController> updated =
+                    owners != null ? owners : ConcurrentHashMap.newKeySet();
+            updated.add(this);
+            return updated;
+        });
     }
 
     private void releaseClaim(java.io.File dir, java.nio.file.Path configDir,
@@ -738,10 +743,12 @@ public class ClaudeSessionController {
 
     /** Removes all claims held by this controller (called when the process stops). */
     private void releaseAllClaims() {
-        for (Set<ClaudeSessionController> owners : SESSION_CLAIMS.values()) {
-            owners.remove(this);
+        for (SessionKey key : SESSION_CLAIMS.keySet()) {
+            SESSION_CLAIMS.computeIfPresent(key, (k, owners) -> {
+                owners.remove(this);
+                return owners.isEmpty() ? null : owners;
+            });
         }
-        SESSION_CLAIMS.entrySet().removeIf(e -> e.getValue().isEmpty());
     }
 
     /**
@@ -768,6 +775,14 @@ public class ClaudeSessionController {
             }
         });
         return ids;
+    }
+
+    /**
+     * Package-private for tests: session IDs this controller treats as claimed
+     * by other live tabs in the same store.
+     */
+    Set<String> simulateClaimedByOthers(java.io.File dir, java.nio.file.Path configDir) {
+        return claimedByOthers(dir, configDir);
     }
 
     /**
