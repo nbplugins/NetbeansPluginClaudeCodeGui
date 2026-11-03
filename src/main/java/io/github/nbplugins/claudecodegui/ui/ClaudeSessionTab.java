@@ -166,6 +166,13 @@ public class ClaudeSessionTab extends TopComponent
     /** Resume session ID actually used when the current session was started. */
     private String activeResumeSessionId;
 
+    /**
+     * Bumped for every session start and on close, so a launch whose
+     * preparation finished late cannot start a process the user already
+     * replaced or closed.
+     */
+    private volatile long startRequestSeq;
+
     // -------------------------------------------------------------------------
     // MVC
     // -------------------------------------------------------------------------
@@ -468,6 +475,7 @@ public class ClaudeSessionTab extends TopComponent
             pendingDiffOnClose = null;
         }
         tabClosed = true;
+        startRequestSeq++; // cancel a launch whose preparation is still running
         displayNameGeneration.incrementAndGet(); // cancel pending polls
         if (trackedProjectInfo != null && projectNameListener != null) {
             trackedProjectInfo.removePropertyChangeListener(projectNameListener);
@@ -848,14 +856,43 @@ public class ClaudeSessionTab extends TopComponent
             widget.getTerminalPanel().setBackground(termBg);
         }
         showChatLayout(widget);
-        try {
-            controller.startProcess(dir, profileName, extraCliArgs, mode, resumeSessionId, widget);
-        } catch (IOException ex) {
-            LOG.log(Level.SEVERE, "Claude process failed to start in " + dir, ex);
-            String command = controller.getLastAttemptedCommand();
-            String errorMsg = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
-            showStartError(command, errorMsg, dir, capturedConfigDir);
-        }
+        startProcessAsync(dir, profileName, extraCliArgs, mode, resumeSessionId,
+                widget, capturedConfigDir);
+    }
+
+    /**
+     * Prepares the launch-time session identity off the EDT and starts the
+     * process on the EDT afterwards.
+     *
+     * <p>Capturing the identity enumerates the project's session files; on
+     * projects with a large history that takes long enough to freeze the IDE if
+     * done inline. It must still describe the store before the process starts,
+     * so the launch waits for it.
+     */
+    private void startProcessAsync(File dir, String profileName, String extraCliArgs,
+                                   SessionMode mode, String resumeSessionId,
+                                   ZoomableJediTermWidget widget, Path configDir) {
+        final long request = ++startRequestSeq;
+        Thread t = new Thread(() -> {
+            ClaudeSessionController.LaunchIdentity identity =
+                    ClaudeSessionController.prepareLaunchIdentity(
+                            dir, profileName, mode, resumeSessionId);
+            SwingUtilities.invokeLater(() -> {
+                if (request != startRequestSeq || tabClosed) return;
+                try {
+                    controller.startProcess(dir, profileName, extraCliArgs, mode,
+                            resumeSessionId, identity, widget);
+                } catch (IOException ex) {
+                    LOG.log(Level.SEVERE, "Claude process failed to start in " + dir, ex);
+                    String command = controller.getLastAttemptedCommand();
+                    String errorMsg = ex.getMessage() != null
+                            ? ex.getMessage() : ex.getClass().getSimpleName();
+                    showStartError(command, errorMsg, dir, configDir);
+                }
+            });
+        }, "session-launch-prep");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void showChatLayout(JediTermWidget widget) {

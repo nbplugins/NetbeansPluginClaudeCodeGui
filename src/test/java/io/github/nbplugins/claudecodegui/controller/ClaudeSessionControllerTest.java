@@ -1924,6 +1924,124 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A third tab can write its own conversation after this tab's prompt and
+     * then exit, leaving an unclaimed and even newer file. The conversation that
+     * received this tab's prompt — still owned by its other tab — must win over
+     * that mtime-only candidate.
+     */
+    @Test
+    void promptEvidenceWinsOverANewerUnclaimedFile() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b", "c"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b", "c"));
+
+        // A third tab writes its own conversation after the prompt and exits,
+        // so its file is the newest and no longer claimed by a live tab.
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS + 2_000L, true);
+        tabC.simulateLiveSession(config, "c", Set.of("a", "b", "c"));
+        setMtime(dir.resolve("c.jsonl"), START_MS + 12_000L);
+        tabC.stopProcess();
+
+        try {
+            // Tab A joined B's conversation and sent its prompt there.
+            controller.simulatePromptText("joined b");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            appendUserPrompt(dir, "b", "joined b", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the file holding this tab's prompt must beat a newer unclaimed one");
+
+            controller.stopAndRename("Resumed Name");
+            assertEquals("Resumed Name",
+                    io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "b").customTitle(),
+                    "the entered name must go to the conversation on screen");
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "c").customTitle(),
+                    "the exited tab's conversation must not be renamed");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // prepareLaunchIdentity — captured before the process starts
+    // -------------------------------------------------------------------------
+
+    @Test
+    void prepareLaunchIdentity_newSession_hasNoIdButSnapshotsTheStore() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "old", "old");
+
+        ClaudeSessionController.LaunchIdentity identity =
+                ClaudeSessionController.prepareLaunchIdentity(work.toFile(), config,
+                        io.github.nbplugins.claudecodegui.model.SessionMode.NEW, null);
+
+        assertNull(identity.sessionId());
+        assertEquals(Set.of("old"), identity.preStartSessionIds());
+        assertEquals(config, identity.configDir());
+    }
+
+    @Test
+    void prepareLaunchIdentity_continueLast_picksTheNewestExistingSession() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "older", "older");
+        setMtime(dir.resolve("older.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "newer", "newer");
+        setMtime(dir.resolve("newer.jsonl"), START_MS - 1_000L);
+
+        ClaudeSessionController.LaunchIdentity identity =
+                ClaudeSessionController.prepareLaunchIdentity(work.toFile(), config,
+                        io.github.nbplugins.claudecodegui.model.SessionMode.CONTINUE_LAST, null);
+
+        assertEquals("newer", identity.sessionId());
+        assertEquals(Set.of("older", "newer"), identity.preStartSessionIds());
+    }
+
+    @Test
+    void prepareLaunchIdentity_resumeSpecific_usesTheGivenId() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "saved", "saved");
+
+        ClaudeSessionController.LaunchIdentity identity =
+                ClaudeSessionController.prepareLaunchIdentity(work.toFile(), config,
+                        io.github.nbplugins.claudecodegui.model.SessionMode.RESUME_SPECIFIC,
+                        "saved");
+
+        assertEquals("saved", identity.sessionId());
+        assertEquals(Set.of("saved"), identity.preStartSessionIds());
+    }
+
+    /**
      * The prompt panel's "New session" action stops with a blank name: no rename
      * is attempted, so the identity — and the session store with it — must not
      * be resolved on the EDT before the PTY is stopped.

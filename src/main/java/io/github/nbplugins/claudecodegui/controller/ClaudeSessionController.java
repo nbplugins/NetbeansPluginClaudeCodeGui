@@ -391,6 +391,80 @@ public class ClaudeSessionController {
     public void startProcess(java.io.File dir, String profileName, String extraCliArgs,
                              SessionMode mode, String resumeSessionId,
                              JediTermWidget widget) throws IOException {
+        startProcess(dir, profileName, extraCliArgs, mode, resumeSessionId,
+                prepareLaunchIdentity(dir, profileName, mode, resumeSessionId), widget);
+    }
+
+    /**
+     * Launch-time session identity, captured before the PTY starts.
+     *
+     * @param configDir         config dir the process will write to
+     * @param preStartSessionIds session IDs that already existed at launch
+     * @param sessionId         session ID the process will use, or {@code null}
+     *                          when it is only known after the first write
+     */
+    public record LaunchIdentity(java.nio.file.Path configDir,
+                                 Set<String> preStartSessionIds,
+                                 String sessionId) { }
+
+    /**
+     * Computes the launch-time session identity by scanning the session store.
+     *
+     * <p>The scan can take hundreds of milliseconds on projects with a large
+     * history, so callers on the EDT should run it on a worker thread and pass
+     * the result to
+     * {@link #startProcess(java.io.File, String, String, SessionMode, String, LaunchIdentity, JediTermWidget)}.
+     * The result must describe the store <em>before</em> the process starts.
+     *
+     * @param dir             working directory
+     * @param profileName     profile name, or {@code null}/{@code ""} for Default
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @return the identity the started process will use
+     */
+    public static LaunchIdentity prepareLaunchIdentity(java.io.File dir, String profileName,
+                                                       SessionMode mode,
+                                                       String resumeSessionId) {
+        ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
+        return prepareLaunchIdentity(dir,
+                ClaudeProcess.resolveConfigDir(profile, ClaudeCodePreferences.getProfilesDir()),
+                mode, resumeSessionId);
+    }
+
+    /** Package-private for tests: captures the identity against an explicit config dir. */
+    static LaunchIdentity prepareLaunchIdentity(java.io.File dir,
+                                                java.nio.file.Path configDir,
+                                                SessionMode mode,
+                                                String resumeSessionId) {
+        SessionMode effectiveMode = mode != null ? mode : SessionMode.NEW;
+        Set<String> preStartSessionIds =
+                ClaudeSessionStore.listSessionIds(dir.toPath(), configDir);
+        String sessionId = null;
+        if (effectiveMode == SessionMode.RESUME_SPECIFIC
+                && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            sessionId = resumeSessionId;
+        } else if (effectiveMode == SessionMode.CONTINUE_LAST) {
+            sessionId = ClaudeSessionStore.findLatestSessionId(dir.toPath(), configDir);
+        }
+        return new LaunchIdentity(configDir, preStartSessionIds, sessionId);
+    }
+
+    /**
+     * Starts the PTY process using a session identity prepared earlier with
+     * {@link #prepareLaunchIdentity(java.io.File, String, SessionMode, String)}.
+     *
+     * @param dir             working directory
+     * @param profileName     profile name, or {@code null}/{@code ""} for Default
+     * @param extraCliArgs    extra CLI arguments (may be blank)
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @param identity        launch-time identity, captured before the process starts
+     * @param widget          terminal widget
+     * @throws IOException if the PTY process cannot be started
+     */
+    public void startProcess(java.io.File dir, String profileName, String extraCliArgs,
+                             SessionMode mode, String resumeSessionId,
+                             LaunchIdentity identity, JediTermWidget widget) throws IOException {
         String tag = "[" + dir.getName() + "] ";
         workingDir = dir;
         long generation;
@@ -401,20 +475,13 @@ public class ClaudeSessionController {
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
         customModelIds = profile != null ? new ArrayList<>(profile.getComboModelIds()) : List.of();
 
-        // Capture the session identity before launch so that stopping/renaming later
-        // targets the session this process will actually use (see stopAndRename).
+        // The session identity was captured before launch so that stopping/renaming
+        // later targets the session this process will actually use (see stopAndRename).
         SessionMode effectiveMode = mode != null ? mode : SessionMode.NEW;
-        java.nio.file.Path projectedConfigDir =
-                ClaudeProcess.resolveConfigDir(profile, ClaudeCodePreferences.getProfilesDir());
-        preStartSessionIds = ClaudeSessionStore.listSessionIds(dir.toPath(), projectedConfigDir);
-        if (effectiveMode == SessionMode.RESUME_SPECIFIC
-                && resumeSessionId != null && !resumeSessionId.isBlank()) {
-            activeSessionId = resumeSessionId;
-        } else if (effectiveMode == SessionMode.CONTINUE_LAST) {
-            activeSessionId = ClaudeSessionStore.findLatestSessionId(dir.toPath(), projectedConfigDir);
-        } else {
-            activeSessionId = null;
-        }
+        LaunchIdentity launch = identity != null ? identity
+                : prepareLaunchIdentity(dir, profileName, effectiveMode, resumeSessionId);
+        preStartSessionIds = launch.preStartSessionIds();
+        activeSessionId = launch.sessionId();
 
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
@@ -422,7 +489,7 @@ public class ClaudeSessionController {
 
         activeConfigDir = claudeProcess.getConfigDir();
         if (activeConfigDir == null) {
-            activeConfigDir = projectedConfigDir;
+            activeConfigDir = launch.configDir();
         }
         processStartedAt = System.currentTimeMillis();
         firstOutputReceived = false;
@@ -666,8 +733,21 @@ public class ClaudeSessionController {
         }
         String newest = null;
         if (dir != null && configDir != null && since > 0) {
-            newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
-                    dir.toPath(), configDir, since, exclude);
+            // A conversation owned by a live tab (or by this tab) that already
+            // contains the prompt submitted from here is the strongest evidence
+            // of an in-process /resume: the process is writing that file. It
+            // must win over a merely newer unclaimed file — e.g. a third tab
+            // that wrote its own conversation after the prompt and then exited.
+            if (promptAt > 0) {
+                Set<String> candidates = new HashSet<>(claimed);
+                if (activeId != null) candidates.add(activeId);
+                newest = findPromptBearingSession(dir, configDir, candidates,
+                        promptAt, promptText);
+            }
+            if (newest == null) {
+                newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                        dir.toPath(), configDir, since, exclude);
+            }
             if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                 // Coarse filesystem timestamps can round a file written right
                 // after the prompt below its cutoff. Retry with a slack so a
@@ -684,30 +764,30 @@ public class ClaudeSessionController {
                         dir.toPath(), configDir,
                         since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
             }
-            if (newest == null && promptAt > 0) {
-                // The process may have joined another live tab's conversation
-                // from its own resume picker: its previous file (if any) stops
-                // changing, so only a file owned by the other tab is written
-                // since the prompt. Follow the switch and share the ownership,
-                // instead of keeping the conversation the tab had left. A NEW
-                // tab can do this before it has created a file of its own, so
-                // an unknown identity must be allowed as well.
-                //
-                // The file must contain this tab's own prompt, written after it
-                // was submitted: without that evidence a sibling tab finishing
-                // a turn in the same store — a write that may land before this
-                // tab's first JSONL line — would be mistaken for a switch.
-                String switched = ClaudeSessionStore.findLatestSessionIdWrittenSince(
-                        dir.toPath(), configDir, since, Set.of());
-                if (switched != null && !switched.equals(activeId)
-                        && claimed.contains(switched)
-                        && ClaudeSessionStore.containsUserPromptSince(
-                                dir.toPath(), configDir, switched, promptAt, promptText)) {
-                    newest = switched;
-                }
-            }
         }
         return publishIdentityScanResult(generation, scanId, dir, configDir, newest);
+    }
+
+    /**
+     * Returns the session among {@code candidates} whose JSONL already contains
+     * the prompt this tab submitted after {@code promptAt}, or {@code null}.
+     *
+     * <p>The message proves that the running process has joined that
+     * conversation, so it is preferred over an mtime-only guess: a sibling tab
+     * finishing its own turn also writes a file after the prompt, but that file
+     * holds that tab's messages, not this tab's prompt.
+     */
+    private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
+                                            Set<String> candidates, long promptAt,
+                                            String promptText) {
+        if (candidates.isEmpty() || promptText == null || promptText.isBlank()) return null;
+        for (String sessionId : candidates) {
+            if (ClaudeSessionStore.containsUserPromptSince(
+                    dir.toPath(), configDir, sessionId, promptAt, promptText)) {
+                return sessionId;
+            }
+        }
+        return null;
     }
 
     /**

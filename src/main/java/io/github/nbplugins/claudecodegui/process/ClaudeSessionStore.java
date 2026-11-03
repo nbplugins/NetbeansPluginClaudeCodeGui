@@ -32,6 +32,14 @@ public final class ClaudeSessionStore {
     private static final Logger LOG = Logger.getLogger(ClaudeSessionStore.class.getName());
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /**
+     * How much of a session file is inspected when looking for the prompt a
+     * running process just appended. The evidence is written within a second of
+     * the prompt, so the tail is enough and a long conversation does not have to
+     * be read in full on every identity scan.
+     */
+    private static final int PROMPT_EVIDENCE_TAIL_BYTES = 512 * 1024;
+
     private ClaudeSessionStore() {}
 
     // -------------------------------------------------------------------------
@@ -218,8 +226,26 @@ public final class ClaudeSessionStore {
         if (!Files.isRegularFile(file)) return false;
         String wanted = prompt.trim();
         if (wanted.isEmpty()) return false;
-        try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
-            return lines.anyMatch(line -> isUserMessageWith(line, sinceMillis, wanted));
+        try {
+            long size = Files.size(file);
+            int tailSize = (int) Math.min(size, PROMPT_EVIDENCE_TAIL_BYTES);
+            byte[] tail = new byte[tailSize];
+            try (java.io.RandomAccessFile raf =
+                         new java.io.RandomAccessFile(file.toFile(), "r")) {
+                raf.seek(size - tailSize);
+                raf.readFully(tail);
+            }
+            String text = new String(tail, StandardCharsets.UTF_8);
+            if (tailSize < size) {
+                // The first line is cut in the middle; it belongs to history.
+                int firstNewline = text.indexOf('\n');
+                if (firstNewline < 0) return false;
+                text = text.substring(firstNewline + 1);
+            }
+            for (String line : text.split("\n")) {
+                if (isUserMessageWith(line, sinceMillis, wanted)) return true;
+            }
+            return false;
         } catch (IOException | RuntimeException e) {
             LOG.fine("Could not read session " + file + ": " + e.getMessage());
             return false;
