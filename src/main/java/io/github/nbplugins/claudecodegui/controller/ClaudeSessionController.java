@@ -135,6 +135,13 @@ public class ClaudeSessionController {
     private volatile Set<String> preStartSessionIds = Set.of();
 
     /**
+     * Time (epoch millis) a prompt was last submitted from the plugin. Used to
+     * attribute the session file created by a new process to this tab promptly,
+     * before any sibling tab could guess and claim it.
+     */
+    private volatile long promptSubmittedAt = 0;
+
+    /**
      * Called when a hang is detected: receives (command, errorMessage).
      * Invoked on the EDT after the process is stopped.
      */
@@ -226,6 +233,7 @@ public class ClaudeSessionController {
     void simulateLiveSession(java.nio.file.Path configDir, String sessionId,
                              Set<String> preStartIds) {
         simulateActiveSession(configDir, sessionId, preStartIds);
+        workingDir = model.getWorkingDirectory();
         LIVE_SESSIONS.add(this);
         claimSession(sessionId);
     }
@@ -428,6 +436,7 @@ public class ClaudeSessionController {
         activeConfigDir = null;
         activeSessionId = null;
         preStartSessionIds = Set.of();
+        promptSubmittedAt = 0;
 
         model.setModelList(List.of(), -1);
         clearActiveChoiceMenu();
@@ -491,7 +500,9 @@ public class ClaudeSessionController {
         java.nio.file.Path configDir = activeConfigDir;
         if (dir == null || configDir == null) return activeSessionId;
 
-        publishOtherSessions(dir, configDir);
+        // Other live tabs publish their own sessions when they learn them (at
+        // launch for continue/resume, at the first prompt for new sessions);
+        // never guess on another tab's behalf, or its file could be claimed here.
         refreshBaseIdentity();
 
         if (processStartedAt > 0) {
@@ -512,28 +523,15 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Asks other live tabs on the same project and config store to resolve and
-     * claim their sessions. Two passes so that a tab which first learns its own
-     * session also has it advertised to the others before they decide.
-     */
-    private void publishOtherSessions(java.io.File dir, java.nio.file.Path configDir) {
-        for (int pass = 0; pass < 2; pass++) {
-            for (ClaudeSessionController other : LIVE_SESSIONS) {
-                if (other != this && configDir.equals(other.activeConfigDir)
-                        && dir.equals(other.workingDir)) {
-                    other.refreshBaseIdentity();
-                }
-            }
-        }
-    }
-
-    /**
      * Resolves the session ID known at launch when it is still unknown: for
      * {@link SessionMode#NEW} this is the file created after the launch that is
      * not in the pre-launch snapshot and not claimed by another live tab.
      * Claims the resolved ID so other tabs can see it.
      */
     private synchronized void refreshBaseIdentity() {
+        if (activeSessionId == null) {
+            resolveNewSessionIdentity();
+        }
         if (activeSessionId == null) {
             java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
             java.nio.file.Path configDir = activeConfigDir;
@@ -545,6 +543,52 @@ public class ClaudeSessionController {
             }
         }
         claimSession(activeSessionId);
+    }
+
+    /**
+     * Attributes the session file written since this tab submitted its prompt
+     * (or since launch, when the prompt was typed directly into the terminal)
+     * to this tab and claims it, so no sibling tab can claim it first.
+     *
+     * @return {@code true} if the identity is now known
+     */
+    synchronized boolean resolveNewSessionIdentity() {
+        if (activeSessionId != null) return true;
+        java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+        java.nio.file.Path configDir = activeConfigDir;
+        long since = Math.max(processStartedAt, promptSubmittedAt);
+        if (dir == null || configDir == null || since <= 0) return false;
+        Set<String> exclude = new HashSet<>(preStartSessionIds);
+        exclude.addAll(claimedByOthers());
+        String id = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                dir.toPath(), configDir, since, exclude);
+        if (id == null) return false;
+        activeSessionId = id;
+        claimSession(id);
+        LOG.fine("Resolved session " + id + " for " + dir + " (written since " + since + ")");
+        return true;
+    }
+
+    /**
+     * Starts a short background poll that claims a new session as soon as its
+     * file appears after the first prompt. Runs briefly: once the identity is
+     * known the poll exits immediately on the next tick.
+     */
+    private void startNewSessionResolver() {
+        if (activeSessionId != null) return;
+        Thread t = new Thread(() -> {
+            for (int i = 0; i < 10; i++) {
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (resolveNewSessionIdentity()) return;
+            }
+        }, "session-id-resolve");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void claimSession(String sessionId) {
@@ -614,6 +658,8 @@ public class ClaudeSessionController {
         if (!text.isBlank()) {
             model.addPromptToHistory(text);
         }
+        promptSubmittedAt = System.currentTimeMillis();
+        startNewSessionResolver();
 
         Thread t = new Thread(() -> {
             try {
@@ -1447,6 +1493,11 @@ public class ClaudeSessionController {
      * </ul>
      */
     void pollScreenState() {
+        // Claim a new session's file as soon as it appears, so that other tabs
+        // never mistake it for their own. No-op once the identity is known.
+        if (activeSessionId == null) {
+            resolveNewSessionIdentity();
+        }
         List<String> lines = screenLines.get();
 
         // Plan name

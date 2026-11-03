@@ -1514,6 +1514,43 @@ class ClaudeSessionControllerTest {
     }
 
     @Test
+    void newSessionsClaimTheirOwnFileBeforeSiblingGuesses() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // Tab A (NEW) wrote its session after its first prompt, but has not
+        // opened Save & Switch yet, so its identity is still unresolved.
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS + 1_000L);
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        // Tab B (NEW) launches later and writes its own, newer session.
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS + 5_000L);
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 4_000L, true);
+        tabB.simulateLiveSession(config, null, Set.of("a"));
+
+        try {
+            // Resolving B must not make A claim B's file on its behalf.
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "tab B must resolve to its own session");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "tab A must keep the session it created");
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "tab B must still resolve to its own session");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    @Test
     void stopAndRename_usesResumeSessionId() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
         java.nio.file.Path work = tmpDir.resolve("project");
