@@ -237,6 +237,19 @@ public class ClaudeSessionController {
      */
     private int terminalInputEscape;
 
+    /** Parameters of the CSI sequence being parsed, e.g. {@code 200}. */
+    private final StringBuilder terminalEscapeParams = new StringBuilder();
+
+    /**
+     * True while a bracketed paste ({@code ESC [ 200 ~} … {@code ESC [ 201 ~})
+     * is being recorded: its newlines belong to the pasted prompt and must not
+     * submit the line.
+     */
+    private boolean terminalInputPaste;
+
+    /** True when a pasted CR was recorded and the LF of a CRLF pair must be skipped. */
+    private boolean terminalPasteAfterCR;
+
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
 
@@ -659,6 +672,9 @@ public class ClaudeSessionController {
             synchronized (terminalInputLine) {
                 terminalInputLine.setLength(0);
                 terminalInputEscape = 0;
+                terminalEscapeParams.setLength(0);
+                terminalInputPaste = false;
+                terminalPasteAfterCR = false;
             }
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -2587,7 +2603,9 @@ public class ClaudeSessionController {
      * line when Enter was pressed, or {@code null}.
      *
      * <p>Escape sequences (cursor keys, the {@code /resume} picker) and control
-     * characters are dropped so that only typed text is kept.
+     * characters are dropped so that only typed text is kept. Inside a
+     * bracketed paste the text is recorded as typed — including its newlines,
+     * which are part of the prompt rather than submissions.
      */
     private String appendTerminalInput(byte[] bytes) {
         String submitted = null;
@@ -2596,6 +2614,8 @@ public class ClaudeSessionController {
             char c = text.charAt(i);
             if (c == 0x1b) {
                 terminalInputEscape = 1;
+                terminalEscapeParams.setLength(0);
+                terminalPasteAfterCR = false;
             } else if (terminalInputEscape == 1) {
                 // ESC [ starts a CSI sequence, ESC O an SS3 one; any other
                 // character ends a two-character escape (ESC x).
@@ -2603,9 +2623,27 @@ public class ClaudeSessionController {
             } else if (terminalInputEscape == 2) {
                 // CSI: parameter and intermediate bytes (0x20–0x3f) precede
                 // the final byte (0x40–0x7e), which ends the sequence.
-                if (c >= 0x40 && c <= 0x7e) terminalInputEscape = 0;
+                if (c >= 0x40 && c <= 0x7e) {
+                    terminalInputEscape = 0;
+                    onCsiFinal(c, terminalEscapeParams.toString());
+                } else {
+                    terminalEscapeParams.append(c);
+                }
             } else if (terminalInputEscape == 3) {
                 terminalInputEscape = 0; // SS3: exactly one character after ESC O
+            } else if (terminalInputPaste) {
+                // Inside a paste every newline is part of the prompt, not a
+                // submission of the line typed so far.
+                if (c == '\r') {
+                    terminalInputLine.append('\n');
+                    terminalPasteAfterCR = true;
+                } else if (c == '\n') {
+                    if (!terminalPasteAfterCR) terminalInputLine.append('\n');
+                    terminalPasteAfterCR = false;
+                } else if (c >= 0x20) {
+                    terminalInputLine.append(c);
+                    terminalPasteAfterCR = false;
+                }
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
                 terminalInputLine.setLength(0);
@@ -2621,6 +2659,25 @@ public class ClaudeSessionController {
             }
         }
         return submitted;
+    }
+
+    /**
+     * Handles the final byte of a CSI sequence: the bracketed-paste markers
+     * {@code ESC [ 200 ~} / {@code ESC [ 201 ~} switch paste recording on and
+     * off, every other sequence is dropped.
+     *
+     * @param finalByte final byte of the sequence
+     * @param params    parameter bytes collected before it
+     */
+    private void onCsiFinal(char finalByte, String params) {
+        if (finalByte != '~') return;
+        if ("200".equals(params)) {
+            terminalInputPaste = true;
+            terminalPasteAfterCR = false;
+        } else if ("201".equals(params)) {
+            terminalInputPaste = false;
+            terminalPasteAfterCR = false;
+        }
     }
 
     /** Package-private for tests: simulates typing in the terminal at {@code millis}. */

@@ -52,6 +52,36 @@ class ClaudeSessionTabPendingLaunchTest {
         }
     }
 
+    /**
+     * Closing the tab while a launch is still being prepared cancels that
+     * launch, but reopening the tab must restore the project it was going to
+     * use — not the previous one still held by the model.
+     */
+    @Test
+    void closingWhileAPendingLaunchSavesThatLaunchesDirectory() throws Exception {
+        Path tmp = Files.createTempDirectory("pending-launch-close-test");
+        try {
+            File previous = tmp.resolve("project-a").toFile();
+            File pending = tmp.resolve("project-b").toFile();
+            ClaudeSessionTab tab = new ClaudeSessionTab();
+            modelOf(tab).setWorkingDirectory(previous);
+            setField(tab, "pendingLaunchDir", pending);
+
+            tab.componentClosed();
+
+            assertEquals(pending.getAbsolutePath(), pathToRestore(tab),
+                    "closing during a launch must restore the project being launched");
+        } finally {
+            tmp.toFile().delete();
+        }
+    }
+
+    private static String pathToRestore(ClaudeSessionTab tab) throws Exception {
+        Field f = ClaudeSessionTab.class.getDeclaredField("pathToRestore");
+        f.setAccessible(true);
+        return (String) f.get(tab);
+    }
+
     private static ClaudeSessionModel modelOf(ClaudeSessionTab tab) throws Exception {
         Field f = ClaudeSessionTab.class.getDeclaredField("model");
         f.setAccessible(true);

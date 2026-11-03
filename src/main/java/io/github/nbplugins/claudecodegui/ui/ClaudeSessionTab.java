@@ -484,7 +484,9 @@ public class ClaudeSessionTab extends TopComponent
     @Override
     protected void componentClosed() {
         super.componentClosed();
-        File dir = model.getWorkingDirectory();
+        // Keep the project being launched when closing during its preparation:
+        // the launch is cancelled below, but reopening must still restore it.
+        File dir = currentOrPendingDirectory();
         pathToRestore = (dir != null) ? dir.getAbsolutePath() : null;
         if (pendingDiffOnClose != null) {
             try { pendingDiffOnClose.run(); } catch (Exception ex) { /* ignore */ }

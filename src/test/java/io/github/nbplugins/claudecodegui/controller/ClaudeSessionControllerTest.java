@@ -2140,6 +2140,43 @@ class ClaudeSessionControllerTest {
                 "escape sequences must not append their bytes to the typed prompt");
     }
 
+    /**
+     * A multiline prompt pasted into the terminal arrives inside a bracketed
+     * paste ({@code ESC [ 200 ~} … {@code ESC [ 201 ~}). Its newlines are part
+     * of the prompt, not submissions, so the whole text is recorded — otherwise
+     * the prompt evidence would only keep the last pasted line.
+     */
+    @Test
+    void bracketedPasteKeepsMultilinePromptsIntact() {
+        assertNull(controller.simulateTerminalInput(
+                "\u001b[200~".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS));
+        assertNull(controller.simulateTerminalInput(
+                "first\nsecond".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 1),
+                "newlines inside a paste must not submit the line");
+        controller.simulateTerminalInput(
+                "\u001b[201~".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2);
+
+        assertEquals("first\nsecond",
+                controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 3),
+                "the whole pasted prompt must be recorded");
+    }
+
+    @Test
+    void bracketedPasteRecordsCrLfAsASingleNewline() {
+        controller.simulateTerminalInput(
+                "\u001b[200~".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(
+                "a\r\nb".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 1);
+        controller.simulateTerminalInput(
+                "\u001b[201~".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2);
+
+        assertEquals("a\nb",
+                controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 3));
+    }
+
     // -------------------------------------------------------------------------
     // prepareLaunchIdentity — captured before the process starts
     // -------------------------------------------------------------------------
