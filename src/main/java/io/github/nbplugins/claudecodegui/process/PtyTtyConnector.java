@@ -42,6 +42,9 @@ public final class PtyTtyConnector implements TtyConnector {
     /** Invoked with each stripped line; {@code null} means no listener. */
     private volatile Consumer<String> lineListener;
 
+    /** Invoked with every byte block written to the PTY; {@code null} means no listener. */
+    private volatile java.util.function.Consumer<byte[]> inputListener;
+
     /**
      * Creates a connector for the given PTY process.
      *
@@ -62,6 +65,16 @@ public final class PtyTtyConnector implements TtyConnector {
      */
     public void setLineListener(Consumer<String> listener) {
         this.lineListener = listener;
+    }
+
+    /**
+     * Sets a listener that receives every block of bytes written to the PTY —
+     * both plugin-sent input and text typed in the terminal.
+     *
+     * @param listener the listener, or {@code null} to clear
+     */
+    public void setInputListener(java.util.function.Consumer<byte[]> listener) {
+        this.inputListener = listener;
     }
 
     /**
@@ -109,6 +122,8 @@ public final class PtyTtyConnector implements TtyConnector {
     public void write(byte[] bytes) throws IOException {
         process.getOutputStream().write(bytes);
         process.getOutputStream().flush();
+        java.util.function.Consumer<byte[]> l = inputListener;
+        if (l != null) l.accept(bytes);
     }
 
     @Override

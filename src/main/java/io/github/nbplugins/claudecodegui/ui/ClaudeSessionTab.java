@@ -878,7 +878,7 @@ public class ClaudeSessionTab extends TopComponent
                     ClaudeSessionController.prepareLaunchIdentity(
                             dir, profileName, mode, resumeSessionId);
             SwingUtilities.invokeLater(() -> {
-                if (request != startRequestSeq || tabClosed) return;
+                if (request != startRequestSeq) return;
                 try {
                     controller.startProcess(dir, profileName, extraCliArgs, mode,
                             resumeSessionId, identity, widget);

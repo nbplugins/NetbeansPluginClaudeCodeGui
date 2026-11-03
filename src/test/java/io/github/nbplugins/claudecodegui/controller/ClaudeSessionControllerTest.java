@@ -1987,6 +1987,47 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * After a plugin prompt, the user can resume another conversation from the
+     * TUI and type its next prompt directly in the terminal, bypassing
+     * sendPrompt(). The earlier prompt no longer describes the conversation on
+     * screen, so the file times must decide again.
+     */
+    @Test
+    void terminalInputAfterThePromptInvalidatesTheEvidence() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulatePromptText("plugin prompt");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+        appendUserPrompt(dir, "a", "plugin prompt", START_MS + 10_500L);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+        setMtime(dir.resolve("a.jsonl"), START_MS + 10_500L);
+
+        // The user types in the terminal: the process moves to "b".
+        controller.simulateExternalInput(START_MS + 11_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 12_000L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "input typed after the prompt makes the old prompt stale evidence");
+
+        controller.stopAndRename("On Screen");
+        assertEquals("On Screen",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the entered name must follow the conversation on screen");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the conversation left behind must not be renamed");
+    }
+
     // -------------------------------------------------------------------------
     // prepareLaunchIdentity — captured before the process starts
     // -------------------------------------------------------------------------

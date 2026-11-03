@@ -204,6 +204,20 @@ public class ClaudeSessionController {
      */
     private volatile String lastPromptText;
 
+    /**
+     * True while the current thread writes to the PTY on behalf of the plugin
+     * (see {@link #writePty(byte[])}), so terminal input can be told apart.
+     */
+    private final ThreadLocal<Boolean> pluginPtyWrite = ThreadLocal.withInitial(() -> false);
+
+    /**
+     * Time (epoch millis) of the last PTY input typed in the terminal rather
+     * than sent by the plugin. Such input can change the conversation (an
+     * in-process {@code /resume}), so prompt evidence captured before it no
+     * longer describes the session on screen.
+     */
+    private volatile long externalInputAt;
+
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
 
@@ -499,6 +513,10 @@ public class ClaudeSessionController {
 
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
+        connector.setInputListener(bytes -> {
+            if (Boolean.TRUE.equals(pluginPtyWrite.get())) return;
+            externalInputAt = System.currentTimeMillis();
+        });
         screenContentDetector.setSessionTag(tag);
 
         connector.setLineListener(line -> {
@@ -599,6 +617,7 @@ public class ClaudeSessionController {
             preStartSessionIds = Set.of();
             promptSubmittedAt = 0;
             lastPromptText = null;
+            externalInputAt = 0;
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
             releaseAllClaims();
@@ -704,6 +723,7 @@ public class ClaudeSessionController {
         java.nio.file.Path configDir;
         long since;
         long promptAt;
+        long externalAt;
         String promptText;
         String activeId;
         Set<String> exclude = new HashSet<>();
@@ -715,6 +735,7 @@ public class ClaudeSessionController {
             configDir = activeConfigDir;
             since = Math.max(processStartedAt, promptSubmittedAt);
             promptAt = promptSubmittedAt;
+            externalAt = externalInputAt;
             promptText = lastPromptText;
             activeId = activeSessionId;
             if (dir != null && configDir != null && since > 0) {
@@ -738,7 +759,11 @@ public class ClaudeSessionController {
             // of an in-process /resume: the process is writing that file. It
             // must win over a merely newer unclaimed file — e.g. a third tab
             // that wrote its own conversation after the prompt and then exited.
-            if (promptAt > 0) {
+            //
+            // Text typed in the terminal after that prompt may have switched the
+            // conversation through the TUI, in which case the old prompt is no
+            // longer evidence of what is on screen: fall back to file times.
+            if (promptAt > 0 && promptAt > externalAt) {
                 Set<String> candidates = new HashSet<>(claimed);
                 if (activeId != null) candidates.add(activeId);
                 newest = findPromptBearingSession(dir, configDir, candidates,
@@ -1044,9 +1069,9 @@ public class ClaudeSessionController {
 
         Thread t = new Thread(() -> {
             try {
-                connector.write(text);
+                writePty(text);
                 Thread.sleep(200);
-                connector.write("\r");
+                writePty("\r");
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
             } catch (InterruptedException ie) {
@@ -1127,11 +1152,11 @@ public class ClaudeSessionController {
                 Thread t = new Thread(() -> {
                     try {
                         for (String digit : toggles) {
-                            connector.write(digit.strip());
+                            writePty(digit.strip());
                             Thread.sleep(100);
                         }
                         // Right arrow to submit the selection
-                        connector.write(new byte[]{0x1b, '[', 'C'});
+                        writePty(new byte[]{0x1b, '[', 'C'});
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer MULTI write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
@@ -1164,7 +1189,7 @@ public class ClaudeSessionController {
                                     return m != null ? m.options() : List.of();
                                 });
                         for (String digit : computeCheckboxToggles(wanted, currentOptions)) {
-                            connector.write(digit.strip());
+                            writePty(digit.strip());
                             Thread.sleep(100);
                         }
                         // 2. Re-read screen to find current ❯ position
@@ -1176,18 +1201,18 @@ public class ClaudeSessionController {
                                 ? new byte[]{0x1b, '[', 'A'}
                                 : new byte[]{0x1b, '[', 'B'};
                         for (int i = 0; i < Math.abs(delta); i++) {
-                            connector.write(arrow);
+                            writePty(arrow);
                             Thread.sleep(80);
                         }
                         // 4. Type text
                         Thread.sleep(100);
-                        connector.write(typeText);
+                        writePty(typeText);
                         // 5. Move cursor off type-input field (up arrow)
                         Thread.sleep(100);
-                        connector.write(new byte[]{0x1b, '[', 'A'});
+                        writePty(new byte[]{0x1b, '[', 'A'});
                         // 6. Submit with right arrow
                         Thread.sleep(100);
-                        connector.write(new byte[]{0x1b, '[', 'C'});
+                        writePty(new byte[]{0x1b, '[', 'C'});
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer MULTI_TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
@@ -1217,20 +1242,20 @@ public class ClaudeSessionController {
                             if (delta != 0) {
                                 byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
                                 for (int i = 0; i < Math.abs(delta); i++) {
-                                    connector.write(arrow);
+                                    writePty(arrow);
                                     Thread.sleep(80);
                                 }
                                 Thread.sleep(100);
                             }
-                            connector.write(text);
+                            writePty(text);
                             Thread.sleep(200);
-                            connector.write("\r");
+                            writePty("\r");
                         } else {
-                            connector.write(digit);
+                            writePty(digit);
                             Thread.sleep(200);
-                            connector.write(text);
+                            writePty(text);
                             Thread.sleep(200);
-                            connector.write("\r");
+                            writePty("\r");
                         }
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer TYPE write failed: " + ex.getMessage());
@@ -1249,16 +1274,16 @@ public class ClaudeSessionController {
                 LOG.fine("[PTY write] ARROW targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
                 clearActiveChoiceMenu();
                 if (delta == 0) {
-                    connector.write("\r");
+                    writePty("\r");
                 } else {
                     byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
                     Thread t = new Thread(() -> {
                         try {
                             for (int idx = 0; idx < Math.abs(delta); idx++) {
-                                connector.write(arrow);
+                                writePty(arrow);
                                 Thread.sleep(80);
                             }
-                            connector.write("\r");
+                            writePty("\r");
                         } catch (IOException ex) {
                             LOG.warning("writePtyAnswer ARROW write failed: " + ex.getMessage());
                         } catch (InterruptedException ie) {
@@ -1283,16 +1308,16 @@ public class ClaudeSessionController {
                     LOG.fine("[PTY write] ARROW-digit targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
                     clearActiveChoiceMenu();
                     if (delta == 0) {
-                        connector.write("\r");
+                        writePty("\r");
                     } else {
                         byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
                         Thread t = new Thread(() -> {
                             try {
                                 for (int i = 0; i < Math.abs(delta); i++) {
-                                    connector.write(arrow);
+                                    writePty(arrow);
                                     Thread.sleep(80);
                                 }
-                                connector.write("\r");
+                                writePty("\r");
                             } catch (IOException ex) {
                                 LOG.warning("writePtyAnswer ARROW-digit write failed: " + ex.getMessage());
                             } catch (InterruptedException ie) {
@@ -1313,7 +1338,7 @@ public class ClaudeSessionController {
                     boolean isMenuDigit = answer.matches("[0-9]");
                     String toWrite = isMenuDigit ? answer : answer + "\r";
                     LOG.fine("[PTY write] " + toWrite.replace("\r", "\\r").replace("\n", "\\n"));
-                    connector.write(toWrite);
+                    writePty(toWrite);
                     clearActiveChoiceMenu();
                 }
             }
@@ -1335,10 +1360,10 @@ public class ClaudeSessionController {
             try {
                 byte[] arrow = delta < 0 ? PTY_ARROW_UP : PTY_ARROW_DOWN;
                 for (int i = 0; i < Math.abs(delta); i++) {
-                    connector.write(arrow);
+                    writePty(arrow);
                     Thread.sleep(80);
                 }
-                connector.write("\r");
+                writePty("\r");
             } catch (IOException ex) {
                 LOG.warning(threadName + " write failed: " + ex.getMessage());
             } catch (InterruptedException ie) {
@@ -1402,7 +1427,7 @@ public class ClaudeSessionController {
         modeSwitchInProgress = true;
         Thread t = new Thread(() -> {
             try {
-                connector.write(new byte[]{0x1b, '[', 'Z'});
+                writePty(new byte[]{0x1b, '[', 'Z'});
                 Thread.sleep(300);
                 screenContentDetector.detectEditMode(screenLines.get())
                         .ifPresent(model::setEditMode);
@@ -1609,7 +1634,7 @@ public class ClaudeSessionController {
 
     /** Package-private for testing: sends one Shift+Tab (ESC [ Z) to the PTY. */
     void sendOneShiftTab() throws IOException {
-        connector.write(new byte[]{0x1b, '[', 'Z'});
+        writePty(new byte[]{0x1b, '[', 'Z'});
     }
 
     // -------------------------------------------------------------------------
@@ -1634,7 +1659,7 @@ public class ClaudeSessionController {
             String customId = customModelIds.get(index - standardModelCount);
             Thread t = new Thread(() -> {
                 try {
-                    connector.write("/model " + customId + "\r");
+                    writePty("/model " + customId + "\r");
                     Thread.sleep(500);
                 } catch (IOException | InterruptedException ex) {
                     LOG.warning("model switch failed: " + ex.getMessage());
@@ -1651,7 +1676,7 @@ public class ClaudeSessionController {
                 try {
                     openModelMenu();
                     if (index < 9) {
-                        connector.write(String.valueOf(index + 1));
+                        writePty(String.valueOf(index + 1));
                     } else {
                         // Items 10+ cannot be typed: move the cursor onto the item, then Enter.
                         int cursor = waitForModelMenuCursor();
@@ -1659,13 +1684,13 @@ public class ClaudeSessionController {
                             int delta = index + 1 - cursor;
                             byte[] arrow = delta < 0 ? PTY_ARROW_UP : PTY_ARROW_DOWN;
                             for (int i = 0; i < Math.abs(delta); i++) {
-                                connector.write(arrow);
+                                writePty(arrow);
                                 Thread.sleep(80);
                             }
-                            connector.write("\r");
+                            writePty("\r");
                         } else {
                             LOG.warning("model switch: /model menu not visible, cannot select item " + (index + 1));
-                            connector.write(PTY_ESC);
+                            writePty(PTY_ESC);
                         }
                     }
                     Thread.sleep(500);
@@ -1748,9 +1773,9 @@ public class ClaudeSessionController {
                     // absorbed as a newline — retry: BackSpace to remove the blank line, then CR.
                     if (poll < 12 && isModelCommandPendingWithBlankLine(lines)) {
                         LOG.fine("[discoverModels] /model pending with blank line on poll " + (poll + 1) + ", retrying CR");
-                        connector.write(PTY_BACKSPACE);
+                        writePty(PTY_BACKSPACE);
                         Thread.sleep(200);
-                        connector.write("\r");
+                        writePty("\r");
                     }
                 }
 
@@ -1808,7 +1833,7 @@ public class ClaudeSessionController {
                     selIdx = -1;
                 }
 
-                connector.write(new byte[]{0x1b});  // Esc — dismiss model menu
+                writePty(new byte[]{0x1b});  // Esc — dismiss model menu
 
                 // If a menu entry contains "(currently" but is incomplete (truncated at terminal
                 // width), replace it with the model name extracted from the hint line above.
@@ -2244,8 +2269,8 @@ public class ClaudeSessionController {
 
     private MenuEnumerator newMenuEnumerator() {
         return new MenuEnumerator(screenContentDetector, screenLines, new MenuEnumerator.Keys() {
-            @Override public void down() throws IOException { connector.write(PTY_ARROW_DOWN); }
-            @Override public void up() throws IOException { connector.write(PTY_ARROW_UP); }
+            @Override public void down() throws IOException { writePty(PTY_ARROW_DOWN); }
+            @Override public void up() throws IOException { writePty(PTY_ARROW_UP); }
         }, Thread::sleep, MENU_ENUMERATION_SETTLE_MS);
     }
 
@@ -2425,11 +2450,11 @@ public class ClaudeSessionController {
      * command in the input), wait, then \r to execute.
      */
     private void openModelMenu() throws IOException, InterruptedException {
-        connector.write("/model");
+        writePty("/model");
         Thread.sleep(200);
-        connector.write(PTY_ESC);
+        writePty(PTY_ESC);
         Thread.sleep(200);
-        connector.write("\r");
+        writePty("\r");
         Thread.sleep(200);
     }
 
@@ -2438,8 +2463,37 @@ public class ClaudeSessionController {
      * {@link SessionLifecycle#READY}.
      */
     private void sendCancelToPty(byte[] bytes) throws IOException {
-        connector.write(bytes);
+        writePty(bytes);
         onClaudeIdle();
+    }
+
+    /**
+     * Writes bytes to the PTY on behalf of the plugin.
+     *
+     * <p>Plugin writes are marked on the calling thread so that
+     * {@link PtyTtyConnector#setInputListener} can tell them apart from text
+     * typed directly into the terminal, which can change the conversation
+     * (e.g. an in-process {@code /resume}) and invalidates the prompt evidence
+     * captured by {@link #sendPrompt(String)}.
+     */
+    private void writePty(byte[] bytes) throws IOException {
+        boolean previous = pluginPtyWrite.get();
+        pluginPtyWrite.set(true);
+        try {
+            connector.write(bytes);
+        } finally {
+            pluginPtyWrite.set(previous);
+        }
+    }
+
+    /** Writes text to the PTY on behalf of the plugin. See {@link #writePty(byte[])}. */
+    private void writePty(String text) throws IOException {
+        writePty(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /** Package-private for tests: simulates typing in the terminal at {@code millis}. */
+    void simulateExternalInput(long millis) {
+        externalInputAt = millis;
     }
 
     /**

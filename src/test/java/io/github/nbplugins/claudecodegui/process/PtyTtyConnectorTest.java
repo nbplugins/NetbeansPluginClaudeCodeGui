@@ -78,6 +78,30 @@ class PtyTtyConnectorTest {
     }
 
     /**
+     * Verifies that every block written to the PTY reaches the input listener,
+     * which the controller uses to notice text typed in the terminal.
+     */
+    @Test
+    void testInputListenerReceivesWrittenBytes() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+
+        PtyProcess p = startCat();
+        List<String> received = new ArrayList<>();
+        PtyTtyConnector c = new PtyTtyConnector(p);
+        c.setInputListener(bytes -> received.add(new String(bytes, StandardCharsets.UTF_8)));
+
+        c.write("first");
+        c.write(new byte[]{'\r'});
+        // No waitFor() here: pty4j 0.12.4 never reports the exit of a child
+        // whose PTY output was read through an InputStream (as the connector
+        // does), even though the child itself terminates.
+        c.close();
+
+        assertEquals(List.of("first", "\r"), received);
+    }
+
+    /**
      * Verifies that the line listener receives lines with ANSI escape codes stripped.
      *
      * <p>Starts an {@code echo} process that outputs a line wrapped in ANSI colour

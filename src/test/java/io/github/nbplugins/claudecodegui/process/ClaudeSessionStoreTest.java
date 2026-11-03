@@ -353,6 +353,23 @@ class ClaudeSessionStoreTest {
     }
 
     @Test
+    void containsUserPromptSince_requiresTheWholePrompt() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        writeJsonl(file, userLine("Summarize yesterday's changes", OLD_TS.plusSeconds(60)));
+
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "yes"),
+                "a message that merely contains the prompt is not evidence");
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "yesterday"),
+                "a message that merely contains the prompt is not evidence");
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "Summarize yesterday's changes"));
+    }
+
+    @Test
     void containsUserPromptSince_noEvidence_returnsFalse() throws IOException {
         Path workDir = tmpDir.resolve("myproject");
         Path sessionDir = createSessionDir(tmpDir, workDir);

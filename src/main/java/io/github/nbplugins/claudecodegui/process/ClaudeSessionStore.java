@@ -252,7 +252,7 @@ public final class ClaudeSessionStore {
         }
     }
 
-    /** Returns whether the JSONL {@code line} is a user message with {@code prompt}. */
+    /** Returns whether the JSONL {@code line} is a user message carrying {@code prompt}. */
     private static boolean isUserMessageWith(String line, long sinceMillis, String prompt) {
         if (line.isBlank()) return false;
         try {
@@ -263,20 +263,40 @@ public final class ClaudeSessionStore {
             if (Instant.parse(tsNode.asText()).toEpochMilli() < sinceMillis) return false;
             JsonNode content = node.path("message").get("content");
             if (content == null) return false;
-            if (content.isTextual()) return content.asText().contains(prompt);
+            if (content.isTextual()) return isSamePrompt(content.asText(), prompt);
             if (content.isArray()) {
+                StringBuilder joined = new StringBuilder();
                 for (JsonNode block : content) {
-                    if (block.isTextual() && block.asText().contains(prompt)) return true;
-                    if (block.isObject() && "text".equals(block.path("type").asText())
-                            && block.path("text").asText().contains(prompt)) {
-                        return true;
-                    }
+                    String text = textOfBlock(block);
+                    if (text == null) continue;
+                    if (isSamePrompt(text, prompt)) return true;
+                    if (joined.length() > 0) joined.append('\n');
+                    joined.append(text);
                 }
+                return isSamePrompt(joined.toString(), prompt);
             }
             return false;
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /** Returns the text of a content block, or {@code null} for non-text blocks. */
+    private static String textOfBlock(JsonNode block) {
+        if (block.isTextual()) return block.asText();
+        if (block.isObject() && "text".equals(block.path("type").asText())) {
+            return block.path("text").asText();
+        }
+        return null;
+    }
+
+    /**
+     * Compares a stored message with the submitted prompt. The whole message
+     * must match: a shorter prompt such as {@code yes} must not be treated as
+     * evidence for an unrelated message that merely contains it.
+     */
+    private static boolean isSamePrompt(String text, String prompt) {
+        return !text.isBlank() && text.trim().equals(prompt);
     }
 
     private static Path newestSessionFile(Path dir, Set<String> excludeIds, long minMtimeMillis) {
