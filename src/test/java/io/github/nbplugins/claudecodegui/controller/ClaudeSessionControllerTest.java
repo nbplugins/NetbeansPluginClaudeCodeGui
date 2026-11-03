@@ -1411,6 +1411,16 @@ class ClaudeSessionControllerTest {
                         + "\",\"timestamp\":\"2024-01-01T10:00:00Z\",\"type\":\"summary\"}\n");
     }
 
+    /** Appends a user message, as the running process writes it into the JSONL. */
+    private static void appendUserPrompt(java.nio.file.Path dir, String id, String text,
+                                         long millis) throws java.io.IOException {
+        java.nio.file.Files.writeString(dir.resolve(id + ".jsonl"),
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"" + text
+                        + "\"},\"timestamp\":\"" + java.time.Instant.ofEpochMilli(millis)
+                        + "\"}\n",
+                java.nio.file.StandardOpenOption.APPEND);
+    }
+
     private static void setMtime(java.nio.file.Path file, long millis) throws java.io.IOException {
         java.nio.file.Files.setLastModifiedTime(file,
                 java.nio.file.attribute.FileTime.fromMillis(millis));
@@ -1798,7 +1808,9 @@ class ClaudeSessionControllerTest {
         try {
             // Tab A picks B's conversation in its TUI and sends a prompt; the
             // write lands in B's file, which B still owns.
+            controller.simulatePromptText("continue in the resumed tab");
             controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            appendUserPrompt(dir, "b", "continue in the resumed tab", START_MS + 10_500L);
             setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
 
             assertEquals("b", controller.resolveActiveSessionId(),
@@ -1847,7 +1859,9 @@ class ClaudeSessionControllerTest {
         try {
             // A joins B's conversation in the TUI and sends a prompt; the write
             // lands in the shared file.
+            controller.simulatePromptText("joined from a new tab");
             controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            appendUserPrompt(dir, "shared", "joined from a new tab", START_MS + 10_500L);
             setMtime(dir.resolve("shared.jsonl"), START_MS + 11_000L);
 
             assertEquals("shared", controller.resolveActiveSessionId(),
@@ -1861,6 +1875,80 @@ class ClaudeSessionControllerTest {
         } finally {
             tabB.stopProcess();
         }
+    }
+
+    /**
+     * The counterpart of the test above: a NEW tab's first prompt is scanned
+     * before the tab has written its own file. A sibling tab finishing a turn at
+     * that moment owns a file written after the prompt, but it contains only
+     * that tab's messages — not this tab's prompt — so it must not be adopted.
+     */
+    @Test
+    void newTabPromptingWhileAnotherTabWrites_doesNotAdoptItsSession() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("b"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("b"));
+
+        try {
+            // A's scan runs before A's own file exists; meanwhile B finishes a
+            // turn in the same store.
+            controller.simulatePromptText("a brand new prompt");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            appendUserPrompt(dir, "b", "b's own turn", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+
+            assertNull(controller.resolveActiveSessionId(),
+                    "another tab's turn is not evidence of a shared resume");
+
+            controller.stopAndRename("A Name");
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "b").customTitle(),
+                    "a pending first prompt must not rename another tab's conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The prompt panel's "New session" action stops with a blank name: no rename
+     * is attempted, so the identity — and the session store with it — must not
+     * be resolved on the EDT before the PTY is stopped.
+     */
+    @Test
+    void stopAndRename_blankName_doesNotScanTheStore() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, "a", Set.of("a"));
+        controller.simulatePromptSubmittedAt(START_MS + 1_000L);
+
+        long scansBefore = controller.simulateScanSequence();
+        controller.stopAndRename("   ");
+
+        assertEquals(scansBefore, controller.simulateScanSequence(),
+                "a blank name must not trigger a session-store scan");
+        assertNull(controller.getActiveConfigDir(), "the process must still be stopped");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                .findSession(work, config, "a").customTitle());
     }
 
     /**

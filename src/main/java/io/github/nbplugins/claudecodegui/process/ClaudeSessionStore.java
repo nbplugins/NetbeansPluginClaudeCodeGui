@@ -194,6 +194,65 @@ public final class ClaudeSessionStore {
         return newest != null ? sessionIdOf(newest) : null;
     }
 
+    /**
+     * Returns whether the session file contains a user message with
+     * {@code prompt} whose timestamp is at or after {@code sinceMillis}.
+     *
+     * <p>This is the evidence that a running process — and not a sibling tab
+     * writing its own conversation — is the one appending to the file: a
+     * conversation resumed in-process contains the prompt this tab just
+     * submitted, while another tab's turn contains only that tab's messages.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param sessionId       session ID (file name without {@code .jsonl})
+     * @param sinceMillis     earliest acceptable message timestamp (epoch millis)
+     * @param prompt          prompt text submitted by this tab
+     * @return {@code true} if such a message exists; {@code false} otherwise
+     */
+    public static boolean containsUserPromptSince(Path workingDir, Path claudeConfigDir,
+                                                  String sessionId, long sinceMillis,
+                                                  String prompt) {
+        if (sessionId == null || prompt == null || prompt.isBlank()) return false;
+        Path file = sessionsDir(workingDir, claudeConfigDir).resolve(sessionId + ".jsonl");
+        if (!Files.isRegularFile(file)) return false;
+        String wanted = prompt.trim();
+        if (wanted.isEmpty()) return false;
+        try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
+            return lines.anyMatch(line -> isUserMessageWith(line, sinceMillis, wanted));
+        } catch (IOException | RuntimeException e) {
+            LOG.fine("Could not read session " + file + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Returns whether the JSONL {@code line} is a user message with {@code prompt}. */
+    private static boolean isUserMessageWith(String line, long sinceMillis, String prompt) {
+        if (line.isBlank()) return false;
+        try {
+            JsonNode node = MAPPER.readTree(line);
+            if (!"user".equals(node.path("type").asText())) return false;
+            JsonNode tsNode = node.get("timestamp");
+            if (tsNode == null || !tsNode.isTextual()) return false;
+            if (Instant.parse(tsNode.asText()).toEpochMilli() < sinceMillis) return false;
+            JsonNode content = node.path("message").get("content");
+            if (content == null) return false;
+            if (content.isTextual()) return content.asText().contains(prompt);
+            if (content.isArray()) {
+                for (JsonNode block : content) {
+                    if (block.isTextual() && block.asText().contains(prompt)) return true;
+                    if (block.isObject() && "text".equals(block.path("type").asText())
+                            && block.path("text").asText().contains(prompt)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static Path newestSessionFile(Path dir, Set<String> excludeIds, long minMtimeMillis) {
         if (!Files.isDirectory(dir)) {
             return null;

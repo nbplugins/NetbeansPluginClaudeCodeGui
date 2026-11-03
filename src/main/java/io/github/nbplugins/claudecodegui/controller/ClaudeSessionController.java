@@ -196,6 +196,14 @@ public class ClaudeSessionController {
      */
     private volatile long promptSubmittedAt = 0;
 
+    /**
+     * Text of the last prompt submitted from the plugin. Together with
+     * {@link #promptSubmittedAt} it is the evidence that a file written after
+     * the prompt contains this tab's own messages — e.g. a conversation resumed
+     * in-process — rather than a concurrent turn of a sibling tab.
+     */
+    private volatile String lastPromptText;
+
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
 
@@ -292,6 +300,18 @@ public class ClaudeSessionController {
     /** Package-private for tests: records a prompt submitted from the plugin. */
     void simulatePromptSubmittedAt(long millis) {
         promptSubmittedAt = millis;
+    }
+
+    /** Package-private for tests: records the text of the last submitted prompt. */
+    void simulatePromptText(String text) {
+        lastPromptText = text;
+    }
+
+    /** Package-private for tests: the number of identity scans started. */
+    long simulateScanSequence() {
+        synchronized (processOwnershipLock) {
+            return scanSequence;
+        }
     }
 
     /**
@@ -511,6 +531,7 @@ public class ClaudeSessionController {
             activeSessionId = null;
             preStartSessionIds = Set.of();
             promptSubmittedAt = 0;
+            lastPromptText = null;
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
             releaseAllClaims();
@@ -541,12 +562,17 @@ public class ClaudeSessionController {
      * @param sessionName name to persist, or {@code null}/blank to skip renaming
      */
     public void stopAndRename(String sessionName) {
+        boolean rename = sessionName != null && !sessionName.isBlank();
         java.io.File dir = model.getWorkingDirectory();
         java.nio.file.Path configDir = activeConfigDir;
-        String sessionId = resolveActiveSessionId();
+        // Resolving the identity enumerates the session store, which can take
+        // long on projects with thousands of conversations. The prompt panel's
+        // "New session" action stops with a blank name; no rename will be
+        // attempted, so that work is skipped before the PTY is stopped.
+        String sessionId = rename ? resolveActiveSessionId() : null;
         stopProcess();
 
-        if (sessionName == null || sessionName.isBlank()) return;
+        if (!rename) return;
         if (dir == null || configDir == null || sessionId == null) {
             LOG.warning("Could not rename session: no active session file found in "
                     + ClaudeSessionStore.sessionDirForLog(
@@ -611,6 +637,7 @@ public class ClaudeSessionController {
         java.nio.file.Path configDir;
         long since;
         long promptAt;
+        String promptText;
         String activeId;
         Set<String> exclude = new HashSet<>();
         Set<String> claimed = new HashSet<>();
@@ -621,6 +648,7 @@ public class ClaudeSessionController {
             configDir = activeConfigDir;
             since = Math.max(processStartedAt, promptSubmittedAt);
             promptAt = promptSubmittedAt;
+            promptText = lastPromptText;
             activeId = activeSessionId;
             if (dir != null && configDir != null && since > 0) {
                 claimed.addAll(claimedByOthers(dir, configDir));
@@ -664,10 +692,17 @@ public class ClaudeSessionController {
                 // instead of keeping the conversation the tab had left. A NEW
                 // tab can do this before it has created a file of its own, so
                 // an unknown identity must be allowed as well.
+                //
+                // The file must contain this tab's own prompt, written after it
+                // was submitted: without that evidence a sibling tab finishing
+                // a turn in the same store — a write that may land before this
+                // tab's first JSONL line — would be mistaken for a switch.
                 String switched = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                         dir.toPath(), configDir, since, Set.of());
                 if (switched != null && !switched.equals(activeId)
-                        && claimed.contains(switched)) {
+                        && claimed.contains(switched)
+                        && ClaudeSessionStore.containsUserPromptSince(
+                                dir.toPath(), configDir, switched, promptAt, promptText)) {
                     newest = switched;
                 }
             }
@@ -923,6 +958,7 @@ public class ClaudeSessionController {
         if (!text.isBlank()) {
             model.addPromptToHistory(text);
         }
+        lastPromptText = text;
         promptSubmittedAt = System.currentTimeMillis();
         scheduleIdentityRefresh();
 

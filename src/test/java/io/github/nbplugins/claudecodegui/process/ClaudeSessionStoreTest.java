@@ -304,6 +304,69 @@ class ClaudeSessionStoreTest {
                 workDir, tmpDir, BASE_MTIME, java.util.Set.of()));
     }
 
+    // -------------------------------------------------------------------------
+    // containsUserPromptSince
+    // -------------------------------------------------------------------------
+
+    private static String userLine(String text, java.time.Instant ts) {
+        return "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\""
+                + text + "\"},\"timestamp\":\"" + ts + "\"}";
+    }
+
+    @Test
+    void containsUserPromptSince_findsPromptWrittenAfterSubmission() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        writeJsonl(file,
+                userLine("earlier question", OLD_TS),
+                userLine("the prompt from this tab", OLD_TS.plusSeconds(60)));
+
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.plusSeconds(30).toEpochMilli(), "the prompt from this tab"));
+    }
+
+    @Test
+    void containsUserPromptSince_ignoresOlderMessagesWithTheSameText() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        writeJsonl(file, userLine("continue", OLD_TS));
+
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.plusSeconds(30).toEpochMilli(), "continue"),
+                "a message written before the prompt is not evidence of a shared resume");
+    }
+
+    @Test
+    void containsUserPromptSince_acceptsContentBlocks() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        String ts = OLD_TS.plusSeconds(60).toString();
+        writeJsonl(file, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":["
+                + "{\"type\":\"text\",\"text\":\"prompt in a block\"}]},\"timestamp\":\""
+                + ts + "\"}");
+
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "prompt in a block"));
+    }
+
+    @Test
+    void containsUserPromptSince_noEvidence_returnsFalse() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeJsonl(sessionDir.resolve("s1.jsonl"),
+                userLine("another tabs prompt", OLD_TS.plusSeconds(60)));
+
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "this tabs prompt"));
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "missing",
+                OLD_TS.toEpochMilli(), "whatever"));
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "   "));
+    }
+
     @Test
     void findSession_returnsRequestedSessionOnly() throws IOException {
         Path workDir = tmpDir.resolve("myproject");
