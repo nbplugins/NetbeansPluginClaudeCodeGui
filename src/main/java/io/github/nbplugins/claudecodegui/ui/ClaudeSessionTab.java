@@ -1352,6 +1352,9 @@ public class ClaudeSessionTab extends TopComponent
 
     /** Tears down the chat UI layout after the PTY has already been stopped. */
     private void cleanupChatLayout() {
+        // The layout is gone: a launch whose preparation is still running would
+        // otherwise attach its process to the closed, detached widget.
+        startRequestSeq++;
         if (terminalWidget != null) {
             terminalWidget.close();
             terminalWidget = null;
