@@ -497,9 +497,9 @@ public class ClaudeSessionController {
      *
      * <p>The identity is not fixed at launch: Claude can switch conversations
      * inside the running process (its own {@code /resume} picker), in which case
-     * the file written most recently belongs to the new session. Other live tabs
-     * sharing the same store are asked to publish — and claim — their own
-     * sessions first, so their files are never mistaken for this one's.
+     * the file written most recently belongs to the new session. Sessions
+     * claimed by other live tabs are never taken over (see
+     * {@link #refreshSessionIdentity()}).
      *
      * @return session ID, or {@code null} if it cannot be determined
      */
