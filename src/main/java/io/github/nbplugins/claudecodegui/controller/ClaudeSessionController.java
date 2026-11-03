@@ -105,6 +105,22 @@ public class ClaudeSessionController {
     private volatile boolean firstOutputReceived = false;
 
     /**
+     * Effective Claude config dir of the running session, captured at launch.
+     * Used so that renaming targets the same store the process writes to.
+     */
+    private volatile java.nio.file.Path activeConfigDir;
+
+    /**
+     * Session ID known at launch: the resume ID for {@link SessionMode#RESUME_SPECIFIC}
+     * and the newest existing session for {@link SessionMode#CONTINUE_LAST}.  For
+     * {@link SessionMode#NEW} this is {@code null} until the session file appears.
+     */
+    private volatile String activeSessionId;
+
+    /** Session IDs that already existed when the current session was launched. */
+    private volatile Set<String> preStartSessionIds = Set.of();
+
+    /**
      * Called when a hang is detected: receives (command, errorMessage).
      * Invoked on the EDT after the process is stopped.
      */
@@ -181,6 +197,14 @@ public class ClaudeSessionController {
         firstOutputReceived = outputReceived;
     }
 
+    /** Package-private for tests: sets the session identity captured at launch. */
+    void simulateActiveSession(java.nio.file.Path configDir, String sessionId,
+                               Set<String> preStartIds) {
+        activeConfigDir = configDir;
+        activeSessionId = sessionId;
+        preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
+    }
+
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
     void simulatePtyLine(String line) {
         synchronized (recentPtyLines) {
@@ -251,11 +275,30 @@ public class ClaudeSessionController {
         claudeProcess = new ClaudeProcess();
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
         customModelIds = profile != null ? new ArrayList<>(profile.getComboModelIds()) : List.of();
+
+        // Capture the session identity before launch so that stopping/renaming later
+        // targets the session this process will actually use (see stopAndRename).
+        SessionMode effectiveMode = mode != null ? mode : SessionMode.NEW;
+        java.nio.file.Path projectedConfigDir =
+                ClaudeProcess.resolveConfigDir(profile, ClaudeCodePreferences.getProfilesDir());
+        preStartSessionIds = ClaudeSessionStore.listSessionIds(dir.toPath(), projectedConfigDir);
+        if (effectiveMode == SessionMode.RESUME_SPECIFIC
+                && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            activeSessionId = resumeSessionId;
+        } else if (effectiveMode == SessionMode.CONTINUE_LAST) {
+            activeSessionId = ClaudeSessionStore.findLatestSessionId(dir.toPath(), projectedConfigDir);
+        } else {
+            activeSessionId = null;
+        }
+
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
-                mode != null ? mode : SessionMode.NEW,
-                resumeSessionId);
+                effectiveMode, resumeSessionId);
 
+        activeConfigDir = claudeProcess.getConfigDir();
+        if (activeConfigDir == null) {
+            activeConfigDir = projectedConfigDir;
+        }
         processStartedAt = System.currentTimeMillis();
         firstOutputReceived = false;
 
@@ -352,6 +395,9 @@ public class ClaudeSessionController {
         synchronized (recentPtyLines) { recentPtyLines.clear(); }
         processStartedAt = 0;
         firstOutputReceived = false;
+        activeConfigDir = null;
+        activeSessionId = null;
+        preStartSessionIds = Set.of();
 
         model.setModelList(List.of(), -1);
         clearActiveChoiceMenu();
@@ -360,27 +406,66 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Stops the PTY process and, if {@code sessionName} is non-blank, writes a
-     * {@code custom-title} entry to the most recent session JSONL file.
+     * Stops the PTY process and, if {@code sessionName} is non-blank, appends a
+     * {@code custom-title} entry to the JSONL file of the session that was running.
+     *
+     * <p>The target session and config dir are captured at launch, so the rename
+     * works for named profiles (isolated config dir), profiles that map to
+     * {@code ~/.claude}, and several sessions sharing the same project.
      *
      * @param sessionName name to persist, or {@code null}/blank to skip renaming
      */
     public void stopAndRename(String sessionName) {
-        java.io.File workingDir = model.getWorkingDirectory();
+        java.io.File dir = model.getWorkingDirectory();
+        java.nio.file.Path configDir = activeConfigDir;
+        String sessionId = resolveActiveSessionId();
         stopProcess();
-        if (sessionName != null && !sessionName.isBlank() && workingDir != null) {
-            try {
-                SavedSession recent = ClaudeSessionStore.findMostRecent(
-                        workingDir.toPath(), null);
-                if (recent != null) {
-                    ClaudeSessionStore.renameSession(
-                            workingDir.toPath(), null, recent.sessionId(), sessionName);
-                    LOG.fine("Renamed session " + recent.sessionId() + " to '" + sessionName + "'");
-                }
-            } catch (Exception e) {
-                LOG.warning("Could not rename session: " + e.getMessage());
-            }
+
+        if (sessionName == null || sessionName.isBlank()) return;
+        if (dir == null || configDir == null || sessionId == null) {
+            LOG.warning("Could not rename session: no active session file found in "
+                    + ClaudeSessionStore.sessionDirForLog(
+                            dir != null ? dir.toPath() : null, configDir)
+                    + " (dir=" + dir + ", configDir=" + configDir + ")");
+            return;
         }
+        String name = sessionName.trim();
+        try {
+            SavedSession current = ClaudeSessionStore.findSession(dir.toPath(), configDir, sessionId);
+            if (current != null && name.equals(current.customTitle())) {
+                LOG.fine("Session " + sessionId + " already titled '" + name + "'; nothing to do");
+                return;
+            }
+            ClaudeSessionStore.renameSession(dir.toPath(), configDir, sessionId, name);
+            LOG.fine("Renamed session " + sessionId + " to '" + name + "' in " + configDir);
+        } catch (Exception e) {
+            LOG.warning("Could not rename session " + sessionId + " in " + configDir + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the ID of the session currently being displayed, resolving the
+     * file created by this run for {@link SessionMode#NEW} sessions.
+     *
+     * @return session ID, or {@code null} if it cannot be determined
+     */
+    public String resolveActiveSessionId() {
+        String known = activeSessionId;
+        if (known != null) return known;
+        java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+        java.nio.file.Path configDir = activeConfigDir;
+        if (dir == null || configDir == null) return null;
+        return ClaudeSessionStore.findSessionIdCreatedAfter(
+                dir.toPath(), configDir, preStartSessionIds, processStartedAt);
+    }
+
+    /**
+     * Returns the effective config dir of the running session.
+     *
+     * @return config dir, or {@code null} when no session was started
+     */
+    public java.nio.file.Path getActiveConfigDir() {
+        return activeConfigDir;
     }
 
     // -------------------------------------------------------------------------

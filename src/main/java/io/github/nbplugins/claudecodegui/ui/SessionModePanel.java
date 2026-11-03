@@ -372,7 +372,7 @@ public final class SessionModePanel extends JPanel {
         SavedSession session = tableModel.getSession(modelRow);
         if (session == null) return;
 
-        String current = session.displayName();
+        String current = ClaudeSessionTab.prefillSessionName(session);
         String newName = JOptionPane.showInputDialog(
                 this, "Rename session:", current);
         if (newName == null || newName.isBlank()) return;

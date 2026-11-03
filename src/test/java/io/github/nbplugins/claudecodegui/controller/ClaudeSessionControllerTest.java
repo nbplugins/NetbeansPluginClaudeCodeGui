@@ -1377,6 +1377,154 @@ class ClaudeSessionControllerTest {
     }
 
     // -------------------------------------------------------------------------
+    // stopAndRename — must target the session that was running
+    // -------------------------------------------------------------------------
+
+    @org.junit.jupiter.api.io.TempDir
+    java.nio.file.Path tmpDir;
+
+    private static String hashOf(java.nio.file.Path workDir) {
+        return workDir.toAbsolutePath().toString().replace('/', '-');
+    }
+
+    private static java.nio.file.Path sessionDir(java.nio.file.Path configDir,
+                                                 java.nio.file.Path workDir) throws java.io.IOException {
+        java.nio.file.Path dir = configDir.resolve("projects").resolve(hashOf(workDir));
+        java.nio.file.Files.createDirectories(dir);
+        return dir;
+    }
+
+    private static void writeSession(java.nio.file.Path dir, String id, String slug)
+            throws java.io.IOException {
+        java.nio.file.Files.writeString(dir.resolve(id + ".jsonl"),
+                "{\"sessionId\":\"" + id + "\",\"slug\":\"" + slug
+                        + "\",\"timestamp\":\"2024-01-01T10:00:00Z\",\"type\":\"summary\"}\n");
+    }
+
+    private static void touch(java.nio.file.Path file) throws java.io.IOException {
+        java.nio.file.Files.setLastModifiedTime(file,
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+    }
+
+    private static long countCustomTitles(java.nio.file.Path file, String value)
+            throws java.io.IOException {
+        String json = "\"customTitle\":\"" + value + "\"";
+        return java.nio.file.Files.readAllLines(file).stream()
+                .filter(line -> line.contains("\"type\":\"custom-title\""))
+                .filter(line -> line.contains(json))
+                .count();
+    }
+
+    @Test
+    void stopAndRename_writesIntoCapturedConfigDir() throws Exception {
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path profileDir = tmpDir.resolve("profiles").resolve("Work");
+        java.nio.file.Path dir = sessionDir(profileDir, work);
+        writeSession(dir, "s1", "slug");
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateActiveSession(profileDir, "s1", Set.of("s1"));
+
+        controller.stopAndRename("My Session");
+
+        io.github.nbplugins.claudecodegui.model.SavedSession s =
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, profileDir, "s1");
+        assertNotNull(s);
+        assertEquals("My Session", s.customTitle(),
+                "the title must be written into the profile's own config dir");
+    }
+
+    @Test
+    void stopAndRename_targetsLaunchSession_notAnotherTab() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // Another tab's session, modified more recently than our launch.
+        writeSession(dir, "other-tab", "other");
+        touch(dir.resolve("other-tab.jsonl"));
+        // Snapshot taken right before our process launched.
+        Set<String> before = Set.of("other-tab");
+        writeSession(dir, "this-session", "this");
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(System.currentTimeMillis() - 1_000L, true);
+        controller.simulateActiveSession(config, null, before);
+
+        controller.stopAndRename("Closed Session");
+
+        assertEquals("Closed Session",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "this-session").customTitle(),
+                "the session created by this run must be renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "other-tab").customTitle(),
+                "another tab's session must not be touched");
+    }
+
+    @Test
+    void stopAndRename_usesResumeSessionId() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "resumed", "old");
+        writeSession(dir, "newer", "newer");
+        touch(dir.resolve("newer.jsonl"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateActiveSession(config, "resumed", Set.of("resumed", "newer"));
+
+        controller.stopAndRename("Resumed Name");
+
+        assertEquals("Resumed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "resumed").customTitle());
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                .findSession(work, config, "newer").customTitle(),
+                "a newer unrelated session must not be renamed");
+    }
+
+    @Test
+    void stopAndRename_skipsUnchangedTitle() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "s1", "slug");
+        java.nio.file.Files.writeString(dir.resolve("s1.jsonl"),
+                "{\"type\":\"custom-title\",\"customTitle\":\"Same\",\"sessionId\":\"s1\"}\n",
+                java.nio.file.StandardOpenOption.APPEND);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateActiveSession(config, "s1", Set.of("s1"));
+
+        controller.stopAndRename("Same");
+
+        assertEquals(1, countCustomTitles(dir.resolve("s1.jsonl"), "Same"),
+                "repeated stops must not append duplicate custom-title lines");
+    }
+
+    @Test
+    void stopAndRename_blankName_doesNothing() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "s1", "slug");
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(System.currentTimeMillis(), true);
+        controller.simulateActiveSession(config, "s1", Set.of("s1"));
+
+        controller.stopAndRename("   ");
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                .findSession(work, config, "s1").customTitle());
+    }
+
+    // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------
 

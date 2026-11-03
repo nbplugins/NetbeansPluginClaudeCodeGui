@@ -195,4 +195,98 @@ class ClaudeSessionStoreTest {
         assertThrows(IOException.class, () ->
                 ClaudeSessionStore.renameSession(workDir, tmpDir, "no-such-id", "Name"));
     }
+
+    // -------------------------------------------------------------------------
+    // Session identity helpers
+    // -------------------------------------------------------------------------
+
+    private static final java.time.Instant OLD_TS = java.time.Instant.parse("2024-01-01T10:00:00Z");
+
+    private void writeTimedSession(Path sessionDir, String id, java.time.Instant ts) throws IOException {
+        writeJsonl(sessionDir.resolve(id + ".jsonl"),
+                "{\"sessionId\":\"" + id + "\",\"slug\":\"slug-" + id
+                        + "\",\"timestamp\":\"" + ts + "\",\"type\":\"summary\"}");
+    }
+
+    @Test
+    void listSessionIds_returnsAllJsonlStems() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "s1", OLD_TS);
+        writeTimedSession(sessionDir, "s2", OLD_TS);
+        writeJsonl(sessionDir.resolve("notes.txt"), "ignored");
+
+        assertEquals(java.util.Set.of("s1", "s2"),
+                ClaudeSessionStore.listSessionIds(workDir, tmpDir));
+    }
+
+    @Test
+    void listSessionIds_missingDir_returnsEmptySet() {
+        assertTrue(ClaudeSessionStore.listSessionIds(tmpDir.resolve("nope"), tmpDir).isEmpty());
+    }
+
+    @Test
+    void findLatestSessionId_usesFileMtime() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "old", OLD_TS);
+        writeTimedSession(sessionDir, "new", OLD_TS);
+        Files.setLastModifiedTime(sessionDir.resolve("new.jsonl"),
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+
+        assertEquals("new", ClaudeSessionStore.findLatestSessionId(workDir, tmpDir));
+    }
+
+    @Test
+    void findLatestSessionId_ignoresUnparseableNewestFile() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "older", OLD_TS);
+        // No timestamp → parseSessionFile() returns null, but mtime says it is newest.
+        writeJsonl(sessionDir.resolve("broken.jsonl"), "{\"sessionId\":\"broken\"}");
+        Files.setLastModifiedTime(sessionDir.resolve("broken.jsonl"),
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+
+        assertEquals("broken", ClaudeSessionStore.findLatestSessionId(workDir, tmpDir),
+                "mtime-based lookup must not depend on JSONL content");
+    }
+
+    @Test
+    void findSessionIdCreatedAfter_skipsFilesPresentBeforeLaunch() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "preexisting", OLD_TS);
+        java.util.Set<String> before = ClaudeSessionStore.listSessionIds(workDir, tmpDir);
+        writeTimedSession(sessionDir, "created", OLD_TS);
+
+        assertEquals("created", ClaudeSessionStore.findSessionIdCreatedAfter(
+                workDir, tmpDir, before, 0L));
+    }
+
+    @Test
+    void findSessionIdCreatedAfter_prefersFileNewerThanLaunch() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "stale-new", OLD_TS);
+        writeTimedSession(sessionDir, "fresh", OLD_TS);
+        Files.setLastModifiedTime(sessionDir.resolve("fresh.jsonl"),
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+
+        assertEquals("fresh", ClaudeSessionStore.findSessionIdCreatedAfter(
+                workDir, tmpDir, java.util.Set.of(), System.currentTimeMillis() - 5_000L));
+    }
+
+    @Test
+    void findSession_returnsRequestedSessionOnly() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "s1", OLD_TS);
+        writeTimedSession(sessionDir, "s2", OLD_TS);
+
+        SavedSession s = ClaudeSessionStore.findSession(workDir, tmpDir, "s2");
+        assertNotNull(s);
+        assertEquals("s2", s.sessionId());
+        assertNull(ClaudeSessionStore.findSession(workDir, tmpDir, "missing"));
+        assertNull(ClaudeSessionStore.findSession(workDir, tmpDir, null));
+    }
 }

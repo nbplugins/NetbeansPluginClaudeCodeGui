@@ -399,12 +399,27 @@ public final class ClaudeSessionSelectorPanel extends JPanel {
 
     private void reloadSessionModePanel() {
         if (sessionModePanel != null) {
-            sessionModePanel.reload(
-                    resolveDir() != null ? resolveDir().toPath() : null,
-                    resolveClaudeConfigDir(),
-                    null);
+            reloadSessionTable();
             sessionModePanel.setMode(ClaudeCodePreferences.getContextMenuSessionMode());
         }
+    }
+
+    /**
+     * Reloads the session list of the embedded mode panel without changing the
+     * selected mode.  Called after a session stops so a name saved by the
+     * Save &amp; Switch dialog is visible immediately.
+     */
+    public void refreshSessionList() {
+        if (sessionModePanel != null) {
+            reloadSessionTable();
+        }
+    }
+
+    private void reloadSessionTable() {
+        sessionModePanel.reload(
+                resolveDir() != null ? resolveDir().toPath() : null,
+                resolveClaudeConfigDir(),
+                null);
     }
 
     private File resolveDir() {

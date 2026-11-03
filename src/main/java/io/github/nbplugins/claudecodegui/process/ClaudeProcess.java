@@ -83,6 +83,12 @@ public final class ClaudeProcess {
     private volatile String openAIProxyUuid;
 
     /**
+     * Effective {@code CLAUDE_CONFIG_DIR} used by the running process (never
+     * {@code null} while a process is running).  Defaults to {@code ~/.claude}.
+     */
+    private volatile Path effectiveConfigDir;
+
+    /**
      * Starts a Claude CLI PTY process in the given working directory using
      * the Default profile (no extra env vars injected).
      *
@@ -158,6 +164,7 @@ public final class ClaudeProcess {
         String executable = ClaudeCodePreferences.resolveClaudeExecutable();
 
         Map<String, String> env = buildEnv(profile, ClaudeCodePreferences.getProfilesDir());
+        effectiveConfigDir = configDirFrom(env);
 
         // OpenAI proxy: register session and inject ANTHROPIC_BASE_URL pointing to internal proxy
         if (profile != null
@@ -333,10 +340,7 @@ public final class ClaudeProcess {
         }
 
         if (mode == SessionMode.CONTINUE_LAST) {
-            String configDirStr = env.get("CLAUDE_CONFIG_DIR");
-            Path claudeConfigDir = configDirStr != null
-                    ? Path.of(configDirStr)
-                    : Path.of(System.getProperty("user.home"), ".claude");
+            Path claudeConfigDir = configDirFrom(env);
             if (ClaudeSessionStore.hasAnySessions(Path.of(workingDir), claudeConfigDir)) {
                 cmd.add("--continue");
                 LOG.fine("Session mode: --continue (existing session found)");
@@ -820,6 +824,42 @@ public final class ClaudeProcess {
         ensureLocalhostInNoProxy(env);
 
         return env;
+    }
+
+    /**
+     * Resolves the effective {@code CLAUDE_CONFIG_DIR} from an environment map.
+     *
+     * @param env environment map used for the child process
+     * @return the configured directory, or {@code ~/.claude} when not overridden
+     */
+    static java.nio.file.Path configDirFrom(Map<String, String> env) {
+        String configDirStr = env.get("CLAUDE_CONFIG_DIR");
+        return configDirStr != null && !configDirStr.isBlank()
+                ? java.nio.file.Path.of(configDirStr)
+                : java.nio.file.Path.of(System.getProperty("user.home"), ".claude");
+    }
+
+    /**
+     * Resolves the config dir the given profile will use once started.
+     *
+     * <p>This mirrors {@link #buildEnv} (including profile extra env vars), so it
+     * can be used to inspect the session store before the process is launched.
+     *
+     * @param profile     connection profile; {@code null} for Default
+     * @param profilesDir base directory for profile config dirs
+     * @return effective config dir of a session started with this profile
+     */
+    public static java.nio.file.Path resolveConfigDir(ClaudeProfile profile, java.nio.file.Path profilesDir) {
+        return configDirFrom(buildEnv(profile, profilesDir));
+    }
+
+    /**
+     * Returns the effective config dir of the current (or most recent) process.
+     *
+     * @return resolved config dir, or {@code null} if no process was started yet
+     */
+    public java.nio.file.Path getConfigDir() {
+        return effectiveConfigDir;
     }
 
     private static void ensureLocalhostInNoProxy(Map<String, String> env) {

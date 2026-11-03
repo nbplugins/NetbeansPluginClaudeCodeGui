@@ -1232,28 +1232,14 @@ public class ClaudeSessionTab extends TopComponent
         File workingDir = model.getWorkingDirectory();
         if (workingDir == null) return;
 
-        String profileName = selectorPanel.getSelectedProfileName();
-        Path claudeConfigDir = null;
-        if (profileName != null && !io.github.nbplugins.claudecodegui.settings.ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
-            io.github.nbplugins.claudecodegui.settings.ClaudeProfile profile =
-                    io.github.nbplugins.claudecodegui.settings.ClaudeProfileStore.findByName(profileName);
-            if (profile != null) {
-                claudeConfigDir = io.github.nbplugins.claudecodegui.settings.ClaudeProfileStore.resolveStorageDir(
-                        profile, ClaudeCodePreferences.getProfilesDir());
-            }
-        }
-
-        io.github.nbplugins.claudecodegui.model.SavedSession recent =
-                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore.findMostRecent(
-                        workingDir.toPath(), claudeConfigDir);
-        long procStart = controller.getProcessStartedAt();
-        // If a process is running and the most recent JSONL predates it, it's an OLD session —
-        // not the currently running one (which hasn't written its JSONL yet)
-        boolean isCurrentSession = recent != null
-                && (procStart == 0 || (recent.lastAt() != null
-                        && recent.lastAt().toEpochMilli() >= procStart));
-        String currentName = isCurrentSession ? recent.displayName() : "";
-        String currentId   = isCurrentSession ? recent.sessionId() : null;
+        // The controller captured the effective config dir and session ID at launch,
+        // so the dialog lists/prefills the same store the running process uses.
+        Path claudeConfigDir = controller.getActiveConfigDir();
+        String currentId = controller.resolveActiveSessionId();
+        SavedSession current = currentId != null
+                ? ClaudeSessionStore.findSession(workingDir.toPath(), claudeConfigDir, currentId)
+                : null;
+        String currentName = prefillSessionName(current);
 
         final ClaudeSessionTab self = this;
         final Path configDir = claudeConfigDir;
@@ -1270,6 +1256,24 @@ public class ClaudeSessionTab extends TopComponent
         );
         dialog.setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setVisible(true);
+    }
+
+    /**
+     * Returns the name to pre-fill in the Save &amp; Switch dialog for the current
+     * session: its custom title, else its slug, else an empty string.  The raw
+     * session ID is never offered as a name.
+     *
+     * @param session current session, or {@code null}
+     * @return pre-fill value; never {@code null}
+     */
+    static String prefillSessionName(SavedSession session) {
+        if (session == null) return "";
+        String title = session.customTitle();
+        if (title != null && !title.isBlank() && !title.equals(session.sessionId())) {
+            return title;
+        }
+        String slug = session.slug();
+        return slug != null && !slug.isBlank() ? slug : "";
     }
 
     public void onSaveAndSwitch(String sessionName, SessionMode mode, String resumeId) {
@@ -1332,6 +1336,8 @@ public class ClaudeSessionTab extends TopComponent
         }
         selectorPanel.setVisible(true);
         selectorPanel.unlock();
+        // Reflect the name just saved by stopAndRename() in the session list.
+        selectorPanel.refreshSessionList();
         add(selectorPanel, BorderLayout.CENTER);
         statusBar.setVisible(false);
         currentLifecycle = null;

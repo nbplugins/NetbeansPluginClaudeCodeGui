@@ -1,3 +1,4 @@
+- Fixed the session name entered in the Save & Switch dialog not being saved to the session that was closed (affected named connection profiles and projects with several sessions), including when choosing Restart Advanced
 # 1.3.45 (2026-10-28)
 - Fixed edit-mode detection and switching while background agents or shells are listed under the status line
 # 1.3.42 (2026-10-22)

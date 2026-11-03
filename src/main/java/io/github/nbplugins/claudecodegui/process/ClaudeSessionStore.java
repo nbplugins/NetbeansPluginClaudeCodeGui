@@ -12,7 +12,9 @@ import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
@@ -69,6 +71,17 @@ public final class ClaudeSessionStore {
         return configDir.resolve("projects").resolve(computeHash(workingDir));
     }
 
+    /**
+     * Returns the session directory for diagnostics/logging.
+     *
+     * @param workingDir      working directory, or {@code null}
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @return session directory, or {@code "<unknown>"} when the working dir is missing
+     */
+    public static String sessionDirForLog(Path workingDir, Path claudeConfigDir) {
+        return workingDir != null ? sessionsDir(workingDir, claudeConfigDir).toString() : "<unknown>";
+    }
+
     // -------------------------------------------------------------------------
     // Existence check
     // -------------------------------------------------------------------------
@@ -91,6 +104,130 @@ public final class ClaudeSessionStore {
         } catch (IOException e) {
             LOG.fine("Could not check sessions in " + dir + ": " + e.getMessage());
             return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Session identity helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the IDs of all session JSONL files for the given working directory.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @return mutable set of session IDs (file names without {@code .jsonl})
+     */
+    public static Set<String> listSessionIds(Path workingDir, Path claudeConfigDir) {
+        Path dir = sessionsDir(workingDir, claudeConfigDir);
+        Set<String> ids = new LinkedHashSet<>();
+        if (!Files.isDirectory(dir)) {
+            return ids;
+        }
+        try (Stream<Path> files = Files.list(dir)) {
+            files.map(p -> p.getFileName().toString())
+                    .filter(name -> name.endsWith(".jsonl"))
+                    .forEach(name -> ids.add(name.substring(0, name.length() - 6)));
+        } catch (IOException e) {
+            LOG.fine("Could not list session ids in " + dir + ": " + e.getMessage());
+        }
+        return ids;
+    }
+
+    /**
+     * Returns the ID of the most recently modified session JSONL file.
+     *
+     * <p>Uses only file modification times (no parsing) — this mirrors the session
+     * that {@code claude --continue} resumes.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @return session ID, or {@code null} if no session file exists
+     */
+    public static String findLatestSessionId(Path workingDir, Path claudeConfigDir) {
+        Path newest = newestSessionFile(sessionsDir(workingDir, claudeConfigDir), null, 0);
+        return newest != null ? sessionIdOf(newest) : null;
+    }
+
+    /**
+     * Returns the ID of a session file created since a launch: the newest JSONL file
+     * whose ID is not in {@code excludeIds} and whose mtime is at least
+     * {@code minMtimeMillis}. If no such file matches the mtime, falls back to the
+     * newest file not in {@code excludeIds}.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param excludeIds      session IDs that already existed before the launch (may be {@code null})
+     * @param minMtimeMillis  earliest acceptable file modification time (epoch millis)
+     * @return session ID, or {@code null} if no candidate exists
+     */
+    public static String findSessionIdCreatedAfter(Path workingDir, Path claudeConfigDir,
+                                                   Set<String> excludeIds, long minMtimeMillis) {
+        Path dir = sessionsDir(workingDir, claudeConfigDir);
+        Set<String> exclude = excludeIds != null ? excludeIds : Set.of();
+        Path newest = newestSessionFile(dir, exclude, minMtimeMillis);
+        if (newest == null) {
+            newest = newestSessionFile(dir, exclude, 0);
+        }
+        return newest != null ? sessionIdOf(newest) : null;
+    }
+
+    private static Path newestSessionFile(Path dir, Set<String> excludeIds, long minMtimeMillis) {
+        if (!Files.isDirectory(dir)) {
+            return null;
+        }
+        Path newest = null;
+        long newestMtime = Long.MIN_VALUE;
+        try (Stream<Path> files = Files.list(dir)) {
+            for (Path file : (Iterable<Path>) files::iterator) {
+                String name = file.getFileName().toString();
+                if (!name.endsWith(".jsonl")) continue;
+                String id = sessionIdOf(file);
+                if (excludeIds != null && excludeIds.contains(id)) continue;
+                long mtime;
+                try {
+                    mtime = Files.getLastModifiedTime(file).toMillis();
+                } catch (IOException e) {
+                    continue;
+                }
+                if (mtime < minMtimeMillis) continue;
+                if (newest == null || mtime > newestMtime) {
+                    newest = file;
+                    newestMtime = mtime;
+                }
+            }
+        } catch (IOException e) {
+            LOG.fine("Could not scan sessions in " + dir + ": " + e.getMessage());
+        }
+        return newest;
+    }
+
+    private static String sessionIdOf(Path file) {
+        String name = file.getFileName().toString();
+        return name.endsWith(".jsonl") ? name.substring(0, name.length() - 6) : name;
+    }
+
+    /**
+     * Returns the parsed session with the given ID.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param sessionId       session ID (file name without {@code .jsonl})
+     * @return the session, or {@code null} if the file is missing or unparseable
+     */
+    public static SavedSession findSession(Path workingDir, Path claudeConfigDir, String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        Path file = sessionsDir(workingDir, claudeConfigDir).resolve(sessionId + ".jsonl");
+        if (!Files.exists(file)) {
+            return null;
+        }
+        try {
+            return parseSessionFile(file);
+        } catch (Exception e) {
+            LOG.fine("Could not parse session file " + file + ": " + e.getMessage());
+            return null;
         }
     }
 
