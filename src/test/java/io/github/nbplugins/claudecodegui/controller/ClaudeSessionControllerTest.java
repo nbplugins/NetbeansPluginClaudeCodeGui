@@ -1721,6 +1721,73 @@ class ClaudeSessionControllerTest {
     }
 
     @Test
+    void olderScan_doesNotOverwriteANewerScanResult() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS + 1_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS + 2_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, null, Set.of());
+
+        // A slow worker scan started before the synchronous one, but finishes
+        // (and publishes) after it.
+        long slowScan = controller.simulateBeginIdentityScan();
+        long fastScan = controller.simulateBeginIdentityScan();
+        controller.simulatePublishScanResult(
+                controller.simulateProcessGeneration(), fastScan, "b");
+        controller.simulatePublishScanResult(
+                controller.simulateProcessGeneration(), slowScan, "a");
+
+        // Remove the files so the final resolve cannot mask a wrong identity.
+        java.nio.file.Files.delete(dir.resolve("a.jsonl"));
+        java.nio.file.Files.delete(dir.resolve("b.jsonl"));
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "a scan that started earlier must not undo a newer scan's result");
+    }
+
+    @Test
+    void claimsAreScopedToTheirSessionStore() throws Exception {
+        java.nio.file.Path storeA = tmpDir.resolve("configA");
+        java.nio.file.Path storeB = tmpDir.resolve("configB");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dirA = sessionDir(storeA, work);
+        java.nio.file.Path dirB = sessionDir(storeB, work);
+
+        // A live tab in store A runs a session "shared".
+        writeSession(dirA, "shared", "shared");
+        setMtime(dirA.resolve("shared.jsonl"), START_MS - 5_000L);
+        ClaudeSessionModel modelA = new ClaudeSessionModel();
+        modelA.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabA =
+                new ClaudeSessionController(modelA, Collections::emptyList);
+        tabA.simulateProcessStart(START_MS - 500L, true);
+        tabA.simulateLiveSession(storeA, "shared", Set.of("shared"));
+
+        // Our tab in store B switches in-process from "previous" to a copy of
+        // the same conversation (same ID, different file).
+        writeSession(dirB, "previous", "previous");
+        setMtime(dirB.resolve("previous.jsonl"), START_MS - 1_000L);
+        writeSession(dirB, "shared", "shared");
+        setMtime(dirB.resolve("shared.jsonl"), START_MS + 2_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(storeB, "previous", Set.of("previous", "shared"));
+        try {
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "a claim from another store must not hide this store's file");
+        } finally {
+            tabA.stopProcess();
+        }
+    }
+
+    @Test
     void stopAndRename_usesResumeSessionId() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
         java.nio.file.Path work = tmpDir.resolve("project");

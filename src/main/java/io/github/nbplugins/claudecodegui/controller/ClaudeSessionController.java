@@ -114,8 +114,17 @@ public class ClaudeSessionController {
     private static final Set<ClaudeSessionController> LIVE_SESSIONS =
             ConcurrentHashMap.newKeySet();
 
-    /** Session ID → live controllers running that session. */
-    private static final Map<String, Set<ClaudeSessionController>> SESSION_CLAIMS =
+    /**
+     * A session file, identified by its store: the same session ID can exist in
+     * several config dirs / projects (e.g. a JSONL copied between stores), and
+     * a claim must only hide the file it actually belongs to.
+     */
+    private record SessionKey(java.nio.file.Path configDir,
+                              java.nio.file.Path projectDir,
+                              String sessionId) { }
+
+    /** Session file → live controllers running exactly that file. */
+    private static final Map<SessionKey, Set<ClaudeSessionController>> SESSION_CLAIMS =
             new ConcurrentHashMap<>();
 
     /**
@@ -136,6 +145,14 @@ public class ClaudeSessionController {
      */
     private final Object processOwnershipLock = new Object();
     private long processGeneration;
+
+    /**
+     * Monotonic scan counter. Scans of the same process run can overlap (the
+     * dialog resolves synchronously while the worker scans); a result is only
+     * published if no newer scan published before it.
+     */
+    private long scanSequence;
+    private long lastPublishedScanId;
 
     /** True while a background identity scan of this controller is queued. */
     private final java.util.concurrent.atomic.AtomicBoolean identityScanPending =
@@ -276,7 +293,7 @@ public class ClaudeSessionController {
         simulateActiveSession(configDir, sessionId, preStartIds);
         workingDir = model.getWorkingDirectory();
         LIVE_SESSIONS.add(this);
-        claimSession(sessionId);
+        claimSession(workingDir, configDir, sessionId);
     }
 
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
@@ -381,7 +398,7 @@ public class ClaudeSessionController {
         firstOutputReceived = false;
 
         LIVE_SESSIONS.add(this);
-        claimSession(activeSessionId);
+        claimSession(dir, activeConfigDir, activeSessionId);
 
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
@@ -575,17 +592,19 @@ public class ClaudeSessionController {
      */
     boolean refreshSessionIdentity() {
         long generation;
+        long scanId;
         java.io.File dir;
         java.nio.file.Path configDir;
         long since;
         Set<String> exclude = new HashSet<>();
         synchronized (processOwnershipLock) {
             generation = processGeneration;
+            scanId = ++scanSequence;
             dir = workingDir != null ? workingDir : model.getWorkingDirectory();
             configDir = activeConfigDir;
             since = Math.max(processStartedAt, promptSubmittedAt);
             if (dir != null && configDir != null && since > 0) {
-                exclude.addAll(claimedByOthers());
+                exclude.addAll(claimedByOthers(dir, configDir));
                 if (activeSessionId == null && promptSubmittedAt <= 0) {
                     // Without a prompt of our own there is nothing that proves a
                     // write belongs to this tab, so a file that existed before
@@ -602,36 +621,57 @@ public class ClaudeSessionController {
             newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                     dir.toPath(), configDir, since, exclude);
         }
-        return publishIdentityScanResult(generation, newest, dir);
+        return publishIdentityScanResult(generation, scanId, dir, configDir, newest);
     }
 
     /**
-     * Publishes a scan result, unless the process was stopped or restarted while
-     * the scan ran — in that case the result describes a store the current run
-     * does not use and must not overwrite its identity.
+     * Publishes a scan result, unless it was superseded: a scan started before a
+     * process restart describes a store the current run does not use, and a scan
+     * started before another one that already published must not undo the newer
+     * result (the synchronous dialog path and the background worker can scan
+     * concurrently within the same process run).
      */
-    private boolean publishIdentityScanResult(long generation, String newest,
-                                              java.io.File dir) {
+    private boolean publishIdentityScanResult(long generation, long scanId,
+                                              java.io.File dir,
+                                              java.nio.file.Path configDir,
+                                              String newest) {
         synchronized (processOwnershipLock) {
             if (generation != processGeneration) {
                 return activeSessionId != null;
             }
+            if (scanId < lastPublishedScanId) {
+                return activeSessionId != null;
+            }
+            lastPublishedScanId = scanId;
             if (newest != null && !newest.equals(activeSessionId)) {
                 String previous = activeSessionId;
                 activeSessionId = newest;
-                claimSession(newest);
-                releaseClaim(previous);
+                claimSession(dir, configDir, newest);
+                releaseClaim(dir, configDir, previous);
                 LOG.fine("Session of " + dir + " is now " + newest
                         + (previous != null ? " (was " + previous + ")" : ""));
             }
-            claimSession(activeSessionId);
+            claimSession(dir, configDir, activeSessionId);
             return activeSessionId != null;
+        }
+    }
+
+    /** Package-private for tests: reserves a scan slot and returns its sequence. */
+    long simulateBeginIdentityScan() {
+        synchronized (processOwnershipLock) {
+            return ++scanSequence;
         }
     }
 
     /** Package-private for tests: publishes a result scanned for an older process run. */
     boolean simulatePublishStaleScanResult(long generation, String newest) {
-        return publishIdentityScanResult(generation, newest, null);
+        return publishIdentityScanResult(generation, simulateBeginIdentityScan(),
+                null, activeConfigDir, newest);
+    }
+
+    /** Package-private for tests: publishes a scan result with explicit ordering. */
+    boolean simulatePublishScanResult(long generation, long scanId, String newest) {
+        return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest);
     }
 
     /**
@@ -669,17 +709,28 @@ public class ClaudeSessionController {
         }
     }
 
-    private void claimSession(String sessionId) {
-        if (sessionId != null) {
+    private static SessionKey keyFor(java.io.File dir, java.nio.file.Path configDir,
+                                     String sessionId) {
+        if (dir == null || configDir == null || sessionId == null) return null;
+        return new SessionKey(configDir.toAbsolutePath().normalize(),
+                dir.toPath().toAbsolutePath().normalize(), sessionId);
+    }
+
+    private void claimSession(java.io.File dir, java.nio.file.Path configDir,
+                              String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        if (key != null) {
             SESSION_CLAIMS
-                    .computeIfAbsent(sessionId, k -> ConcurrentHashMap.newKeySet())
+                    .computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet())
                     .add(this);
         }
     }
 
-    private void releaseClaim(String sessionId) {
-        if (sessionId == null) return;
-        SESSION_CLAIMS.computeIfPresent(sessionId, (id, owners) -> {
+    private void releaseClaim(java.io.File dir, java.nio.file.Path configDir,
+                              String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        if (key == null) return;
+        SESSION_CLAIMS.computeIfPresent(key, (k, owners) -> {
             owners.remove(this);
             return owners.isEmpty() ? null : owners;
         });
@@ -693,13 +744,25 @@ public class ClaudeSessionController {
         SESSION_CLAIMS.entrySet().removeIf(e -> e.getValue().isEmpty());
     }
 
-    /** Session IDs claimed by other live controllers. */
-    private Set<String> claimedByOthers() {
+    /**
+     * Session IDs claimed by other live controllers <em>in the same store</em>.
+     * A session ID is not unique across config dirs (a JSONL can be copied
+     * between the default and an isolated profile), so a claim from another
+     * store must not hide this store's file.
+     */
+    private Set<String> claimedByOthers(java.io.File dir, java.nio.file.Path configDir) {
         Set<String> ids = new HashSet<>();
-        SESSION_CLAIMS.forEach((id, owners) -> {
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, owners) -> {
+            if (!key.configDir().equals(wantedConfig)
+                    || !key.projectDir().equals(wantedProject)) {
+                return;
+            }
             for (ClaudeSessionController owner : owners) {
                 if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
-                    ids.add(id);
+                    ids.add(key.sessionId());
                     return;
                 }
             }
