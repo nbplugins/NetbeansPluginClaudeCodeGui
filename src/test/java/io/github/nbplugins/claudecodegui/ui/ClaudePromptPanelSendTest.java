@@ -221,6 +221,23 @@ class ClaudePromptPanelSendTest {
         assertNull(sentText.get(), "onSend must NOT be called when text is empty");
     }
 
+    /**
+     * While the session is still starting, the send key must not clear the field:
+     * the prompt could not be delivered and would be lost.
+     */
+    @Test
+    void sendUnavailableKeepsTheTypedPrompt() throws Exception {
+        buildPanel(tempDir.getAbsolutePath());
+        SwingUtilities.invokeAndWait(() -> panel.setSendAvailable(() -> false));
+        setInputText("typed while starting");
+
+        callDoSend();
+
+        assertNull(sentText.get(), "onSend must not fire while sending is unavailable");
+        assertEquals("typed while starting", getInputText(),
+                "the typed prompt must be kept for when the session is ready");
+    }
+
     @Test
     void afterSendInputAreaIsCleared() throws Exception {
         buildPanel(tempDir.getAbsolutePath());

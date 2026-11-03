@@ -579,15 +579,34 @@ public class ClaudeSessionController {
      *
      * <p>Does <em>not</em> close the terminal widget — the View handles that.
      */
-    /** Returns the last command attempted to start the process. */
-    public String getLastAttemptedCommand() { return claudeProcess.getLastCommand(); }
+    /** Returns the last command attempted to start the process, or {@code null} if none was attempted. */
+    public String getLastAttemptedCommand() {
+        ClaudeProcess p = claudeProcess;
+        return p != null ? p.getLastCommand() : null;
+    }
 
     /**
      * Returns the UUID of the active OpenAI-compatible proxy session, or
      * {@code null} if the current session isn't using the OpenAI-compatible or
      * ChatGPT Subscription connection type. See {@link io.github.nbplugins.claudecodegui.process.ClaudeProcess#getOpenAIProxyUuid()}.
+     *
+     * <p>Returns {@code null} when no process exists (before a launch completes
+     * or after a stop), so UI callbacks such as the context menu can query it
+     * at any time.
      */
-    public String getOpenAIProxyUuid() { return claudeProcess.getOpenAIProxyUuid(); }
+    public String getOpenAIProxyUuid() {
+        ClaudeProcess p = claudeProcess;
+        return p != null ? p.getOpenAIProxyUuid() : null;
+    }
+
+    /**
+     * Returns whether a prompt can be written to the session right now.
+     *
+     * <p>{@link #sendPrompt(String)} silently drops the text when no PTY
+     * connector exists yet (the launch is prepared in the background), so the
+     * input panel asks this before clearing the field.
+     */
+    public boolean canSendPrompt() { return connector != null; }
 
     public void stopProcess() {
         if (statusTimer != null) {

@@ -84,6 +84,12 @@ public final class ClaudePromptPanel extends JPanel {
     private final Runnable               onShowSessionStatistics;
     /** Returns whether Session Statistics is available for the current session's connection type. */
     private final Supplier<Boolean>      sessionStatisticsAvailable;
+    /**
+     * Returns whether a prompt can be delivered right now. The send key must
+     * respect it: while a session is still starting, {@code onSend} would drop
+     * the text, so the field keeps it instead.
+     */
+    private volatile Supplier<Boolean>   sendAvailable = () -> true;
 
     /** Current position in the history list; {@code -1} = newest (empty field). */
     private int historyIndex = -1;
@@ -244,6 +250,19 @@ public final class ClaudePromptPanel extends JPanel {
     }
 
     /**
+     * Sets the predicate that decides whether a sent prompt can be delivered.
+     *
+     * <p>When it returns {@code false}, {@code doSend()} leaves the input text
+     * untouched instead of clearing it for a prompt that would be dropped —
+     * e.g. while the session process is still starting.
+     *
+     * @param sendAvailable the availability predicate, or {@code null} to always allow
+     */
+    public void setSendAvailable(Supplier<Boolean> sendAvailable) {
+        this.sendAvailable = sendAvailable != null ? sendAvailable : () -> true;
+    }
+
+    /**
      * Requests keyboard focus on the text input area.
      */
     public void requestFocusOnInputArea() {
@@ -321,6 +340,9 @@ public final class ClaudePromptPanel extends JPanel {
     private void doSend() {
         String text = inputArea.getText();
         if (text.isEmpty()) return;
+        // Nothing can consume the prompt yet (e.g. the session is still
+        // starting): keep the text so the user does not lose it.
+        if (!Boolean.TRUE.equals(sendAvailable.get())) return;
 
         inputArea.setText("");
         inputArea.requestFocusInWindow();

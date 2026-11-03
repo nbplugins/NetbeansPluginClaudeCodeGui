@@ -2111,6 +2111,22 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The launch is prepared off the EDT, so the UI is usable while no process
+     * exists yet: the context menu asks {@link ClaudeSessionController#getOpenAIProxyUuid()}
+     * from the EDT, and the input panel asks {@link ClaudeSessionController#canSendPrompt()}
+     * before clearing the field.
+     */
+    @Test
+    void noProcessYet_gettersAreSafeAndSendingIsUnavailable() {
+        assertNull(controller.getOpenAIProxyUuid(),
+                "asking for the proxy UUID before a launch must not throw");
+        assertNull(controller.getLastAttemptedCommand(),
+                "asking for the attempted command before a launch must not throw");
+        assertFalse(controller.canSendPrompt(),
+                "a prompt cannot be delivered before the PTY connector exists");
+    }
+
+    /**
      * The counterpart of the test above: while this tab keeps writing its own
      * conversation, another tab's newer file must not be adopted.
      */

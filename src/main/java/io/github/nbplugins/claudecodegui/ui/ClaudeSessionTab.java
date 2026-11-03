@@ -355,6 +355,9 @@ public class ClaudeSessionTab extends TopComponent
                 () -> openSwitchDialog(SessionMode.RESUME_SPECIFIC),
                 this::showSessionStatistics,
                 this::isSessionStatisticsAvailable);
+        // The launch is prepared off the EDT, so the input area is usable before
+        // the PTY connector exists; keep typed prompts until it does.
+        promptPanel.setSendAvailable(controller::canSendPrompt);
 
         // --- layout ---
         setLayout(new BorderLayout());
