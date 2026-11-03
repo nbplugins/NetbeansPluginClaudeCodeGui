@@ -656,12 +656,14 @@ public class ClaudeSessionController {
                         dir.toPath(), configDir,
                         since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
             }
-            if (newest == null && activeId != null && promptAt > 0) {
+            if (newest == null && promptAt > 0) {
                 // The process may have joined another live tab's conversation
-                // from its own resume picker: its previous file stops changing,
-                // so only a file owned by the other tab is written since the
-                // prompt. Follow the switch and share the ownership, instead of
-                // keeping the conversation the tab had left.
+                // from its own resume picker: its previous file (if any) stops
+                // changing, so only a file owned by the other tab is written
+                // since the prompt. Follow the switch and share the ownership,
+                // instead of keeping the conversation the tab had left. A NEW
+                // tab can do this before it has created a file of its own, so
+                // an unknown identity must be allowed as well.
                 String switched = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                         dir.toPath(), configDir, since, Set.of());
                 if (switched != null && !switched.equals(activeId)

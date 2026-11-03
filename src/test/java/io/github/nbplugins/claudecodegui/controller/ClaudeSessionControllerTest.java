@@ -1818,6 +1818,52 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A NEW tab can join another live tab's conversation from the in-process
+     * resume picker before it has created a JSONL of its own, so its identity is
+     * still unknown when the prompt is sent.
+     */
+    @Test
+    void newTabResumingAnotherTabsConversationBeforeItsOwnFile_resolves() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        // Tab B owns the conversation.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("shared"));
+
+        // Tab A is NEW and has not written anything yet.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("shared"));
+
+        try {
+            // A joins B's conversation in the TUI and sends a prompt; the write
+            // lands in the shared file.
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 11_000L);
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "a NEW tab that resumed a live tab's conversation must resolve it");
+
+            controller.stopAndRename("Shared Name");
+            assertEquals("Shared Name",
+                    io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "shared").customTitle(),
+                    "the entered name must be saved to the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The counterpart of the test above: while this tab keeps writing its own
      * conversation, another tab's newer file must not be adopted.
      */
