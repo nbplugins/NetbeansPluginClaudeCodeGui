@@ -141,6 +141,9 @@ public class ClaudeSessionController {
      */
     private volatile long promptSubmittedAt = 0;
 
+    /** Screen-poll ticks since the last background session-identity scan. */
+    private int identityPollTicks = 0;
+
     /**
      * Called when a hang is detected: receives (command, errorMessage).
      * Invoked on the EDT after the process is stopped.
@@ -437,6 +440,7 @@ public class ClaudeSessionController {
         activeSessionId = null;
         preStartSessionIds = Set.of();
         promptSubmittedAt = 0;
+        identityPollTicks = 0;
 
         model.setModelList(List.of(), -1);
         clearActiveChoiceMenu();
@@ -1495,7 +1499,10 @@ public class ClaudeSessionController {
     void pollScreenState() {
         // Claim a new session's file as soon as it appears, so that other tabs
         // never mistake it for their own. No-op once the identity is known.
-        if (activeSessionId == null) {
+        // Without a plugin-submitted prompt there is no attribution anchor, so
+        // the directory scan runs every ~5 s instead of on every tick.
+        if (activeSessionId == null
+                && (promptSubmittedAt > 0 || ++identityPollTicks % 10 == 0)) {
             resolveNewSessionIdentity();
         }
         List<String> lines = screenLines.get();
