@@ -75,8 +75,8 @@ public class ClaudeSessionController {
      * Slack for the filesystem's modification-time granularity when matching a
      * session file against a launch/prompt time. FAT and some network
      * filesystems round mtimes down to 1–2 s, so a file created just after a
-     * prompt can be stamped before it. Only used as a second pass restricted to
-     * files created after the pre-launch snapshot (see
+     * prompt — including a saved conversation resumed in-process — can be
+     * stamped before it. Applied as a second identity-scan pass (see
      * {@link #refreshSessionIdentity()}).
      */
     private static final long SESSION_MTIME_GRANULARITY_MS = 2_000L;
@@ -610,15 +610,21 @@ public class ClaudeSessionController {
         java.io.File dir;
         java.nio.file.Path configDir;
         long since;
+        long promptAt;
+        String activeId;
         Set<String> exclude = new HashSet<>();
+        Set<String> claimed = new HashSet<>();
         synchronized (processOwnershipLock) {
             generation = processGeneration;
             scanId = ++scanSequence;
             dir = workingDir != null ? workingDir : model.getWorkingDirectory();
             configDir = activeConfigDir;
             since = Math.max(processStartedAt, promptSubmittedAt);
+            promptAt = promptSubmittedAt;
+            activeId = activeSessionId;
             if (dir != null && configDir != null && since > 0) {
-                exclude.addAll(claimedByOthers(dir, configDir));
+                claimed.addAll(claimedByOthers(dir, configDir));
+                exclude.addAll(claimed);
                 if (activeSessionId == null && promptSubmittedAt <= 0) {
                     // Without a prompt of our own there is nothing that proves a
                     // write belongs to this tab, so a file that existed before
@@ -636,15 +642,32 @@ public class ClaudeSessionController {
                     dir.toPath(), configDir, since, exclude);
             if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                 // Coarse filesystem timestamps can round a file written right
-                // after the prompt below its cutoff. Retry with a slack, but only
-                // for files that did not exist at launch (the pre-launch
-                // snapshot), so a conversation touched by an unrelated process
-                // just before the prompt still cannot be adopted.
-                Set<String> relaxedExclude = new HashSet<>(exclude);
-                relaxedExclude.addAll(preStartSessionIds);
+                // after the prompt below its cutoff. Retry with a slack so a
+                // saved conversation resumed in-process (which existed before
+                // the launch) is still recognised. Without a prompt of our own
+                // the pre-launch snapshot stays excluded: the extra second must
+                // not make a file touched by another process eligible.
+                Set<String> relaxedExclude = exclude;
+                if (promptAt <= 0) {
+                    relaxedExclude = new HashSet<>(exclude);
+                    relaxedExclude.addAll(preStartSessionIds);
+                }
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                         dir.toPath(), configDir,
                         since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
+            }
+            if (newest == null && activeId != null && promptAt > 0) {
+                // The process may have joined another live tab's conversation
+                // from its own resume picker: its previous file stops changing,
+                // so only a file owned by the other tab is written since the
+                // prompt. Follow the switch and share the ownership, instead of
+                // keeping the conversation the tab had left.
+                String switched = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                        dir.toPath(), configDir, since, Set.of());
+                if (switched != null && !switched.equals(activeId)
+                        && claimed.contains(switched)) {
+                    newest = switched;
+                }
             }
         }
         return publishIdentityScanResult(generation, scanId, dir, configDir, newest);

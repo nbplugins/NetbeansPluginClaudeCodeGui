@@ -1768,6 +1768,131 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * A tab can join another live tab's conversation from the in-process resume
+     * picker. The other tab still owns that file, so it must not stay an
+     * unconditional exclusion: the tab follows the switch and shares ownership.
+     */
+    @Test
+    void inProcessResumeIntoAnotherTabsSession_followsTheSwitch() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            // Tab A picks B's conversation in its TUI and sends a prompt; the
+            // write lands in B's file, which B still owns.
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "a tab that resumed another tab's conversation must follow it");
+
+            controller.stopAndRename("Switched Name");
+            assertEquals("Switched Name",
+                    io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "b").customTitle(),
+                    "the entered name must go to the conversation on screen");
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "a").customTitle(),
+                    "the conversation left by the switch must not be renamed");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The counterpart of the test above: while this tab keeps writing its own
+     * conversation, another tab's newer file must not be adopted.
+     */
+    @Test
+    void ownSessionIsKeptWhenAnotherTabWritesConcurrently() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            // Both tabs are working: this tab's own file is written after its
+            // prompt, and the other tab's file even later.
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_000L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_000L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "a tab writing its own conversation must not adopt another tab's file");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * Resuming a saved conversation in-process on a coarse-timestamp filesystem:
+     * the new file existed before the launch (pre-launch snapshot) and its mtime
+     * is rounded below the prompt time, but the tab must still follow the switch.
+     */
+    @Test
+    void inProcessResumeWithCoarseMtime_followsTheSwitch() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, "a", Set.of("a", "b"));
+
+        // The TUI switches to "b" and the plugin sends a prompt; "b" is written
+        // after it but its mtime is rounded down into the same second.
+        controller.simulatePromptSubmittedAt(START_MS + 1_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 1_000L);
+
+        controller.stopAndRename("Resumed Name");
+
+        assertEquals("Resumed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "a resumed saved conversation must be recognised despite its rounded mtime");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the conversation left by the switch must not be renamed");
+    }
+
     @Test
     void newSessionWithCoarseMtime_resolvesAfterPrompt() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
