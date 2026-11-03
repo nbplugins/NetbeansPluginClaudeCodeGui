@@ -804,6 +804,12 @@ public class ClaudeSessionController {
                     || !key.projectDir().equals(wantedProject)) {
                 return;
             }
+            // A session shared with another tab (both resumed the same saved
+            // conversation) is still this tab's own conversation: excluding it
+            // would make the scan pick an unrelated file.
+            if (owners.contains(this)) {
+                return;
+            }
             for (ClaudeSessionController owner : owners) {
                 if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
                     ids.add(key.sessionId());

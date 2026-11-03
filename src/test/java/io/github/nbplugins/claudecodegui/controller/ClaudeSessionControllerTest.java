@@ -1721,6 +1721,53 @@ class ClaudeSessionControllerTest {
                         + "new session must still be renamable");
     }
 
+    /**
+     * Two tabs can resume the same saved conversation, in which case both own
+     * its session file. The shared file must stay eligible for each tab's own
+     * identity scan; otherwise a newer, unrelated file written by a third tab
+     * is resolved instead and its conversation gets renamed on stop.
+     */
+    @Test
+    void sharedSessionStaysEligibleForIdentityScans() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        // The shared conversation has the newest mtime; the unrelated file was
+        // written after both launches but is older.
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("shared.jsonl"), START_MS + 5_000L);
+        writeSession(dir, "other", "other");
+        setMtime(dir.resolve("other.jsonl"), START_MS + 3_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "shared", Set.of("shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 500L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("shared"));
+
+        // A third tab wrote another file and exited.
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS + 1_000L, true);
+        tabC.simulateLiveSession(config, "other", Set.of("other"));
+        tabC.simulateProcessExit();
+
+        try {
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "a session shared with another live tab must stay eligible");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
     @Test
     void newSessionWithCoarseMtime_resolvesAfterPrompt() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
