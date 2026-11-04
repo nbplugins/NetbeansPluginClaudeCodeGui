@@ -155,10 +155,11 @@ public class ClaudeSessionController {
      *       established, and only ownership elsewhere makes the file foreign to
      *       this tab.</li>
      *   <li>{@code provisional} (a holder in neither set) — a {@code NEW} tab
-     *       guessed that this file is its own. Any tab may guess wrong when
-     *       another unresolved tab writes the same prompt, so a provisional
-     *       claim must yield when another live tab follows the same file and a
-     *       file nobody follows holds the prompt.</li>
+     *       guessed that this file is its own. A guess is not ownership: it must
+     *       never make the file look foreign to the tab that established it,
+     *       nor be displaced merely because another unresolved tab follows the
+     *       same file (with identical prompts the evidence cannot tell the two
+     *       apart).</li>
      *   <li>{@link #borrowed} — the tab joined a file another live tab already
      *       held (an in-process resume into a sibling's conversation, or a NEW
      *       tab following it until its own file appears).</li>
@@ -299,6 +300,16 @@ public class ClaudeSessionController {
 
     /** True when a pasted CR was recorded and the LF of a CRLF pair must be skipped. */
     private boolean terminalPasteAfterCR;
+
+    /**
+     * True after Up/Down was pressed on an empty recorded line: the TUI then
+     * fills its input from its prompt history, with text this parser never
+     * sees. A following Enter is still a submission, only with unknown text.
+     */
+    private boolean terminalHistoryRecall;
+
+    /** Set when Enter submitted a history-recalled line the parser did not record. */
+    private boolean terminalRecalledSubmission;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -843,7 +854,6 @@ public class ClaudeSessionController {
         Set<String> claimed = new HashSet<>();
         Set<String> otherLiveClaims = new HashSet<>();
         Set<String> otherOwned = new HashSet<>();
-        boolean trackedProvisional;
         synchronized (processOwnershipLock) {
             generation = processGeneration;
             scanId = ++scanSequence;
@@ -854,9 +864,6 @@ public class ClaudeSessionController {
             externalAt = externalInputAt;
             promptText = lastPromptText;
             activeId = activeSessionId;
-            // A NEW tab's first guess at its own file is not ownership: another
-            // unresolved tab may hold the same file as a guess of its own.
-            trackedProvisional = claimIsProvisional(dir, configDir, activeId);
             if (dir != null && configDir != null && since > 0) {
                 claimed.addAll(claimedByOthers(dir, configDir));
                 otherLiveClaims.addAll(claimedByOtherLiveTabs(dir, configDir));
@@ -900,28 +907,19 @@ public class ClaudeSessionController {
                         dir.toPath(), configDir, since, ownExclude, PROMPT_EVIDENCE_CANDIDATES));
                 // A session another live tab established is not this tab's own,
                 // even when it is the identity currently tracked (a false
-                // adoption). A merely borrowed claim does not count: a sibling
-                // following this tab's conversation must not cost this tab the
-                // session it established. A provisional claim (this NEW tab's
-                // guess) loses the preference when another tab also holds the
-                // file: until ownership is clear, the tab must not keep the
-                // guessed file merely because it guessed first.
+                // adoption). A merely borrowed or provisionally claimed file
+                // does not count: a sibling following this tab's conversation
+                // must not cost this tab the session it established.
+                //
+                // When the tracked file bears this tab's own prompt and no
+                // other tab established it, the tab keeps it: with two
+                // unresolved NEW tabs submitting identical text, the evidence
+                // is indistinguishable, and displacing the current claim would
+                // merely swap the two conversations.
                 String ownPreferred = activeId != null && !otherOwned.contains(activeId)
-                        && !(trackedProvisional && otherLiveClaims.contains(activeId))
                         ? activeId : null;
-                if (ownPreferred == null) {
-                    // Prefer the conversation no other live tab holds: with two
-                    // initially unresolved NEW tabs, that is the only file that
-                    // can be this tab's own.
-                    Set<String> unshared = new HashSet<>(own);
-                    unshared.removeAll(otherLiveClaims);
-                    newest = findPromptBearingSession(dir, configDir, unshared, null,
-                            promptAt, promptText);
-                }
-                if (newest == null) {
-                    newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
-                            promptAt, promptText);
-                }
+                newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
+                        promptAt, promptText);
                 if (newest == null) {
                     // Only then may a conversation another live tab writes be
                     // adopted: that is an in-process /resume from this terminal.
@@ -935,6 +933,24 @@ public class ClaudeSessionController {
             if (newest == null) {
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                         dir.toPath(), configDir, since, exclude);
+            }
+            if (newest == null && promptAt > 0 && promptAt >= externalAt
+                    && (promptText == null || promptText.isBlank())) {
+                // A prompt recalled from the TUI history: its text is unknown, so
+                // no file can match it as evidence. The conversation another live
+                // tab holds that this process wrote into after the submission is
+                // still the one on screen (an in-process resume into a sibling's
+                // conversation), so it must be adopted despite the exclusion.
+                Set<String> shared = new HashSet<>(claimed);
+                shared.addAll(otherLiveClaims);
+                if (activeId != null) shared.add(activeId);
+                newest = newestSharedSessionWrittenSince(dir, configDir, since,
+                        shared, exclude);
+                if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                    // Coarse timestamps can round the write below the submission.
+                    newest = newestSharedSessionWrittenSince(dir, configDir,
+                            since - SESSION_MTIME_GRANULARITY_MS, shared, exclude);
+                }
             }
             if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                 // Coarse filesystem timestamps can round a file written right
@@ -984,6 +1000,29 @@ public class ClaudeSessionController {
                     && containsPrompt(dir, configDir, sessionId, promptAt, promptText)) {
                 return sessionId;
             }
+        }
+        return null;
+    }
+
+    /**
+     * Returns the newest session ID in {@code shared} whose file was written at
+     * or after {@code cutoff}, or {@code null}.
+     *
+     * <p>Used when the submitted prompt's text is unknown (a history recall):
+     * only a conversation another live tab holds can be the one this process
+     * switched into, so unrelated newer files must not be adopted.
+     */
+    private static String newestSharedSessionWrittenSince(java.io.File dir,
+                                                          java.nio.file.Path configDir,
+                                                          long cutoff,
+                                                          Set<String> shared,
+                                                          Set<String> exclude) {
+        if (shared.isEmpty()) return null;
+        Set<String> sharedExclude = new HashSet<>(exclude);
+        sharedExclude.removeAll(shared);
+        for (String id : ClaudeSessionStore.listSessionIdsWrittenSince(
+                dir.toPath(), configDir, cutoff, sharedExclude, PROMPT_EVIDENCE_CANDIDATES)) {
+            if (shared.contains(id)) return id;
         }
         return null;
     }
@@ -1133,20 +1172,6 @@ public class ClaudeSessionController {
             }
         }
         return false;
-    }
-
-    /**
-     * {@code true} if this controller holds {@code sessionId} only as a guess
-     * for a {@code NEW} session: it neither established the file at launch nor
-     * joined a tab that already held it.
-     */
-    private boolean claimIsProvisional(java.io.File dir, java.nio.file.Path configDir,
-                                       String sessionId) {
-        SessionKey key = keyFor(dir, configDir, sessionId);
-        if (key == null) return false;
-        SessionClaims claims = SESSION_CLAIMS.get(key);
-        return claims != null && claims.holders.contains(this)
-                && !claims.owners.contains(this) && !claims.borrowed.contains(this);
     }
 
     private void releaseClaim(java.io.File dir, java.nio.file.Path configDir,
@@ -2787,17 +2812,28 @@ public class ClaudeSessionController {
     private String onTerminalInput(byte[] bytes, long now) {
         String submitted;
         boolean entered;
+        boolean recalled;
         synchronized (terminalInputLine) {
             terminalLineEntered = false;
             submitted = appendTerminalInput(bytes);
             entered = terminalLineEntered;
             terminalLineEntered = false;
+            recalled = terminalRecalledSubmission;
+            terminalRecalledSubmission = false;
         }
         if (entered) {
             externalInputAt = now;
         }
         if (submitted != null) {
             lastPromptText = submitted;
+            promptSubmittedAt = now;
+            scheduleIdentityRefresh();
+        } else if (recalled) {
+            // The prompt came from the TUI's history (Up/Down): its text is
+            // unknown to the plugin, but the submission is real. Previous text
+            // evidence no longer describes what was submitted, and the time
+            // lets the scan follow the file the process writes next.
+            lastPromptText = null;
             promptSubmittedAt = now;
             scheduleIdentityRefresh();
         }
@@ -2854,10 +2890,18 @@ public class ClaudeSessionController {
                 }
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
+                boolean recalled = terminalHistoryRecall;
+                terminalHistoryRecall = false;
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
                 terminalLineEntered = true;
-                if (!line.isEmpty()) submitted = line;
+                if (!line.isEmpty()) {
+                    submitted = line;
+                } else if (recalled) {
+                    // Enter on a line filled from the TUI history: a prompt was
+                    // submitted even though no characters were typed here.
+                    terminalRecalledSubmission = true;
+                }
             } else if (c == 0x7f || c == 0x08) {
                 deleteTerminalCharBeforeCursor();
             } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
@@ -2904,7 +2948,13 @@ public class ClaudeSessionController {
             }
             case 'H' -> terminalInputCursor = 0;
             case 'F' -> terminalInputCursor = terminalInputLine.length();
-            default -> { /* Up/Down and other keys do not edit the line */ }
+            case 'A', 'B' -> {
+                // Up/Down recall a prompt from the TUI history into its input;
+                // the text never reaches this parser. Remember that whatever is
+                // submitted next was not typed here.
+                if (terminalInputLine.isEmpty()) terminalHistoryRecall = true;
+            }
+            default -> { /* other keys do not edit the line */ }
         }
     }
 

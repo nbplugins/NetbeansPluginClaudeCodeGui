@@ -2116,6 +2116,53 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The same resume driven by a prompt recalled from the TUI history: Up
+     * fills the TUI input with text the plugin never sees, and Enter submits
+     * it. The submission is real, so the file this process writes after it —
+     * the conversation on screen — must be followed even though its text
+     * cannot be matched.
+     */
+    @Test
+    void promptRecalledFromTheTerminalHistoryFollowsTheConversationOnScreen() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            // The recalled prompt is appended to the resumed conversation.
+            appendUserPrompt(dir, "shared", "recalled prompt", START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            // Up recalls it into the TUI input; nothing is typed here.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L);
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "a recalled prompt proves the conversation on screen");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * After joining another tab's conversation and submitting a prompt there,
      * the identity scan may only run after the user started typing the next
      * draft. A draft edit must not invalidate the submitted prompt's evidence,
@@ -2271,14 +2318,15 @@ class ClaudeSessionControllerTest {
 
     /**
      * Two NEW tabs that have not resolved their session yet submit the same
-     * text. Neither knows which file is its own: the first scan of an
-     * unclaimed file can only guess, so that claim stays provisional instead of
-     * establishing ownership over a sibling's conversation. When the second
-     * file appears, the tab that guessed first must return to it while the tab
-     * that merely joined keeps the conversation it tracks.
+     * text. Neither knows which file is its own: the first file to appear can
+     * only be guessed, so the claim stays provisional instead of establishing
+     * ownership over a sibling's conversation. When a second file with the same
+     * prompt appears, the evidence cannot tell the two tabs apart — displacing
+     * the current claim would swap the two conversations — so both keep the
+     * conversation they already track.
      */
     @Test
-    void twoUnresolvedNewTabsWithTheSamePromptKeepTheirOwnConversations() throws Exception {
+    void twoUnresolvedNewTabsDoNotSwapTheConversationTheyShare() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
         java.nio.file.Path work = tmpDir.resolve("project");
         java.nio.file.Path dir = sessionDir(config, work);
@@ -2315,13 +2363,66 @@ class ClaudeSessionControllerTest {
             setMtime(dir.resolve("a.jsonl"), START_MS + 11_200L);
 
             assertEquals("b", tabB.resolveActiveSessionId(),
-                    "a provisional claim must not cost the tab that joined the conversation later");
-            assertEquals("a", controller.resolveActiveSessionId(),
-                    "the tab that guessed first must return to its own file");
+                    "a shared provisional claim must not be displaced");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the tab that guessed first must not be swapped off its file");
 
-            assertEquals("a", controller.resolveActiveSessionId(),
-                    "both tabs must keep their own conversations on later scans");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "both tabs must keep the conversation they track on later scans");
             assertEquals("b", tabB.resolveActiveSessionId());
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The same two unresolved tabs with the scan order reversed: the tab that
+     * resolved the shared file first keeps it, and the tab that joined later
+     * must not cost it that conversation. A borrowed claim is not ownership.
+     */
+    @Test
+    void aSiblingBorrowingAProvisionalClaimDoesNotDisplaceIt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            // The sibling resolves the shared conversation first; this tab joins.
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_600L);
+            assertEquals("b", tabB.resolveActiveSessionId());
+            assertEquals("b", controller.resolveActiveSessionId());
+
+            // A second file with the same prompt appears.
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_200L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the provisional claim of the sibling must not be displaced");
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the tab that resolved the file first must keep it");
+
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "later scans must not swap the conversations either");
+            assertEquals("b", controller.resolveActiveSessionId());
         } finally {
             tabB.stopProcess();
         }
