@@ -2270,6 +2270,64 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Two NEW tabs that have not resolved their session yet submit the same
+     * text. Neither knows which file is its own: the first scan of an
+     * unclaimed file can only guess, so that claim stays provisional instead of
+     * establishing ownership over a sibling's conversation. When the second
+     * file appears, the tab that guessed first must return to it while the tab
+     * that merely joined keeps the conversation it tracks.
+     */
+    @Test
+    void twoUnresolvedNewTabsWithTheSamePromptKeepTheirOwnConversations() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            // B's conversation is written first; A scans before B and can only
+            // follow the only file that holds the prompt.
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_600L);
+            assertEquals("b", controller.resolveActiveSessionId());
+            assertEquals("b", tabB.resolveActiveSessionId());
+
+            // A's own conversation appears with the same prompt.
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_200L);
+
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "a provisional claim must not cost the tab that joined the conversation later");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the tab that guessed first must return to its own file");
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "both tabs must keep their own conversations on later scans");
+            assertEquals("b", tabB.resolveActiveSessionId());
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * Cursor keys and other escape sequences must be consumed as a whole: their
      * final byte must not leak into the buffered line, or the recorded prompt
      * would no longer match the one actually submitted and the identity scan
@@ -2394,6 +2452,29 @@ class ClaudeSessionControllerTest {
         assertEquals("ab",
                 controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 7),
                 "Left and Delete must step over and remove whole characters");
+    }
+
+    /**
+     * Cursor keys must be harmless at the ends of the line: Left at the start
+     * and Right at the end happen during ordinary navigation, and an exception
+     * raised by the input listener would abort the rest of the write.
+     */
+    @Test
+    void cursorKeysAtTheLineBoundariesDoNotThrow() {
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+
+        // Empty line: both directions are no-ops.
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS);      // Left
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 1);  // Right
+
+        controller.simulateTerminalInput("ab".getBytes(utf8), START_MS + 2);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'F'}, START_MS + 3);  // End
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 4);  // Right at end
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'H'}, START_MS + 5);  // Home
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 6);  // Left at start
+
+        assertEquals("ab",
+                controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 7));
     }
 
     // -------------------------------------------------------------------------

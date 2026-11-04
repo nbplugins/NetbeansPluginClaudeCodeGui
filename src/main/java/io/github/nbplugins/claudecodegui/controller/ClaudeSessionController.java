@@ -145,16 +145,27 @@ public class ClaudeSessionController {
             new ConcurrentHashMap<>();
 
     /**
-     * Live controllers writing one session file, split by how they came to it.
-     * A controller that only follows a conversation another tab established —
-     * a NEW tab borrowing it until its own file appears, or an in-process
-     * resume into a sibling's conversation — holds a
-     * {@linkplain #borrowed borrowed} claim. A borrowed claim is not ownership:
-     * it must not make the file look foreign to the tab that established it,
-     * or that tab would discard its own correctly tracked session and adopt the
-     * borrower's new file instead.
+     * Live controllers writing one session file, split by how strong their hold
+     * on it is.
+     *
+     * <ul>
+     *   <li>{@link #owners} — the tab knew this conversation at launch
+     *       ({@code --continue}/{@code --resume}) and no other live tab held it
+     *       when the claim was made. Only an owner may treat the file as
+     *       established, and only ownership elsewhere makes the file foreign to
+     *       this tab.</li>
+     *   <li>{@code provisional} (a holder in neither set) — a {@code NEW} tab
+     *       guessed that this file is its own. Any tab may guess wrong when
+     *       another unresolved tab writes the same prompt, so a provisional
+     *       claim must yield when another live tab follows the same file and a
+     *       file nobody follows holds the prompt.</li>
+     *   <li>{@link #borrowed} — the tab joined a file another live tab already
+     *       held (an in-process resume into a sibling's conversation, or a NEW
+     *       tab following it until its own file appears).</li>
+     * </ul>
      */
     private static final class SessionClaims {
+        final Set<ClaudeSessionController> holders = ConcurrentHashMap.newKeySet();
         final Set<ClaudeSessionController> owners = ConcurrentHashMap.newKeySet();
         final Set<ClaudeSessionController> borrowed = ConcurrentHashMap.newKeySet();
     }
@@ -210,6 +221,14 @@ public class ClaudeSessionController {
      * {@link #refreshSessionIdentity()}).
      */
     private volatile Set<String> preStartSessionIds = Set.of();
+
+    /**
+     * {@code true} when the session ID was known before the first prompt (a
+     * {@code --continue}/{@code --resume} launch). A {@code NEW} session has no
+     * identity up front, so the file it later adopts is only a guess until the
+     * tab proves the file is its own — see {@link #claimSession}.
+     */
+    private volatile boolean launchIdentityKnown;
 
     /**
      * Time (epoch millis) a prompt was last submitted from the plugin. Used to
@@ -367,6 +386,7 @@ public class ClaudeSessionController {
         activeConfigDir = configDir;
         activeSessionId = sessionId;
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
+        launchIdentityKnown = sessionId != null;
     }
 
     /** Package-private for tests: one tick of the periodic identity refresh. */
@@ -559,6 +579,7 @@ public class ClaudeSessionController {
                 : prepareLaunchIdentity(dir, profileName, effectiveMode, resumeSessionId);
         preStartSessionIds = launch.preStartSessionIds();
         activeSessionId = launch.sessionId();
+        launchIdentityKnown = activeSessionId != null;
 
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
@@ -697,6 +718,7 @@ public class ClaudeSessionController {
             activeConfigDir = null;
             activeSessionId = null;
             preStartSessionIds = Set.of();
+            launchIdentityKnown = false;
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
@@ -821,6 +843,7 @@ public class ClaudeSessionController {
         Set<String> claimed = new HashSet<>();
         Set<String> otherLiveClaims = new HashSet<>();
         Set<String> otherOwned = new HashSet<>();
+        boolean trackedProvisional;
         synchronized (processOwnershipLock) {
             generation = processGeneration;
             scanId = ++scanSequence;
@@ -831,6 +854,9 @@ public class ClaudeSessionController {
             externalAt = externalInputAt;
             promptText = lastPromptText;
             activeId = activeSessionId;
+            // A NEW tab's first guess at its own file is not ownership: another
+            // unresolved tab may hold the same file as a guess of its own.
+            trackedProvisional = claimIsProvisional(dir, configDir, activeId);
             if (dir != null && configDir != null && since > 0) {
                 claimed.addAll(claimedByOthers(dir, configDir));
                 otherLiveClaims.addAll(claimedByOtherLiveTabs(dir, configDir));
@@ -876,11 +902,26 @@ public class ClaudeSessionController {
                 // even when it is the identity currently tracked (a false
                 // adoption). A merely borrowed claim does not count: a sibling
                 // following this tab's conversation must not cost this tab the
-                // session it established.
+                // session it established. A provisional claim (this NEW tab's
+                // guess) loses the preference when another tab also holds the
+                // file: until ownership is clear, the tab must not keep the
+                // guessed file merely because it guessed first.
                 String ownPreferred = activeId != null && !otherOwned.contains(activeId)
+                        && !(trackedProvisional && otherLiveClaims.contains(activeId))
                         ? activeId : null;
-                newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
-                        promptAt, promptText);
+                if (ownPreferred == null) {
+                    // Prefer the conversation no other live tab holds: with two
+                    // initially unresolved NEW tabs, that is the only file that
+                    // can be this tab's own.
+                    Set<String> unshared = new HashSet<>(own);
+                    unshared.removeAll(otherLiveClaims);
+                    newest = findPromptBearingSession(dir, configDir, unshared, null,
+                            promptAt, promptText);
+                }
+                if (newest == null) {
+                    newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
+                            promptAt, promptText);
+                }
                 if (newest == null) {
                     // Only then may a conversation another live tab writes be
                     // adopted: that is an in-process /resume from this terminal.
@@ -1066,25 +1107,46 @@ public class ClaudeSessionController {
         // detached from the map (which would silently lose the claim).
         SESSION_CLAIMS.compute(key, (k, claims) -> {
             SessionClaims updated = claims != null ? claims : new SessionClaims();
-            updated.owners.add(this);
-            if (ownedByAnotherLiveTab(updated)) {
-                // Another tab established this conversation; this tab is only
-                // following it until a file of its own takes over.
-                updated.borrowed.add(this);
-            } else {
-                updated.borrowed.remove(this);
+            if (!updated.holders.contains(this)) {
+                // Classify only a new hold: re-claiming the identity on every
+                // scan must not turn an owner into a borrower of its own file.
+                if (heldByAnotherLiveTab(updated)) {
+                    // Another tab is already writing this conversation; this
+                    // tab is only following it.
+                    updated.borrowed.add(this);
+                } else if (launchIdentityKnown) {
+                    updated.owners.add(this);
+                }
+                // Otherwise the claim stays provisional: this NEW tab guessed
+                // that the file is its own.
+                updated.holders.add(this);
             }
             return updated;
         });
     }
 
-    /** {@code true} if {@code claims} holds an established claim by another live tab. */
-    private boolean ownedByAnotherLiveTab(SessionClaims claims) {
-        for (ClaudeSessionController owner : claims.owners) {
-            if (owner == this || claims.borrowed.contains(owner)) continue;
-            if (LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) return true;
+    /** {@code true} if another live tab already holds {@code claims}. */
+    private boolean heldByAnotherLiveTab(SessionClaims claims) {
+        for (ClaudeSessionController holder : claims.holders) {
+            if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()) {
+                return true;
+            }
         }
         return false;
+    }
+
+    /**
+     * {@code true} if this controller holds {@code sessionId} only as a guess
+     * for a {@code NEW} session: it neither established the file at launch nor
+     * joined a tab that already held it.
+     */
+    private boolean claimIsProvisional(java.io.File dir, java.nio.file.Path configDir,
+                                       String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        if (key == null) return false;
+        SessionClaims claims = SESSION_CLAIMS.get(key);
+        return claims != null && claims.holders.contains(this)
+                && !claims.owners.contains(this) && !claims.borrowed.contains(this);
     }
 
     private void releaseClaim(java.io.File dir, java.nio.file.Path configDir,
@@ -1092,9 +1154,8 @@ public class ClaudeSessionController {
         SessionKey key = keyFor(dir, configDir, sessionId);
         if (key == null) return;
         SESSION_CLAIMS.computeIfPresent(key, (k, claims) -> {
-            claims.owners.remove(this);
-            claims.borrowed.remove(this);
-            return claims.owners.isEmpty() ? null : claims;
+            releaseFromClaims(claims);
+            return claims.holders.isEmpty() ? null : claims;
         });
     }
 
@@ -1102,11 +1163,16 @@ public class ClaudeSessionController {
     private void releaseAllClaims() {
         for (SessionKey key : SESSION_CLAIMS.keySet()) {
             SESSION_CLAIMS.computeIfPresent(key, (k, claims) -> {
-                claims.owners.remove(this);
-                claims.borrowed.remove(this);
-                return claims.owners.isEmpty() ? null : claims;
+                releaseFromClaims(claims);
+                return claims.holders.isEmpty() ? null : claims;
             });
         }
+    }
+
+    private void releaseFromClaims(SessionClaims claims) {
+        claims.holders.remove(this);
+        claims.owners.remove(this);
+        claims.borrowed.remove(this);
     }
 
     /**
@@ -1126,8 +1192,8 @@ public class ClaudeSessionController {
                     || !key.projectDir().equals(wantedProject)) {
                 return;
             }
-            for (ClaudeSessionController owner : claims.owners) {
-                if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+            for (ClaudeSessionController holder : claims.holders) {
+                if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()) {
                     ids.add(key.sessionId());
                     return;
                 }
@@ -1156,8 +1222,7 @@ public class ClaudeSessionController {
                 return;
             }
             for (ClaudeSessionController owner : claims.owners) {
-                if (owner != this && !claims.borrowed.contains(owner)
-                        && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+                if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
                     ids.add(key.sessionId());
                     return;
                 }
@@ -1185,11 +1250,11 @@ public class ClaudeSessionController {
             // A session shared with another tab (both resumed the same saved
             // conversation) is still this tab's own conversation: excluding it
             // would make the scan pick an unrelated file.
-            if (claims.owners.contains(this)) {
+            if (claims.holders.contains(this)) {
                 return;
             }
-            for (ClaudeSessionController owner : claims.owners) {
-                if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+            for (ClaudeSessionController holder : claims.holders) {
+                if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()) {
                     ids.add(key.sessionId());
                     return;
                 }
@@ -2826,12 +2891,17 @@ public class ClaudeSessionController {
      */
     private void applyCursorKey(char key) {
         switch (key) {
-            case 'D' -> terminalInputCursor =
-                    terminalInputLine.offsetByCodePoints(
-                            Math.min(terminalInputCursor, terminalInputLine.length()), -1);
-            case 'C' -> terminalInputCursor =
-                    terminalInputLine.offsetByCodePoints(
-                            Math.min(terminalInputCursor, terminalInputLine.length()), 1);
+            case 'D' -> {
+                int at = Math.min(terminalInputCursor, terminalInputLine.length());
+                terminalInputCursor =
+                        at <= 0 ? 0 : terminalInputLine.offsetByCodePoints(at, -1);
+            }
+            case 'C' -> {
+                int at = Math.min(terminalInputCursor, terminalInputLine.length());
+                terminalInputCursor = at >= terminalInputLine.length()
+                        ? terminalInputLine.length()
+                        : terminalInputLine.offsetByCodePoints(at, 1);
+            }
             case 'H' -> terminalInputCursor = 0;
             case 'F' -> terminalInputCursor = terminalInputLine.length();
             default -> { /* Up/Down and other keys do not edit the line */ }

@@ -131,6 +131,29 @@ class ClaudeSessionTabPendingLaunchTest {
         }
     }
 
+    /**
+     * File references pasted or dropped into the prompt are stored relative to
+     * the project the session will run in. During a pending launch the model
+     * still names the previous project, so the supplier must use the pending
+     * one — otherwise the reference points at a path inside the wrong project.
+     */
+    @Test
+    void promptFileReferencesUseThePendingLaunchDirectory() throws Exception {
+        Path tmp = Files.createTempDirectory("pending-launch-prompt-test");
+        try {
+            File previous = tmp.resolve("repo").toFile();
+            File pending = tmp.resolve("repo").resolve("module").toFile();
+            ClaudeSessionTab tab = new ClaudeSessionTab();
+            modelOf(tab).setWorkingDirectory(previous);
+            setField(tab, "pendingLaunchDir", pending);
+
+            assertEquals(pending.getAbsolutePath(), tab.currentOrPendingDirectoryPath(),
+                    "file references must be relative to the project being launched");
+        } finally {
+            tmp.toFile().delete();
+        }
+    }
+
     private static String pathToRestore(ClaudeSessionTab tab) throws Exception {
         Field f = ClaudeSessionTab.class.getDeclaredField("pathToRestore");
         f.setAccessible(true);

@@ -351,19 +351,13 @@ public class ClaudeSessionTab extends TopComponent
         selectorPanel    = new ClaudeSessionSelectorPanel(dir, (d, pn, ea, mode, resumeId) -> onDirectoryOpened(d, pn, ea, mode, resumeId));
 
         // --- chat UI ---
-        choiceMenuPanel = new ChoiceMenuPanel(() -> {
-            java.io.File wd = model.getWorkingDirectory();
-            return wd != null ? wd.getAbsolutePath() : null;
-        });
+        choiceMenuPanel = new ChoiceMenuPanel(this::currentOrPendingDirectoryPath);
         promptPanel     = new ClaudePromptPanel(
                 this::sendPrompt,
                 this::cancelPrompt,
                 controller::sendShiftTab,
                 model::getPromptHistory,
-                () -> {
-                    File wd = model.getWorkingDirectory();
-                    return wd != null ? wd.getAbsolutePath() : null;
-                },
+                this::currentOrPendingDirectoryPath,
                 () -> onSaveAndSwitch("", SessionMode.NEW, null),
                 () -> openSwitchDialog(SessionMode.RESUME_SPECIFIC),
                 this::showSessionStatistics,
@@ -1349,6 +1343,22 @@ public class ClaudeSessionTab extends TopComponent
      */
     boolean servesDirectory(File dir) {
         return dir != null && dir.equals(currentOrPendingDirectory());
+    }
+
+    /**
+     * Working directory handed to the prompt input for {@code @}-references to
+     * files pasted, dropped or completed while a launch is still being prepared.
+     *
+     * <p>The model still names the previous project until the process starts,
+     * so the pending launch's directory must win; otherwise a file from the new
+     * project would be stored as a path that only resolves inside the old one.
+     *
+     * @return absolute path of the directory the prompt will run in, or
+     *         {@code null} when no directory is known yet
+     */
+    String currentOrPendingDirectoryPath() {
+        File dir = currentOrPendingDirectory();
+        return dir != null ? dir.getAbsolutePath() : null;
     }
 
     /**
