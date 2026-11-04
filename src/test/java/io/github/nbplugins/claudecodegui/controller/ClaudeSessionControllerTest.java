@@ -2355,6 +2355,85 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * While a choice menu is open, Tab acts on the menu ("Tab to amend") and
+     * Enter selects an item rather than submitting a prompt. Marking that Tab
+     * as a completion would record the selection as an unknown-text prompt and
+     * let the adoption pass take a sibling's newer turn.
+     */
+    @Test
+    void aTabInAChoiceMenuDoesNotRecordAPrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Pick one", List.of(
+                    new ChoiceMenuModel.Option("Yes", "1"),
+                    new ChoiceMenuModel.Option("No", "2")), 0));
+            // The sibling submits its own turn while the menu is open.
+            appendUserPrompt(dir, "shared", "sibling turn", START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            // Tab acts on the menu, Enter selects the item.
+            controller.simulateTerminalInput(new byte[]{'\t'}, START_MS + 11_000L);
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 11_001L);
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "a menu Tab and its selection are not a submitted prompt");
+        } finally {
+            model.clearChoiceMenu();
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * Pasting before a large draft must insert the pasted text in one
+     * operation. Inserting character by character copies the whole unchanged
+     * suffix for every character, which took seconds for a half-megabyte
+     * draft and blocked terminal writes on the calling thread.
+     */
+    @Test
+    void aLargePasteBeforeALargeDraftIsInsertedQuickly() {
+        String draft = "d".repeat(512 * 1024);
+        String pasted = "p".repeat(512 * 1024);
+        controller.simulateTerminalInput(
+                draft.getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // Home, then a bracketed paste at the beginning of the draft.
+        controller.simulateTerminalInput(
+                new byte[]{0x1b, '[', 'H'}, START_MS + 1L);
+
+        long started = System.nanoTime();
+        assertNull(controller.simulateTerminalInput(
+                ("\u001b[200~" + pasted + "\u001b[201~")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L));
+        long elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+        assertEquals(pasted.length() + draft.length(), controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 3L).length(),
+                "the whole pasted text must precede the draft");
+        assertTrue(elapsedMillis < 3_000,
+                "a paste must not rescan the draft per character (took "
+                        + elapsedMillis + " ms)");
+    }
+
+    /**
      * While a choice menu is open, Up/Down move the menu cursor and Enter
      * selects the item; the typed line stays empty just as it does for a prompt
      * recalled from the TUI history, but no prompt is submitted. Recording it

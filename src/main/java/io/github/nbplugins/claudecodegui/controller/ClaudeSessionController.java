@@ -2995,7 +2995,20 @@ public class ClaudeSessionController {
                 } else if (c >= 0x20 || c == '\t') {
                     // Tab is literal text in a paste (Claude matches the prompt
                     // exactly), while the same key typed live completes it.
-                    insertTerminalChar(c);
+                    // Insert the whole contiguous run at once: inserting one
+                    // character at a time would copy the still-unchanged suffix
+                    // of the draft for every character, which makes a paste
+                    // before long existing text quadratic. The run stops before
+                    // a control character, so a terminal escape sequence (the
+                    // end of the paste) is still parsed on its own.
+                    int end = i + 1;
+                    while (end < text.length()) {
+                        char next = text.charAt(end);
+                        if (next != '\t' && next < 0x20) break;
+                        end++;
+                    }
+                    insertTerminalText(text.subSequence(i, end));
+                    i = end - 1;
                     terminalPasteAfterCR = false;
                 }
             } else if (c == '\r' || c == '\n') {
@@ -3028,8 +3041,13 @@ public class ClaudeSessionController {
             } else if (c == '\t') {
                 // A live Tab makes the TUI complete the input from its file or
                 // command suggestions; the inserted text never reaches this
-                // parser, so the line recorded so far is only a prefix.
-                terminalCompletionEdited = true;
+                // parser, so the line recorded so far is only a prefix. While a
+                // choice menu is open Tab belongs to the menu ("Tab to amend")
+                // and Enter selects an item instead of submitting a prompt, so
+                // the menu context is not completion evidence.
+                if (model.getActiveChoiceMenu() == null) {
+                    terminalCompletionEdited = true;
+                }
             } else if (c >= 0x20) {
                 insertTerminalChar(c);
             }
@@ -3045,6 +3063,13 @@ public class ClaudeSessionController {
         int at = Math.min(terminalInputCursor, terminalInputLine.length());
         terminalInputLine.insert(at, c);
         terminalInputCursor = at + 1;
+    }
+
+    /** Inserts {@code text} at the cursor in one operation and advances it. */
+    private void insertTerminalText(CharSequence text) {
+        int at = Math.min(terminalInputCursor, terminalInputLine.length());
+        terminalInputLine.insert(at, text);
+        terminalInputCursor = at + text.length();
     }
 
     /**
