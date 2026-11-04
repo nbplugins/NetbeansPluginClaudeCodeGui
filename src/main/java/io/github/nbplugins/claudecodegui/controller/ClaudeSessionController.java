@@ -780,9 +780,24 @@ public class ClaudeSessionController {
         // "New session" action stops with a blank name; no rename will be
         // attempted, so that work is skipped before the PTY is stopped.
         String sessionId = rename ? resolveActiveSessionId() : null;
+        // The identity inputs are cleared by stopProcess(); keep the snapshot
+        // for one last lookup once the process has exited.
+        Set<String> preStart;
+        long since;
+        synchronized (processOwnershipLock) {
+            preStart = preStartSessionIds;
+            since = Math.max(processStartedAt, promptSubmittedAt);
+        }
         stopProcess();
 
         if (!rename) return;
+        if (sessionId == null && dir != null && configDir != null && since > 0) {
+            // A new session's first record can be written between the lookup
+            // above and the moment the process exits — Claude flushes its turn
+            // while shutting down. The writer is gone now, so the file is final.
+            sessionId = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                    dir.toPath(), configDir, since, preStart);
+        }
         if (dir == null || configDir == null || sessionId == null) {
             LOG.warning("Could not rename session: no active session file found in "
                     + ClaudeSessionStore.sessionDirForLog(
@@ -2919,7 +2934,9 @@ public class ClaudeSessionController {
                 } else if (c == '\n') {
                     if (!terminalPasteAfterCR) insertTerminalChar('\n');
                     terminalPasteAfterCR = false;
-                } else if (c >= 0x20) {
+                } else if (c >= 0x20 || c == '\t') {
+                    // Tab is literal text in a paste (Claude matches the prompt
+                    // exactly), while the same key typed live completes it.
                     insertTerminalChar(c);
                     terminalPasteAfterCR = false;
                 }
@@ -2930,18 +2947,23 @@ public class ClaudeSessionController {
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
                 terminalLineEntered = true;
-                if (!line.isEmpty()) {
-                    submitted = line;
-                } else if (recalled) {
-                    // Enter on a line filled from the TUI history: a prompt was
-                    // submitted even though no characters were typed here.
+                if (recalled) {
+                    // The line was filled from the TUI history (Up/Down) and may
+                    // have been edited since: the characters recorded here are
+                    // only a part of the prompt, so its text is unknown and an
+                    // in-process resume must be followed by file times.
                     terminalRecalledSubmission = true;
+                } else if (!line.isEmpty()) {
+                    submitted = line;
                 }
             } else if (c == 0x7f || c == 0x08) {
                 deleteTerminalCharBeforeCursor();
             } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
+                // Clearing the input also discards a recalled prompt, so what
+                // is typed next is known in full again.
+                terminalHistoryRecall = false;
             } else if (c >= 0x20) {
                 insertTerminalChar(c);
             }

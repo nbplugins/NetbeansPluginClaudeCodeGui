@@ -2163,6 +2163,119 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A NEW session's first record can be written between the pre-stop
+     * identity lookup and the moment the process exits. The rename must still
+     * target that file instead of silently dropping the entered name.
+     */
+    @Test
+    void aSessionFileWrittenWhileStoppingIsStillRenamed() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        model.setWorkingDirectory(work.toFile());
+        java.util.concurrent.atomic.AtomicBoolean written =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        ClaudeSessionController underTest =
+                new ClaudeSessionController(model, Collections::emptyList) {
+                    @Override
+                    public void stopProcess() {
+                        if (written.compareAndSet(false, true)) {
+                            try {
+                                writeSession(dir, "late", "late");
+                                appendUserPrompt(dir, "late", "first prompt",
+                                        START_MS + 5_000L);
+                                setMtime(dir.resolve("late.jsonl"), START_MS + 5_000L);
+                            } catch (Exception e) {
+                                throw new IllegalStateException(e);
+                            }
+                        }
+                        super.stopProcess();
+                    }
+                };
+        underTest.simulateProcessStart(START_MS, true);
+        underTest.simulateLiveSession(config, null, Set.of());
+
+        underTest.stopAndRename("Late session");
+
+        io.github.nbplugins.claudecodegui.model.SavedSession saved =
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore.findSession(
+                        work, config, "late");
+        assertNotNull(saved, "the session written while stopping must be renamed");
+        assertEquals("Late session", saved.customTitle());
+    }
+
+    /**
+     * Up recalls a prompt from the TUI history and the user edits it before
+     * submitting. Only the edited characters reach this parser, so the full
+     * prompt is unknown; treating the fragment as the whole prompt would make
+     * the exact-text evidence fail and Save & Switch rename the wrong session.
+     */
+    @Test
+    void anEditedHistoryRecallKeepsThePromptTextUnknown() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            appendUserPrompt(dir, "shared", "recalled prompt suffix",
+                    START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            // Up recalls the prompt, then " suffix" is appended and submitted.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            controller.simulateTerminalInput(
+                    " suffix".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_001L);
+            assertNull(controller.simulateTerminalInput(
+                            new byte[]{'\r'}, START_MS + 11_002L),
+                    "the recorded characters are only part of the recalled prompt");
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "an edited recall proves the conversation on screen by time");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
+    @Test
+    void clearingARecalledPromptMakesTheNextSubmissionKnown() {
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS);
+        controller.simulateTerminalInput(new byte[]{0x15}, START_MS + 1L);
+
+        assertEquals("typed after clearing", controller.simulateTerminalInput(
+                "typed after clearing\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L));
+    }
+
+    /** A tab inside a bracketed paste is literal prompt text. */
+    @Test
+    void aTabInsideABracketedPasteIsRecordedAsTyped() {
+        String paste = "\u001b[200~first\tsecond\u001b[201~\r";
+
+        assertEquals("first\tsecond", controller.simulateTerminalInput(
+                paste.getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS));
+    }
+
+    /**
      * While a choice menu is open, Up/Down move the menu cursor and Enter
      * selects the item; the typed line stays empty just as it does for a prompt
      * recalled from the TUI history, but no prompt is submitted. Recording it
