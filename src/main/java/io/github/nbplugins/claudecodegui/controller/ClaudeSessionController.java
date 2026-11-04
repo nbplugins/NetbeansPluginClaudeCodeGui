@@ -924,8 +924,6 @@ public class ClaudeSessionController {
                 // another tab's conversation.
                 Set<String> ownExclude = new HashSet<>(exclude);
                 ownExclude.addAll(otherOwned);
-                Set<String> own = new HashSet<>(ClaudeSessionStore.listSessionIdsWrittenSince(
-                        dir.toPath(), configDir, since, ownExclude, PROMPT_EVIDENCE_CANDIDATES));
                 // A session another live tab established is not this tab's own,
                 // even when it is the identity currently tracked (a false
                 // adoption). A merely borrowed or provisionally claimed file
@@ -939,8 +937,18 @@ public class ClaudeSessionController {
                 // merely swap the two conversations.
                 String ownPreferred = activeId != null && !otherOwned.contains(activeId)
                         ? activeId : null;
-                newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
-                        promptAt, promptText);
+                newest = findPromptBearingSession(dir, configDir, since, ownExclude,
+                        ownPreferred, promptAt, promptText);
+                if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                    // Coarse file times can round this tab's own file below the
+                    // cutoff even though it already holds the prompt. Its record
+                    // still proves the conversation, so retry with the slack
+                    // before yielding to a sibling's file that merely carries
+                    // the same text.
+                    newest = findPromptBearingSession(dir, configDir,
+                            since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
+                            ownPreferred, promptAt, promptText);
+                }
                 if (newest == null) {
                     // Only then may a conversation another live tab writes be
                     // adopted: that is an in-process /resume from this terminal.
@@ -955,23 +963,37 @@ public class ClaudeSessionController {
                     && (promptText == null || promptText.isBlank())) {
                 // A prompt recalled from the TUI history or completed by Tab:
                 // its text is unknown, so no file can match it as evidence. The
-                // conversation another live tab holds that this process switched
-                // into must then show a user record written at or after the
-                // submission — a merely newer file time is that tab's own turn,
-                // not evidence of a switch. This must run before the file-time
-                // fallback: a third tab that wrote its own conversation after
-                // the submission and then exited is unclaimed, and its newer
-                // mtime would otherwise hide the resumed conversation.
-                Set<String> shared = new HashSet<>(claimed);
-                shared.addAll(otherLiveClaims);
-                if (activeId != null) shared.add(activeId);
-                newest = newestSharedSessionWrittenSince(dir, configDir, since,
-                        promptAt, shared, exclude);
+                // user record is what proves a file was written for this
+                // submission.
+                //
+                // This tab's own new conversation must win over a sibling: an
+                // unresolved NEW tab writes its file without any other tab
+                // claiming it, while a sibling's record submitted around the
+                // same time may just be that tab's own turn.
+                newest = newestSessionWithUserMessageSince(dir, configDir, since,
+                        promptAt, exclude);
                 if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
-                    // Coarse file times can round the write below the submission;
-                    // the record's own timestamp still has to match.
-                    newest = newestSharedSessionWrittenSince(dir, configDir,
-                            since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
+                    newest = newestSessionWithUserMessageSince(dir, configDir,
+                            since - SESSION_MTIME_GRANULARITY_MS, promptAt, exclude);
+                }
+                if (newest == null) {
+                    // Only then may a conversation another live tab holds be
+                    // adopted: that is an in-process /resume from this terminal.
+                    // This must run before the file-time fallback: a third tab
+                    // that wrote its own conversation after the submission and
+                    // then exited is unclaimed, and its newer mtime would
+                    // otherwise hide the resumed conversation.
+                    Set<String> shared = new HashSet<>(claimed);
+                    shared.addAll(otherLiveClaims);
+                    if (activeId != null) shared.add(activeId);
+                    newest = newestSharedSessionWrittenSince(dir, configDir, since,
+                            promptAt, shared, exclude);
+                    if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        // Coarse file times can round the write below the submission;
+                        // the record's own timestamp still has to match.
+                        newest = newestSharedSessionWrittenSince(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
+                    }
                 }
             }
             if (newest == null) {
@@ -1014,6 +1036,22 @@ public class ClaudeSessionController {
      *
      * @param preferred session ID to check first; may be {@code null}
      */
+    /**
+     * Returns the session among the files written at or after
+     * {@code mtimeCutoff}, skipping {@code exclude}, whose JSONL already
+     * contains {@code promptText} since {@code promptAt}, or {@code null}.
+     *
+     * @param preferred session ID to check first; may be {@code null}
+     */
+    private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
+                                            long mtimeCutoff, Set<String> exclude,
+                                            String preferred, long promptAt, String promptText) {
+        Set<String> candidates = new HashSet<>(ClaudeSessionStore.listSessionIdsWrittenSince(
+                dir.toPath(), configDir, mtimeCutoff, exclude, PROMPT_EVIDENCE_CANDIDATES));
+        return findPromptBearingSession(dir, configDir, candidates, preferred, promptAt,
+                promptText);
+    }
+
     private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
                                             Set<String> candidates, String preferred,
                                             long promptAt, String promptText) {
@@ -1025,6 +1063,31 @@ public class ClaudeSessionController {
             if (!sessionId.equals(preferred)
                     && containsPrompt(dir, configDir, sessionId, promptAt, promptText)) {
                 return sessionId;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns the newest session file written at or after {@code mtimeCutoff},
+     * skipping {@code exclude}, that holds a user message at or after
+     * {@code promptCutoff}, or {@code null}.
+     *
+     * <p>Used when the submitted prompt's text is unknown: a user record is
+     * then the only evidence that a file was written for this submission, and
+     * unlike {@link #newestSharedSessionWrittenSince} the file does not have to
+     * belong to another live tab.
+     */
+    private static String newestSessionWithUserMessageSince(java.io.File dir,
+                                                            java.nio.file.Path configDir,
+                                                            long mtimeCutoff,
+                                                            long promptCutoff,
+                                                            Set<String> exclude) {
+        for (String id : ClaudeSessionStore.listSessionIdsWrittenSince(
+                dir.toPath(), configDir, mtimeCutoff, exclude, PROMPT_EVIDENCE_CANDIDATES)) {
+            if (ClaudeSessionStore.containsUserMessageSince(
+                    dir.toPath(), configDir, id, promptCutoff)) {
+                return id;
             }
         }
         return null;

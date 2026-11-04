@@ -2355,6 +2355,104 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * An unresolved NEW tab submits a Tab-completed prompt, so its text is
+     * unknown, while a live sibling submits its own human prompt. The sibling
+     * holds the only claimed file, but this tab's own new file also contains a
+     * user record for its submission: taking the sibling's record as a switch
+     * would pin this tab to the sibling's conversation.
+     */
+    @Test
+    void anUnknownPromptPrefersTheTabsOwnNewSessionOverASiblingTurn() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "sibling", "sibling");
+        setMtime(dir.resolve("sibling.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("sibling"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "sibling", Set.of("sibling"));
+
+        try {
+            // Tab completes the prompt, Enter submits it: the text is unknown.
+            controller.simulateTerminalInput(
+                    "inspect @REA".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            controller.simulateTerminalInput(new byte[]{'\t'}, START_MS + 11_001L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_002L));
+
+            // This tab's own new conversation gets the submission ...
+            writeSession(dir, "own-new", "own-new");
+            appendUserPrompt(dir, "own-new", "inspect @README.md", START_MS + 11_500L);
+            setMtime(dir.resolve("own-new.jsonl"), START_MS + 13_000L);
+            // ... while the sibling submits an unrelated prompt of its own.
+            appendUserPrompt(dir, "sibling", "sibling turn", START_MS + 11_400L);
+            setMtime(dir.resolve("sibling.jsonl"), START_MS + 12_000L);
+
+            assertEquals("own-new", controller.resolveActiveSessionId(),
+                    "this tab's own record must beat the sibling's own turn");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A file with second-rounded mtimes can hold the complete submitted prompt
+     * yet sit just below the exact cutoff. A live sibling submitting identical
+     * text must not then be adopted: the relaxed cutoff has to be applied to
+     * this tab's own candidates before the borrowed match is accepted.
+     */
+    @Test
+    void aRoundedOwnFileStillWinsOverASiblingWithTheSamePrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "sibling", "sibling");
+        setMtime(dir.resolve("sibling.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("sibling"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "sibling", Set.of("sibling"));
+
+        try {
+            assertEquals("hello", controller.simulateTerminalInput(
+                            "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                            START_MS + 11_000L),
+                    "the submitted prompt is recorded exactly");
+
+            // The own file holds the prompt but its rounded mtime is below the
+            // submission; the sibling submitted the same text afterwards.
+            writeSession(dir, "own-new", "own-new");
+            appendUserPrompt(dir, "own-new", "hello", START_MS + 11_000L);
+            setMtime(dir.resolve("own-new.jsonl"), START_MS + 10_500L);
+            appendUserPrompt(dir, "sibling", "hello", START_MS + 11_200L);
+            setMtime(dir.resolve("sibling.jsonl"), START_MS + 12_000L);
+
+            assertEquals("own-new", controller.resolveActiveSessionId(),
+                    "the own record must be found before the borrowed match");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
     /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
     @Test
     void clearingARecalledPromptMakesTheNextSubmissionKnown() {
