@@ -1112,9 +1112,18 @@ public class ClaudeSessionController {
      * Queues one periodic identity refresh on the shared worker, so that the
      * screen poll never enumerates the session store on the EDT. At most one
      * scan per controller is in flight at a time.
+     *
+     * <p>Nothing is queued once the PTY has exited: the tab can stay open after
+     * Claude quits, and a dead process has no conversation to follow. Without
+     * this gate each such tab would keep enumerating the session store twice a
+     * second (unresolved session) or every five seconds on the single shared
+     * worker, delaying live tabs.
+     *
+     * @return {@code false} when no PTY is running and nothing was queued
      */
-    private void scheduleIdentityRefresh() {
-        if (!identityScanPending.compareAndSet(false, true)) return;
+    boolean scheduleIdentityRefresh() {
+        if (!isProcessLive()) return false;
+        if (!identityScanPending.compareAndSet(false, true)) return true;
         try {
             IDENTITY_SCANNER.execute(() -> {
                 try {
@@ -1128,6 +1137,12 @@ public class ClaudeSessionController {
         } catch (java.util.concurrent.RejectedExecutionException e) {
             identityScanPending.set(false);
         }
+        return true;
+    }
+
+    /** Package-private for tests: the PTY is no longer running (Claude exited). */
+    void simulateProcessNotRunning() {
+        claudeProcess = new ClaudeProcess();
     }
 
     private static SessionKey keyFor(java.io.File dir, java.nio.file.Path configDir,
@@ -2853,6 +2868,12 @@ public class ClaudeSessionController {
     private String appendTerminalInput(byte[] bytes) {
         String submitted = null;
         String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        // An Esc that was the last byte of the previous write is standalone
+        // unless this write continues a CSI/SS3 sequence: a terminal sends
+        // Alt+char as ESC+char in one write, while Esc alone (dismissing the
+        // autocomplete) arrives on its own and the next keystroke follows in a
+        // separate write.
+        boolean carriedEscape = terminalInputEscape == 1;
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (c == 0x1b) {
@@ -2860,9 +2881,23 @@ public class ClaudeSessionController {
                 terminalEscapeParams.setLength(0);
                 terminalPasteAfterCR = false;
             } else if (terminalInputEscape == 1) {
-                // ESC [ starts a CSI sequence, ESC O an SS3 one; any other
-                // character ends a two-character escape (ESC x).
-                terminalInputEscape = c == '[' ? 2 : c == 'O' ? 3 : 0;
+                // ESC [ starts a CSI sequence, ESC O an SS3 one. Any other
+                // character ends a two-character escape (ESC x, e.g. Alt+x).
+                // When the Esc was carried over from the previous write it was
+                // standalone instead — the TUI uses it to dismiss autocomplete
+                // — and the character that followed belongs to the input, so it
+                // is processed again as ordinary input.
+                if (c == '[') {
+                    terminalInputEscape = 2;
+                } else if (c == 'O') {
+                    terminalInputEscape = 3;
+                } else {
+                    terminalInputEscape = 0;
+                    if (carriedEscape) {
+                        i--;
+                    }
+                }
+                carriedEscape = false;
             } else if (terminalInputEscape == 2) {
                 // CSI: parameter and intermediate bytes (0x20–0x3f) precede
                 // the final byte (0x40–0x7e), which ends the sequence.

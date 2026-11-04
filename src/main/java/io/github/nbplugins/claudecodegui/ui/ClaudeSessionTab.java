@@ -12,6 +12,7 @@ import io.github.nbplugins.claudecodegui.model.EditMode;
 import io.github.nbplugins.claudecodegui.model.SavedSession;
 import io.github.nbplugins.claudecodegui.model.SessionLifecycle;
 import io.github.nbplugins.claudecodegui.model.SessionMode;
+import io.github.nbplugins.claudecodegui.process.ClaudeProcess;
 import io.github.nbplugins.claudecodegui.process.ClaudeSessionStore;
 import io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbplugins.claudecodegui.settings.ClaudeProfile;
@@ -847,11 +848,8 @@ public class ClaudeSessionTab extends TopComponent
         this.activeResumeSessionId = resumeSessionId;
         Path configDir = null;
         if (!ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
-            ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
-            if (profile != null && !profile.isDefault()) {
-                configDir = ClaudeProfileStore.resolveStorageDir(
-                        profile, ClaudeCodePreferences.getProfilesDir());
-            }
+            configDir = resolveLaunchConfigDir(ClaudeProfileStore.findByName(profileName),
+                    ClaudeCodePreferences.getProfilesDir());
         }
         final Path capturedConfigDir = configDir;
         // Until the process starts, the model still describes the previous
@@ -1382,6 +1380,24 @@ public class ClaudeSessionTab extends TopComponent
     private Path currentOrPendingConfigDir() {
         Path active = controller.getActiveConfigDir();
         return active != null ? active : pendingLaunchConfigDir;
+    }
+
+    /**
+     * Config directory a launch of {@code profile} will actually use.
+     *
+     * <p>Resolved exactly as {@link ClaudeProcess} resolves it for the process:
+     * the profile's storage dir, then any {@code CLAUDE_CONFIG_DIR} from the
+     * profile's extra environment variables. While the launch is pending the
+     * Save &amp; Switch dialog must list that same store, or it would offer a
+     * conversation the replacement process cannot resume.
+     *
+     * @param profile     profile of the pending launch; may be {@code null}
+     * @param profilesDir base directory for profile config dirs
+     * @return the effective config dir, or {@code null} for the default store
+     */
+    static Path resolveLaunchConfigDir(ClaudeProfile profile, Path profilesDir) {
+        if (profile == null || profile.isDefault()) return null;
+        return ClaudeProcess.resolveConfigDir(profile, profilesDir);
     }
 
     public void onSaveAndSwitch(String sessionName, SessionMode mode, String resumeId) {

@@ -2429,6 +2429,44 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A standalone Esc arrives as its own write and only dismisses the
+     * autocomplete: it must not consume the keystroke that follows, or the next
+     * prompt is recorded without that character and its evidence no longer
+     * matches the conversation on screen.
+     */
+    @Test
+    void aStandaloneEscapeDoesNotSwallowTheNextKeystroke() {
+        byte[] esc = {0x1b};
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+
+        controller.simulateTerminalInput(esc, START_MS);
+        controller.simulateTerminalInput("hello".getBytes(utf8), START_MS + 1);
+        assertEquals("hello", controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 2),
+                "Esc must not consume the first character typed after it");
+
+        controller.simulateTerminalInput("world".getBytes(utf8), START_MS + 3);
+        controller.simulateTerminalInput(esc, START_MS + 4);
+        assertEquals("world", controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 5),
+                "Esc before Enter must not swallow the submission");
+    }
+
+    /**
+     * A tab whose Claude process quit stays open. It must stop enumerating the
+     * session store: otherwise every exited tab keeps the shared identity worker
+     * busy and delays identity updates for the live tabs.
+     */
+    @Test
+    void anExitedProcessStopsSchedulingIdentityScans() {
+        controller.simulateProcessStart(START_MS, true);
+        assertTrue(controller.scheduleIdentityRefresh(),
+                "a running tab keeps refreshing its session identity");
+
+        controller.simulateProcessNotRunning();
+        assertFalse(controller.scheduleIdentityRefresh(),
+                "an exited process must not schedule identity scans");
+    }
+
+    /**
      * Cursor keys and other escape sequences must be consumed as a whole: their
      * final byte must not leak into the buffered line, or the recorded prompt
      * would no longer match the one actually submitted and the identity scan

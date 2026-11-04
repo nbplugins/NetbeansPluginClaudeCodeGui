@@ -154,6 +154,38 @@ class ClaudeSessionTabPendingLaunchTest {
         }
     }
 
+    /**
+     * A profile may set {@code CLAUDE_CONFIG_DIR} through its extra environment
+     * variables, which takes precedence over its storage dir. A pending launch
+     * must resolve the directory exactly as the process will, or the dialog
+     * would list one store and the started process use another.
+     */
+    @Test
+    void pendingLaunchConfigDirAppliesTheProfilesEnvironmentOverride() throws Exception {
+        Path profiles = Files.createTempDirectory("pending-launch-config-test");
+        try {
+            io.github.nbplugins.claudecodegui.settings.ClaudeProfile profile =
+                    io.github.nbplugins.claudecodegui.settings.ClaudeProfile.createNamed("Work");
+            assertEquals(profiles.resolve("Work"),
+                    ClaudeSessionTab.resolveLaunchConfigDir(profile, profiles),
+                    "a named profile uses its storage dir by default");
+
+            Path override = profiles.resolve("override-store");
+            profile.setExtraEnvVars(java.util.Collections.singletonList(
+                    new String[]{"CLAUDE_CONFIG_DIR", override.toString()}));
+            assertEquals(override,
+                    ClaudeSessionTab.resolveLaunchConfigDir(profile, profiles),
+                    "the environment override must win over the storage dir");
+
+            assertNull(ClaudeSessionTab.resolveLaunchConfigDir(
+                            io.github.nbplugins.claudecodegui.settings.ClaudeProfile.createDefault(),
+                            profiles),
+                    "the default profile keeps the default store");
+        } finally {
+            profiles.toFile().delete();
+        }
+    }
+
     private static String pathToRestore(ClaudeSessionTab tab) throws Exception {
         Field f = ClaudeSessionTab.class.getDeclaredField("pathToRestore");
         f.setAccessible(true);
