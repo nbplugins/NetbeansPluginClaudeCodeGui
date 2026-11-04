@@ -89,7 +89,8 @@ class PtyTtyConnectorTest {
         PtyProcess p = startCat();
         List<String> received = new ArrayList<>();
         PtyTtyConnector c = new PtyTtyConnector(p);
-        c.setInputListener(bytes -> received.add(new String(bytes, StandardCharsets.UTF_8)));
+        c.setInputListener((bytes, sentAt) ->
+                received.add(new String(bytes, StandardCharsets.UTF_8)));
 
         c.write("first");
         c.write(new byte[]{'\r'});
@@ -99,6 +100,76 @@ class PtyTtyConnectorTest {
         c.close();
 
         assertEquals(List.of("first", "\r"), received);
+    }
+
+    /**
+     * The submission time handed to the input listener must be sampled by the
+     * connector <em>before</em> the bytes are forwarded, not by the listener
+     * itself: the child may append the prompt to its session file between the
+     * write and the listener call (the writing thread can be descheduled after
+     * the flush). A later timestamp would make the controller reject the very
+     * prompt it just sent when it looks for evidence of the conversation on
+     * screen.
+     */
+    @Test
+    void testSubmissionTimeIsSampledBeforeTheBytesAreDelivered() throws Exception {
+        RecordingPtyProcess p = new RecordingPtyProcess();
+        List<Long> times = new ArrayList<>();
+        PtyTtyConnector c = new PtyTtyConnector(p, () -> {
+            if (p.delivered) p.sampledAfterDelivery = true;
+            return 1_234L;
+        });
+        c.setInputListener((bytes, sentAt) -> times.add(sentAt));
+
+        c.write("first");
+
+        assertEquals("first", p.writtenText());
+        assertEquals(List.of(1_234L), times);
+        assertFalse(p.sampledAfterDelivery,
+                "the submission time must be sampled before the bytes reach the child");
+    }
+
+    /**
+     * A PTY double that records the order of the two events this test cares
+     * about: the pending input reaching the child and the connector sampling
+     * the submission time.
+     */
+    private static final class RecordingPtyProcess extends PtyProcess {
+        private final java.io.ByteArrayOutputStream written =
+                new java.io.ByteArrayOutputStream();
+        private final InputStream output = new ByteArrayInputStream(new byte[0]);
+        boolean delivered;
+        boolean sampledAfterDelivery;
+
+        @Override
+        public OutputStream getOutputStream() {
+            return new OutputStream() {
+                @Override
+                public void write(int b) {
+                    delivered = true;
+                    written.write(b);
+                }
+
+                @Override
+                public void write(byte[] b, int off, int len) {
+                    delivered = true;
+                    written.write(b, off, len);
+                }
+            };
+        }
+
+        String writtenText() {
+            return written.toString(StandardCharsets.UTF_8);
+        }
+
+        @Override public InputStream getInputStream() { return output; }
+        @Override public InputStream getErrorStream() { return output; }
+        @Override public int waitFor() { return 0; }
+        @Override public int exitValue() { return 0; }
+        @Override public boolean isAlive() { return true; }
+        @Override public void destroy() { }
+        @Override public void setWinSize(com.pty4j.WinSize winSize) { }
+        @Override public com.pty4j.WinSize getWinSize() { return new com.pty4j.WinSize(80, 24); }
     }
 
     /**

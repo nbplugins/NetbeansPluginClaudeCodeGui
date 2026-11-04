@@ -2212,6 +2212,64 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The counterpart of the test above. While the NEW tab's own file is still
+     * pending it borrows the live tab's conversation. That provisional claim
+     * must not make the conversation look foreign to the tab that established
+     * it: otherwise, when the NEW tab's file appears, the sibling treats it as
+     * its own (it holds the same prompt) and the two tabs keep naming each
+     * other's conversations in Save &amp; Switch.
+     */
+    @Test
+    void borrowedClaimDoesNotStealTheOwnersConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "sibling", "sibling");
+        setMtime(dir.resolve("sibling.jsonl"), START_MS - 5_000L);
+
+        // Tab B established the conversation and has its own prompt evidence.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "sibling", Set.of("sibling"));
+        tabB.simulatePromptText("hello");
+        tabB.simulatePromptSubmittedAt(START_MS + 9_000L);
+
+        // Tab A is NEW and submits the same text.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("sibling"));
+        controller.simulatePromptText("hello");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+        try {
+            appendUserPrompt(dir, "sibling", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("sibling.jsonl"), START_MS + 10_600L);
+            assertEquals("sibling", controller.resolveActiveSessionId(),
+                    "with nothing of its own yet, the NEW tab borrows the sibling");
+
+            // A's own conversation appears, holding the same prompt. B scans
+            // before A has claimed the new file.
+            writeSession(dir, "own", "own");
+            appendUserPrompt(dir, "own", "hello", START_MS + 11_000L);
+            setMtime(dir.resolve("own.jsonl"), START_MS + 11_200L);
+
+            assertEquals("sibling", tabB.resolveActiveSessionId(),
+                    "a borrowed claim must not make the owner adopt the borrower's file");
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "the NEW tab must still return to its own conversation");
+            assertEquals("sibling", tabB.resolveActiveSessionId(),
+                    "both tabs must keep their own conversations once both files exist");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * Cursor keys and other escape sequences must be consumed as a whole: their
      * final byte must not leak into the buffered line, or the recorded prompt
      * would no longer match the one actually submitted and the identity scan

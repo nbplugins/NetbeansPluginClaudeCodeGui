@@ -141,8 +141,23 @@ public class ClaudeSessionController {
                               String sessionId) { }
 
     /** Session file → live controllers running exactly that file. */
-    private static final Map<SessionKey, Set<ClaudeSessionController>> SESSION_CLAIMS =
+    private static final Map<SessionKey, SessionClaims> SESSION_CLAIMS =
             new ConcurrentHashMap<>();
+
+    /**
+     * Live controllers writing one session file, split by how they came to it.
+     * A controller that only follows a conversation another tab established —
+     * a NEW tab borrowing it until its own file appears, or an in-process
+     * resume into a sibling's conversation — holds a
+     * {@linkplain #borrowed borrowed} claim. A borrowed claim is not ownership:
+     * it must not make the file look foreign to the tab that established it,
+     * or that tab would discard its own correctly tracked session and adopt the
+     * borrower's new file instead.
+     */
+    private static final class SessionClaims {
+        final Set<ClaudeSessionController> owners = ConcurrentHashMap.newKeySet();
+        final Set<ClaudeSessionController> borrowed = ConcurrentHashMap.newKeySet();
+    }
 
     /**
      * Worker for the periodic session-store scans, shared by all controllers so
@@ -561,9 +576,9 @@ public class ClaudeSessionController {
 
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
-        connector.setInputListener(bytes -> {
+        connector.setInputListener((bytes, sentAt) -> {
             if (Boolean.TRUE.equals(pluginPtyWrite.get())) return;
-            onTerminalInput(bytes, System.currentTimeMillis());
+            onTerminalInput(bytes, sentAt);
         });
         screenContentDetector.setSessionTag(tag);
 
@@ -805,6 +820,7 @@ public class ClaudeSessionController {
         Set<String> exclude = new HashSet<>();
         Set<String> claimed = new HashSet<>();
         Set<String> otherLiveClaims = new HashSet<>();
+        Set<String> otherOwned = new HashSet<>();
         synchronized (processOwnershipLock) {
             generation = processGeneration;
             scanId = ++scanSequence;
@@ -818,6 +834,7 @@ public class ClaudeSessionController {
             if (dir != null && configDir != null && since > 0) {
                 claimed.addAll(claimedByOthers(dir, configDir));
                 otherLiveClaims.addAll(claimedByOtherLiveTabs(dir, configDir));
+                otherOwned.addAll(sessionsOwnedByOtherLiveTabs(dir, configDir));
                 exclude.addAll(claimed);
                 if (activeSessionId == null && promptSubmittedAt <= 0) {
                     // Without a prompt of our own there is nothing that proves a
@@ -852,12 +869,15 @@ public class ClaudeSessionController {
                 // same prompt — adopting the sibling then would pin this tab to
                 // another tab's conversation.
                 Set<String> ownExclude = new HashSet<>(exclude);
-                ownExclude.addAll(otherLiveClaims);
+                ownExclude.addAll(otherOwned);
                 Set<String> own = new HashSet<>(ClaudeSessionStore.listSessionIdsWrittenSince(
                         dir.toPath(), configDir, since, ownExclude, PROMPT_EVIDENCE_CANDIDATES));
-                // A session another live tab writes is not this tab's own, even
-                // when it is the identity currently tracked (a false adoption).
-                String ownPreferred = activeId != null && !otherLiveClaims.contains(activeId)
+                // A session another live tab established is not this tab's own,
+                // even when it is the identity currently tracked (a false
+                // adoption). A merely borrowed claim does not count: a sibling
+                // following this tab's conversation must not cost this tab the
+                // session it established.
+                String ownPreferred = activeId != null && !otherOwned.contains(activeId)
                         ? activeId : null;
                 newest = findPromptBearingSession(dir, configDir, own, ownPreferred,
                         promptAt, promptText);
@@ -1044,30 +1064,47 @@ public class ClaudeSessionController {
         // Membership and empty-entry cleanup stay inside compute() so a claim
         // cannot be added to an owner set that a concurrent release just
         // detached from the map (which would silently lose the claim).
-        SESSION_CLAIMS.compute(key, (k, owners) -> {
-            Set<ClaudeSessionController> updated =
-                    owners != null ? owners : ConcurrentHashMap.newKeySet();
-            updated.add(this);
+        SESSION_CLAIMS.compute(key, (k, claims) -> {
+            SessionClaims updated = claims != null ? claims : new SessionClaims();
+            updated.owners.add(this);
+            if (ownedByAnotherLiveTab(updated)) {
+                // Another tab established this conversation; this tab is only
+                // following it until a file of its own takes over.
+                updated.borrowed.add(this);
+            } else {
+                updated.borrowed.remove(this);
+            }
             return updated;
         });
+    }
+
+    /** {@code true} if {@code claims} holds an established claim by another live tab. */
+    private boolean ownedByAnotherLiveTab(SessionClaims claims) {
+        for (ClaudeSessionController owner : claims.owners) {
+            if (owner == this || claims.borrowed.contains(owner)) continue;
+            if (LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) return true;
+        }
+        return false;
     }
 
     private void releaseClaim(java.io.File dir, java.nio.file.Path configDir,
                               String sessionId) {
         SessionKey key = keyFor(dir, configDir, sessionId);
         if (key == null) return;
-        SESSION_CLAIMS.computeIfPresent(key, (k, owners) -> {
-            owners.remove(this);
-            return owners.isEmpty() ? null : owners;
+        SESSION_CLAIMS.computeIfPresent(key, (k, claims) -> {
+            claims.owners.remove(this);
+            claims.borrowed.remove(this);
+            return claims.owners.isEmpty() ? null : claims;
         });
     }
 
     /** Removes all claims held by this controller (called when the process stops). */
     private void releaseAllClaims() {
         for (SessionKey key : SESSION_CLAIMS.keySet()) {
-            SESSION_CLAIMS.computeIfPresent(key, (k, owners) -> {
-                owners.remove(this);
-                return owners.isEmpty() ? null : owners;
+            SESSION_CLAIMS.computeIfPresent(key, (k, claims) -> {
+                claims.owners.remove(this);
+                claims.borrowed.remove(this);
+                return claims.owners.isEmpty() ? null : claims;
             });
         }
     }
@@ -1084,13 +1121,43 @@ public class ClaudeSessionController {
         if (dir == null || configDir == null) return ids;
         java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
         java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
-        SESSION_CLAIMS.forEach((key, owners) -> {
+        SESSION_CLAIMS.forEach((key, claims) -> {
             if (!key.configDir().equals(wantedConfig)
                     || !key.projectDir().equals(wantedProject)) {
                 return;
             }
-            for (ClaudeSessionController owner : owners) {
+            for (ClaudeSessionController owner : claims.owners) {
                 if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+                    ids.add(key.sessionId());
+                    return;
+                }
+            }
+        });
+        return ids;
+    }
+
+    /**
+     * Session IDs another live controller has <em>established</em> in the same
+     * store. A claim that merely follows the conversation (see
+     * {@link SessionClaims#borrowed}) is not ownership and is skipped: when a
+     * NEW tab borrows a live tab's conversation until its own file appears,
+     * that file must still count as the live tab's own, or the live tab would
+     * discard its correctly tracked session and adopt the borrower's file.
+     */
+    private Set<String> sessionsOwnedByOtherLiveTabs(java.io.File dir,
+                                                     java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, claims) -> {
+            if (!key.configDir().equals(wantedConfig)
+                    || !key.projectDir().equals(wantedProject)) {
+                return;
+            }
+            for (ClaudeSessionController owner : claims.owners) {
+                if (owner != this && !claims.borrowed.contains(owner)
+                        && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
                     ids.add(key.sessionId());
                     return;
                 }
@@ -1110,7 +1177,7 @@ public class ClaudeSessionController {
         if (dir == null || configDir == null) return ids;
         java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
         java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
-        SESSION_CLAIMS.forEach((key, owners) -> {
+        SESSION_CLAIMS.forEach((key, claims) -> {
             if (!key.configDir().equals(wantedConfig)
                     || !key.projectDir().equals(wantedProject)) {
                 return;
@@ -1118,10 +1185,10 @@ public class ClaudeSessionController {
             // A session shared with another tab (both resumed the same saved
             // conversation) is still this tab's own conversation: excluding it
             // would make the scan pick an unrelated file.
-            if (owners.contains(this)) {
+            if (claims.owners.contains(this)) {
                 return;
             }
-            for (ClaudeSessionController owner : owners) {
+            for (ClaudeSessionController owner : claims.owners) {
                 if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
                     ids.add(key.sessionId());
                     return;

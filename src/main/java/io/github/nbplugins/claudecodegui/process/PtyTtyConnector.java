@@ -34,6 +34,9 @@ public final class PtyTtyConnector implements TtyConnector {
     private final PtyProcess process;
     private final InputStreamReader reader;
 
+    /** Time source for the submission timestamps passed to the input listener. */
+    private final java.util.function.LongSupplier clock;
+
     private String tag = "";
 
     /** Accumulates raw chars between newlines for line-based detection. */
@@ -42,8 +45,9 @@ public final class PtyTtyConnector implements TtyConnector {
     /** Invoked with each stripped line; {@code null} means no listener. */
     private volatile Consumer<String> lineListener;
 
-    /** Invoked with every byte block written to the PTY; {@code null} means no listener. */
-    private volatile java.util.function.Consumer<byte[]> inputListener;
+    /** Invoked with every byte block written to the PTY and the time the write
+     *  started; {@code null} means no listener. */
+    private volatile java.util.function.BiConsumer<byte[], Long> inputListener;
 
     /**
      * Creates a connector for the given PTY process.
@@ -51,7 +55,13 @@ public final class PtyTtyConnector implements TtyConnector {
      * @param process a running PTY process
      */
     public PtyTtyConnector(PtyProcess process) {
+        this(process, System::currentTimeMillis);
+    }
+
+    /** Package-private for tests: injects the clock used for terminal submissions. */
+    PtyTtyConnector(PtyProcess process, java.util.function.LongSupplier clock) {
         this.process = process;
+        this.clock = clock;
         this.reader = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8);
     }
 
@@ -69,11 +79,16 @@ public final class PtyTtyConnector implements TtyConnector {
 
     /**
      * Sets a listener that receives every block of bytes written to the PTY —
-     * both plugin-sent input and text typed in the terminal.
+     * both plugin-sent input and text typed in the terminal — together with the
+     * time the write started.
+     *
+     * <p>The timestamp is sampled before the bytes are forwarded so that a
+     * child which appends the submitted prompt to its session file right after
+     * reading them cannot produce a record later than the reported time.
      *
      * @param listener the listener, or {@code null} to clear
      */
-    public void setInputListener(java.util.function.Consumer<byte[]> listener) {
+    public void setInputListener(java.util.function.BiConsumer<byte[], Long> listener) {
         this.inputListener = listener;
     }
 
@@ -120,10 +135,15 @@ public final class PtyTtyConnector implements TtyConnector {
 
     @Override
     public void write(byte[] bytes) throws IOException {
+        // Sampled before the bytes are forwarded: the child can append the
+        // submitted prompt to its session file as soon as it reads them, so a
+        // timestamp taken after the write/listener could be later than the
+        // record the controller uses as evidence.
+        long sentAt = clock.getAsLong();
         process.getOutputStream().write(bytes);
         process.getOutputStream().flush();
-        java.util.function.Consumer<byte[]> l = inputListener;
-        if (l != null) l.accept(bytes);
+        java.util.function.BiConsumer<byte[], Long> l = inputListener;
+        if (l != null) l.accept(bytes, sentAt);
     }
 
     @Override
