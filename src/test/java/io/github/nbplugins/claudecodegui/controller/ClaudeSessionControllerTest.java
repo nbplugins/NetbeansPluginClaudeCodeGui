@@ -2641,6 +2641,70 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A NEW tab may guess (and provisionally claim) a conversation, but an
+     * explicit {@code --resume} of that same file knows its identity at launch.
+     * The explicit resume must own the file, so the guessing tab stops treating
+     * it as its own and follows its own conversation once that appears.
+     */
+    @Test
+    void anExplicitResumeOwnsTheFileEvenWhenANewTabGuessedItFirst() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "b", "b");
+        appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 10_600L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+        controller.simulatePromptText("hello");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the NEW tab follows the conversation that holds its prompt");
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 11_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("b"));
+
+        try {
+            // This tab's own conversation appears with the same prompt.
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 12_000L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_500L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "an explicit resume owns the file; the guess must follow its own");
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the tab that resumed the conversation explicitly keeps it");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * Up recalls a draft that is never submitted before the tab restarts. The
+     * replacement process starts with empty input, so the first typed prompt is
+     * known in full; a leftover recall flag would record it as unknown text and
+     * let an unrelated newer conversation be adopted.
+     */
+    @Test
+    void aRestartClearsAPromptRecalledButNeverSubmitted() {
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS);
+        controller.stopProcess();
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+
+        assertEquals("typed prompt", controller.simulateTerminalInput(
+                        "typed prompt\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 2_000L),
+                "a recall from the previous run must not make the new prompt unknown");
+    }
+
+    /**
      * A standalone Esc arrives as its own write and only dismisses the
      * autocomplete: it must not consume the keystroke that follows, or the next
      * prompt is recorded without that character and its evidence no longer

@@ -754,6 +754,10 @@ public class ClaudeSessionController {
                 terminalInputPaste = false;
                 terminalPasteAfterCR = false;
                 terminalLineEntered = false;
+                // A draft recalled into the finished run's input says nothing
+                // about what the next process will submit.
+                terminalHistoryRecall = false;
+                terminalRecalledSubmission = false;
             }
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -1186,12 +1190,16 @@ public class ClaudeSessionController {
             if (!updated.holders.contains(this)) {
                 // Classify only a new hold: re-claiming the identity on every
                 // scan must not turn an owner into a borrower of its own file.
-                if (heldByAnotherLiveTab(updated)) {
+                if (launchIdentityKnown && !heldAsOwnerByAnotherLiveTab(updated)) {
+                    // An explicit --continue/--resume knows its conversation.
+                    // A NEW tab's provisional guess — or a borrower following
+                    // one — does not establish the file, so it must not demote
+                    // this claim to borrowing.
+                    updated.owners.add(this);
+                } else if (heldByAnotherLiveTab(updated)) {
                     // Another tab is already writing this conversation; this
                     // tab is only following it.
                     updated.borrowed.add(this);
-                } else if (launchIdentityKnown) {
-                    updated.owners.add(this);
                 }
                 // Otherwise the claim stays provisional: this NEW tab guessed
                 // that the file is its own.
@@ -1199,6 +1207,16 @@ public class ClaudeSessionController {
             }
             return updated;
         });
+    }
+
+    /** {@code true} if another live tab has established (owns) {@code claims}. */
+    private boolean heldAsOwnerByAnotherLiveTab(SessionClaims claims) {
+        for (ClaudeSessionController owner : claims.owners) {
+            if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** {@code true} if another live tab already holds {@code claims}. */
