@@ -746,19 +746,7 @@ public class ClaudeSessionController {
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
-            synchronized (terminalInputLine) {
-                terminalInputLine.setLength(0);
-                terminalInputCursor = 0;
-                terminalInputEscape = 0;
-                terminalEscapeParams.setLength(0);
-                terminalInputPaste = false;
-                terminalPasteAfterCR = false;
-                terminalLineEntered = false;
-                // A draft recalled into the finished run's input says nothing
-                // about what the next process will submit.
-                terminalHistoryRecall = false;
-                terminalRecalledSubmission = false;
-            }
+            resetTerminalInputRecording();
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
             releaseAllClaims();
@@ -964,18 +952,19 @@ public class ClaudeSessionController {
                     && (promptText == null || promptText.isBlank())) {
                 // A prompt recalled from the TUI history: its text is unknown, so
                 // no file can match it as evidence. The conversation another live
-                // tab holds that this process wrote into after the submission is
-                // still the one on screen (an in-process resume into a sibling's
-                // conversation), so it must be adopted despite the exclusion.
+                // tab holds that this process switched into must then show a user
+                // record written at or after the submission — a merely newer file
+                // time is that tab's own turn, not evidence of a switch.
                 Set<String> shared = new HashSet<>(claimed);
                 shared.addAll(otherLiveClaims);
                 if (activeId != null) shared.add(activeId);
                 newest = newestSharedSessionWrittenSince(dir, configDir, since,
-                        shared, exclude);
+                        promptAt, shared, exclude);
                 if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
-                    // Coarse timestamps can round the write below the submission.
+                    // Coarse file times can round the write below the submission;
+                    // the record's own timestamp still has to match.
                     newest = newestSharedSessionWrittenSince(dir, configDir,
-                            since - SESSION_MTIME_GRANULARITY_MS, shared, exclude);
+                            since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
                 }
             }
             if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
@@ -1032,23 +1021,30 @@ public class ClaudeSessionController {
 
     /**
      * Returns the newest session ID in {@code shared} whose file was written at
-     * or after {@code cutoff}, or {@code null}.
+     * or after {@code mtimeCutoff} and holds a user message at or after
+     * {@code promptCutoff}, or {@code null}.
      *
      * <p>Used when the submitted prompt's text is unknown (a history recall):
      * only a conversation another live tab holds can be the one this process
-     * switched into, so unrelated newer files must not be adopted.
+     * switched into, so unrelated newer files must not be adopted. The user
+     * record is required because the other tab may simply be finishing its own
+     * turn, which appends assistant output but no user message.
      */
     private static String newestSharedSessionWrittenSince(java.io.File dir,
                                                           java.nio.file.Path configDir,
-                                                          long cutoff,
+                                                          long mtimeCutoff,
+                                                          long promptCutoff,
                                                           Set<String> shared,
                                                           Set<String> exclude) {
         if (shared.isEmpty()) return null;
         Set<String> sharedExclude = new HashSet<>(exclude);
         sharedExclude.removeAll(shared);
         for (String id : ClaudeSessionStore.listSessionIdsWrittenSince(
-                dir.toPath(), configDir, cutoff, sharedExclude, PROMPT_EVIDENCE_CANDIDATES)) {
-            if (shared.contains(id)) return id;
+                dir.toPath(), configDir, mtimeCutoff, sharedExclude, PROMPT_EVIDENCE_CANDIDATES)) {
+            if (shared.contains(id) && ClaudeSessionStore.containsUserMessageSince(
+                    dir.toPath(), configDir, id, promptCutoff)) {
+                return id;
+            }
         }
         return null;
     }
@@ -1164,6 +1160,26 @@ public class ClaudeSessionController {
             identityScanPending.set(false);
         }
         return true;
+    }
+
+    /**
+     * Forgets everything recorded about the terminal's input line: the text
+     * typed so far, the cursor, a partial escape sequence and the history-recall
+     * flags. Called when the plugin itself drives the TUI (a picker selection)
+     * or when a run ends, so stale text never becomes prompt evidence.
+     */
+    private void resetTerminalInputRecording() {
+        synchronized (terminalInputLine) {
+            terminalInputLine.setLength(0);
+            terminalInputCursor = 0;
+            terminalInputEscape = 0;
+            terminalEscapeParams.setLength(0);
+            terminalInputPaste = false;
+            terminalPasteAfterCR = false;
+            terminalLineEntered = false;
+            terminalHistoryRecall = false;
+            terminalRecalledSubmission = false;
+        }
     }
 
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
@@ -1487,6 +1503,9 @@ public class ClaudeSessionController {
      * @param answer the answer string from the choice-menu callback
      */
     public void writePtyAnswer(String answer) {
+        // Choosing an option is the GUI consuming the picker: text typed into
+        // its search box belongs to the picker, not to the next prompt.
+        resetTerminalInputRecording();
         try {
             if (answer == null) {
                 LOG.fine("[PTY write] \\x1b (Cancel/ESC)");
@@ -2835,6 +2854,12 @@ public class ClaudeSessionController {
      * captured by {@link #sendPrompt(String)}.
      */
     private void writePty(byte[] bytes) throws IOException {
+        if (connector == null) {
+            // No PTY yet (the launch is still being prepared): drop the write,
+            // as sendPrompt() does.
+            LOG.fine("[PTY write] dropped, no connector");
+            return;
+        }
         boolean previous = pluginPtyWrite.get();
         pluginPtyWrite.set(true);
         try {

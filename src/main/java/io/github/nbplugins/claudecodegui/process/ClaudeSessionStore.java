@@ -271,11 +271,40 @@ public final class ClaudeSessionStore {
     public static boolean containsUserPromptSince(Path workingDir, Path claudeConfigDir,
                                                   String sessionId, long sinceMillis,
                                                   String prompt) {
-        if (sessionId == null || prompt == null || prompt.isBlank()) return false;
-        Path file = sessionsDir(workingDir, claudeConfigDir).resolve(sessionId + ".jsonl");
-        if (!Files.isRegularFile(file)) return false;
+        if (prompt == null || prompt.isBlank()) return false;
         String wanted = prompt.trim();
         if (wanted.isEmpty()) return false;
+        return containsUserRecordSince(workingDir, claudeConfigDir, sessionId, sinceMillis,
+                line -> isUserMessageWith(line, sinceMillis, wanted));
+    }
+
+    /**
+     * Returns whether the session file contains a user message written at or
+     * after {@code sinceMillis}, whatever its text.
+     *
+     * <p>Used when the submitted prompt has no known text (it was recalled from
+     * the TUI history): a user record written after that submission is evidence
+     * that a prompt went into the file, while another tab's turn only appends
+     * assistant records, so a newer file time alone is not.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param sessionId       session ID (file name without {@code .jsonl})
+     * @param sinceMillis     earliest acceptable message timestamp (epoch millis)
+     * @return {@code true} if such a message exists; {@code false} otherwise
+     */
+    public static boolean containsUserMessageSince(Path workingDir, Path claudeConfigDir,
+                                                   String sessionId, long sinceMillis) {
+        return containsUserRecordSince(workingDir, claudeConfigDir, sessionId, sinceMillis,
+                line -> isUserMessageSince(line, sinceMillis));
+    }
+
+    private static boolean containsUserRecordSince(Path workingDir, Path claudeConfigDir,
+                                                   String sessionId, long sinceMillis,
+                                                   java.util.function.Predicate<String> match) {
+        if (sessionId == null) return false;
+        Path file = sessionsDir(workingDir, claudeConfigDir).resolve(sessionId + ".jsonl");
+        if (!Files.isRegularFile(file)) return false;
         try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
             // Read backwards in blocks: the newest records are the most likely
             // match, and a long turn can push the prompt arbitrarily far from
@@ -321,7 +350,7 @@ public final class ClaudeSessionStore {
                 String text = joined.toString(StandardCharsets.UTF_8);
                 String[] lines = text.split("\n", -1);
                 for (int i = lines.length - 1; i >= 0; i--) {
-                    if (isUserMessageWith(lines[i], sinceMillis, wanted)) return true;
+                    if (match.test(lines[i])) return true;
                     if (isOlderThan(lines[i], sinceMillis)) return false;
                 }
             }
@@ -352,6 +381,20 @@ public final class ClaudeSessionStore {
             JsonNode tsNode = node.get("timestamp");
             if (tsNode == null || !tsNode.isTextual()) return false;
             return Instant.parse(tsNode.asText()).toEpochMilli() < cutoffMillis;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Returns whether the JSONL {@code line} is a user message dated at or after {@code sinceMillis}. */
+    private static boolean isUserMessageSince(String line, long sinceMillis) {
+        if (line.isBlank()) return false;
+        try {
+            JsonNode node = MAPPER.readTree(line);
+            if (!"user".equals(node.path("type").asText())) return false;
+            JsonNode tsNode = node.get("timestamp");
+            if (tsNode == null || !tsNode.isTextual()) return false;
+            return Instant.parse(tsNode.asText()).toEpochMilli() >= sinceMillis;
         } catch (Exception e) {
             return false;
         }

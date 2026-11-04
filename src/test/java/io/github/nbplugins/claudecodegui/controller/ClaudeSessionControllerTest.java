@@ -2641,6 +2641,72 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A tab recalls a prompt in its own terminal while a live sibling finishes
+     * its own turn. The sibling's file is newer, but nothing indicates that the
+     * conversation on screen changed: a newer mtime alone must not steal the
+     * sibling's session (its turn appends assistant output, not a user message).
+     */
+    @Test
+    void aHistoryRecallDoesNotAdoptASiblingConcurrentTurn() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            // Up recalls a prompt from this tab's own history; Enter submits it.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L);
+
+            // The sibling appends its own assistant turn, which is newer.
+            java.nio.file.Files.writeString(dir.resolve("shared.jsonl"),
+                    "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\","
+                            + "\"content\":\"sibling turn\"},\"timestamp\":\""
+                            + java.time.Instant.ofEpochMilli(START_MS + 11_500L) + "\"}\n",
+                    java.nio.file.StandardOpenOption.APPEND);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "a newer file written by another tab is not evidence of a switch");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A /resume picker search text typed in the terminal belongs to the picker.
+     * When the GUI selects the destination, the recorded line must not carry
+     * that text into the next prompt.
+     */
+    @Test
+    void pickerSearchTextDoesNotBecomePartOfTheNextPrompt() {
+        controller.simulateTerminalInput(
+                "work".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.writePtyAnswer("1");
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L));
+    }
+
+    /**
      * A NEW tab may guess (and provisionally claim) a conversation, but an
      * explicit {@code --resume} of that same file knows its identity at launch.
      * The explicit resume must own the file, so the guessing tab stops treating
