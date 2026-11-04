@@ -951,17 +951,17 @@ public class ClaudeSessionController {
                             promptAt, promptText);
                 }
             }
-            if (newest == null) {
-                newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
-                        dir.toPath(), configDir, since, exclude);
-            }
-            if (newest == null && promptAt > 0 && promptAt >= externalAt
+            if (promptAt > 0 && promptAt >= externalAt
                     && (promptText == null || promptText.isBlank())) {
-                // A prompt recalled from the TUI history: its text is unknown, so
-                // no file can match it as evidence. The conversation another live
-                // tab holds that this process switched into must then show a user
-                // record written at or after the submission — a merely newer file
-                // time is that tab's own turn, not evidence of a switch.
+                // A prompt recalled from the TUI history or completed by Tab:
+                // its text is unknown, so no file can match it as evidence. The
+                // conversation another live tab holds that this process switched
+                // into must then show a user record written at or after the
+                // submission — a merely newer file time is that tab's own turn,
+                // not evidence of a switch. This must run before the file-time
+                // fallback: a third tab that wrote its own conversation after
+                // the submission and then exited is unclaimed, and its newer
+                // mtime would otherwise hide the resumed conversation.
                 Set<String> shared = new HashSet<>(claimed);
                 shared.addAll(otherLiveClaims);
                 if (activeId != null) shared.add(activeId);
@@ -973,6 +973,10 @@ public class ClaudeSessionController {
                     newest = newestSharedSessionWrittenSince(dir, configDir,
                             since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
                 }
+            }
+            if (newest == null) {
+                newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                        dir.toPath(), configDir, since, exclude);
             }
             if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                 // Coarse filesystem timestamps can round a file written right
@@ -2953,22 +2957,27 @@ public class ClaudeSessionController {
                 terminalInputEscape = 1;
                 terminalEscapeParams.setLength(0);
                 terminalPasteAfterCR = false;
+                // A new Esc belongs to this write, so it is not the carried
+                // standalone one and may start a sequence even right after it.
+                carriedEscape = false;
             } else if (terminalInputEscape == 1) {
                 // ESC [ starts a CSI sequence, ESC O an SS3 one. Any other
                 // character ends a two-character escape (ESC x, e.g. Alt+x).
                 // When the Esc was carried over from the previous write it was
                 // standalone instead — the TUI uses it to dismiss autocomplete
-                // — and the character that followed belongs to the input, so it
-                // is processed again as ordinary input.
-                if (c == '[') {
+                // — and this write starts the actual input: a real CSI/SS3
+                // sequence is written in one piece, so '[' or 'O' typed later
+                // are ordinary characters too. The character is then processed
+                // again as input.
+                if (carriedEscape) {
+                    terminalInputEscape = 0;
+                    i--;
+                } else if (c == '[') {
                     terminalInputEscape = 2;
                 } else if (c == 'O') {
                     terminalInputEscape = 3;
                 } else {
                     terminalInputEscape = 0;
-                    if (carriedEscape) {
-                        i--;
-                    }
                 }
                 carriedEscape = false;
             } else if (terminalInputEscape == 2) {

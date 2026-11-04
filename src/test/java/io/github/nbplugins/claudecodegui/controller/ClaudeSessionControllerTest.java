@@ -2304,6 +2304,57 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * An unknown-text prompt switched into another live tab's conversation.
+     * A third tab then writes its own conversation and exits: its file is
+     * unclaimed and newer than the resumed one, but the resumed file holds the
+     * submitted user record. The evidence must win over the bare file time, or
+     * Save &amp; Switch renames the unrelated conversation.
+     */
+    @Test
+    void anUnknownPromptAdoptsTheResumedConversationOverANewerExitedOne() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        writeSession(dir, "third", "third");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("third.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            // The resumed conversation receives the submitted prompt.
+            appendUserPrompt(dir, "shared", "recalled prompt", START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+            // An unrelated, already-exited session is written even later.
+            setMtime(dir.resolve("third.jsonl"), START_MS + 13_000L);
+
+            // Up recalls a prompt and Enter submits it: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "the shared user record must beat a newer unclaimed file");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
     /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
     @Test
     void clearingARecalledPromptMakesTheNextSubmissionKnown() {
@@ -2899,6 +2950,28 @@ class ClaudeSessionControllerTest {
         controller.simulateTerminalInput(esc, START_MS + 4);
         assertEquals("world", controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 5),
                 "Esc before Enter must not swallow the submission");
+    }
+
+    /**
+     * A prompt typed after a standalone Esc may itself start with {@code O} or
+     * {@code [}. Those characters belong to the input: a real SS3/CSI sequence
+     * is written in one piece, so treating the later write as its continuation
+     * drops characters and leaves prompt evidence that matches no session.
+     */
+    @Test
+    void aStandaloneEscapeFollowedByASequencePrefixIsTypedText() {
+        byte[] esc = {0x1b};
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+
+        controller.simulateTerminalInput(esc, START_MS);
+        assertEquals("Open file", controller.simulateTerminalInput(
+                        "Open file\r".getBytes(utf8), START_MS + 3_000L),
+                "an SS3-looking continuation after a standalone Esc is plain text");
+
+        controller.simulateTerminalInput(esc, START_MS + 4_000L);
+        assertEquals("[hello]", controller.simulateTerminalInput(
+                        "[hello]\r".getBytes(utf8), START_MS + 7_000L),
+                "a CSI-looking continuation after a standalone Esc is plain text");
     }
 
     /**
