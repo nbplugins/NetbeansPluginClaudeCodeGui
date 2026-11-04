@@ -2370,6 +2370,32 @@ class ClaudeSessionControllerTest {
                 controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 11));
     }
 
+    /**
+     * Supplementary Unicode characters (emoji and the like) are two UTF-16 code
+     * units. Backspace, Delete and the horizontal cursor keys must treat them
+     * as one character: splitting a surrogate pair leaves malformed text that
+     * can never match the message actually submitted, so the conversation on
+     * screen would not be recognised when the session is renamed.
+     */
+    @Test
+    void backspaceAndDeleteRemoveWholeSupplementaryCharacters() {
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+
+        controller.simulateTerminalInput("😀".getBytes(utf8), START_MS);
+        assertEquals("hello",
+                controller.simulateTerminalInput(
+                        "\u007fhello\r".getBytes(utf8), START_MS + 1),
+                "Backspace after an emoji must remove the whole character");
+
+        controller.simulateTerminalInput("a😀b".getBytes(utf8), START_MS + 2);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 4);      // Left
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'D'}, START_MS + 5);      // Left
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', '3', '~'}, START_MS + 6); // Delete
+        assertEquals("ab",
+                controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 7),
+                "Left and Delete must step over and remove whole characters");
+    }
+
     // -------------------------------------------------------------------------
     // prepareLaunchIdentity — captured before the process starts
     // -------------------------------------------------------------------------

@@ -2794,9 +2794,7 @@ public class ClaudeSessionController {
                 terminalLineEntered = true;
                 if (!line.isEmpty()) submitted = line;
             } else if (c == 0x7f || c == 0x08) {
-                if (terminalInputCursor > 0) {
-                    terminalInputLine.deleteCharAt(--terminalInputCursor);
-                }
+                deleteTerminalCharBeforeCursor();
             } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
@@ -2820,25 +2818,48 @@ public class ClaudeSessionController {
     /**
      * Applies a horizontal cursor key (Left/Right/Home/End) to the line being
      * recorded, so that text typed after it lands where the user sees it.
+     * Left/Right step over whole Unicode characters: a supplementary character
+     * occupies two UTF-16 code units, and stopping between them would let a
+     * later edit split the pair.
      *
      * @param key CSI/SS3 final byte: {@code D}, {@code C}, {@code H} or {@code F}
      */
     private void applyCursorKey(char key) {
         switch (key) {
-            case 'D' -> terminalInputCursor = Math.max(0, terminalInputCursor - 1);
+            case 'D' -> terminalInputCursor =
+                    terminalInputLine.offsetByCodePoints(
+                            Math.min(terminalInputCursor, terminalInputLine.length()), -1);
             case 'C' -> terminalInputCursor =
-                    Math.min(terminalInputLine.length(), terminalInputCursor + 1);
+                    terminalInputLine.offsetByCodePoints(
+                            Math.min(terminalInputCursor, terminalInputLine.length()), 1);
             case 'H' -> terminalInputCursor = 0;
             case 'F' -> terminalInputCursor = terminalInputLine.length();
             default -> { /* Up/Down and other keys do not edit the line */ }
         }
     }
 
-    /** Deletes the character under the cursor (the Delete key). */
+    /**
+     * Removes the whole character before the cursor (the Backspace key),
+     * including both halves of a supplementary Unicode character.
+     */
+    private void deleteTerminalCharBeforeCursor() {
+        int end = Math.min(terminalInputCursor, terminalInputLine.length());
+        if (end <= 0) return;
+        int start = terminalInputLine.offsetByCodePoints(end, -1);
+        terminalInputLine.delete(start, end);
+        terminalInputCursor = start;
+    }
+
+    /**
+     * Deletes the whole character under the cursor (the Delete key), including
+     * both halves of a supplementary Unicode character.
+     */
     private void deleteTerminalCharAtCursor() {
-        if (terminalInputCursor < terminalInputLine.length()) {
-            terminalInputLine.deleteCharAt(terminalInputCursor);
-        }
+        int at = Math.min(terminalInputCursor, terminalInputLine.length());
+        if (at >= terminalInputLine.length()) return;
+        int end = terminalInputLine.offsetByCodePoints(at, 1);
+        terminalInputLine.delete(at, end);
+        terminalInputCursor = at;
     }
 
     /**

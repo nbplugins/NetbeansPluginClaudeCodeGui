@@ -107,6 +107,30 @@ class ClaudeSessionTabPendingLaunchTest {
         }
     }
 
+    /**
+     * Opening the same project again while its launch is still being prepared
+     * must focus that tab instead of creating a second one: the model still
+     * reports the previous directory (or none) until the process starts.
+     */
+    @Test
+    void aTabWithAPendingLaunchServesThatDirectory() throws Exception {
+        Path tmp = Files.createTempDirectory("pending-launch-lookup-test");
+        try {
+            File previous = tmp.resolve("project-a").toFile();
+            File pending = tmp.resolve("project-b").toFile();
+            ClaudeSessionTab tab = new ClaudeSessionTab();
+            modelOf(tab).setWorkingDirectory(previous);
+            setField(tab, "pendingLaunchDir", pending);
+
+            assertTrue(tab.servesDirectory(pending),
+                    "a tab whose launch is pending already serves that directory");
+            assertFalse(tab.servesDirectory(previous),
+                    "the previous project must not be treated as served any more");
+        } finally {
+            tmp.toFile().delete();
+        }
+    }
+
     private static String pathToRestore(ClaudeSessionTab tab) throws Exception {
         Field f = ClaudeSessionTab.class.getDeclaredField("pathToRestore");
         f.setAccessible(true);

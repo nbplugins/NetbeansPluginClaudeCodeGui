@@ -437,8 +437,7 @@ public class ClaudeSessionTab extends TopComponent
     public static void openForDirectory(File dir, String profileName) {
         SwingUtilities.invokeLater(() -> {
             for (TopComponent tc : WindowManager.getDefault().getRegistry().getOpened()) {
-                if (tc instanceof ClaudeSessionTab tab
-                        && dir.equals(tab.getWorkingDirectory())) {
+                if (tc instanceof ClaudeSessionTab tab && tab.servesDirectory(dir)) {
                     tab.requestActive();
                     return;
                 }
@@ -1336,6 +1335,20 @@ public class ClaudeSessionTab extends TopComponent
         }
         String slug = session.slug();
         return slug != null && !slug.isBlank() ? slug : "";
+    }
+
+    /**
+     * Package-private for tests: whether this tab already serves {@code dir},
+     * including a launch that is still being prepared. During that window the
+     * model still names the previous project (or none), so looking only at
+     * {@link #getWorkingDirectory()} would let a second "Open with Claude Code"
+     * create another tab and start another process for the same project.
+     *
+     * @param dir working directory to look for
+     * @return {@code true} if this tab is (or is about to be) a session for it
+     */
+    boolean servesDirectory(File dir) {
+        return dir != null && dir.equals(currentOrPendingDirectory());
     }
 
     /**
