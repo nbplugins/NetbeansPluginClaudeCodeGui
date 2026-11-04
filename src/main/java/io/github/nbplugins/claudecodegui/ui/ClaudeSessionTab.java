@@ -846,11 +846,10 @@ public class ClaudeSessionTab extends TopComponent
                                SessionMode mode, String resumeSessionId) {
         selectorPanel.lock();
         this.activeResumeSessionId = resumeSessionId;
-        Path configDir = null;
-        if (!ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
-            configDir = resolveLaunchConfigDir(ClaudeProfileStore.findByName(profileName),
-                    ClaudeCodePreferences.getProfilesDir());
-        }
+        // Resolved for every profile, Default included: its extra environment
+        // may set CLAUDE_CONFIG_DIR too, and the process honors that.
+        Path configDir = resolveLaunchConfigDir(ClaudeProfileStore.findByName(profileName),
+                ClaudeCodePreferences.getProfilesDir());
         final Path capturedConfigDir = configDir;
         // Until the process starts, the model still describes the previous
         // project; restart actions must follow this launch instead.
@@ -1374,8 +1373,8 @@ public class ClaudeSessionTab extends TopComponent
     /**
      * Effective Claude config dir matching {@link #currentOrPendingDirectory()}.
      *
-     * @return the running session's config dir, else the pending launch's,
-     *         else {@code null} for the default store
+     * @return the running session's config dir, else the pending launch's;
+     *         {@code null} only when this tab has not prepared a launch yet
      */
     private Path currentOrPendingConfigDir() {
         Path active = controller.getActiveConfigDir();
@@ -1393,10 +1392,11 @@ public class ClaudeSessionTab extends TopComponent
      *
      * @param profile     profile of the pending launch; may be {@code null}
      * @param profilesDir base directory for profile config dirs
-     * @return the effective config dir, or {@code null} for the default store
+     * @return the effective config dir; the default store when nothing else is configured
      */
     static Path resolveLaunchConfigDir(ClaudeProfile profile, Path profilesDir) {
-        if (profile == null || profile.isDefault()) return null;
+        // Not skipped for Default: its extra environment variables may set
+        // CLAUDE_CONFIG_DIR, and the launched process resolves it from there.
         return ClaudeProcess.resolveConfigDir(profile, profilesDir);
     }
 

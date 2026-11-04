@@ -2325,6 +2325,36 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Live Tab makes the TUI complete the input from its own suggestions; the
+     * completed text never reaches this parser. The recorded line is therefore
+     * only a prefix of the submitted prompt, so the text must be treated as
+     * unknown instead of being matched against the JSONL.
+     */
+    @Test
+    void aTerminalCompletedPromptHasUnknownText() {
+        controller.simulateTerminalInput(
+                "inspect @REA".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{'\t'}, START_MS + 1L);
+
+        assertNull(controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 2L),
+                "the prefix typed before Tab is not the whole submitted prompt");
+    }
+
+    /** Ctrl+U after a completion discards it, so the next prompt is known again. */
+    @Test
+    void clearingACompletedPromptMakesTheNextSubmissionKnown() {
+        controller.simulateTerminalInput(
+                "inspect @REA".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{'\t'}, START_MS + 1L);
+        controller.simulateTerminalInput(new byte[]{0x15}, START_MS + 2L);
+
+        assertEquals("typed after clearing", controller.simulateTerminalInput(
+                "typed after clearing\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 3L));
+    }
+
+    /**
      * While a choice menu is open, Up/Down move the menu cursor and Enter
      * selects the item; the typed line stays empty just as it does for a prompt
      * recalled from the TUI history, but no prompt is submitted. Recording it

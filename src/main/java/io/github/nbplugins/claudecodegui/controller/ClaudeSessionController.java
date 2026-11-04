@@ -308,7 +308,14 @@ public class ClaudeSessionController {
      */
     private boolean terminalHistoryRecall;
 
-    /** Set when Enter submitted a history-recalled line the parser did not record. */
+    /**
+     * True after a live Tab: the TUI completes the input from its own
+     * suggestions with text this parser never sees, so the recorded line is
+     * only a prefix of what will be submitted.
+     */
+    private boolean terminalCompletionEdited;
+
+    /** Set when Enter submitted a history-recall or completion-edited line the parser did not record. */
     private boolean terminalRecalledSubmission;
 
     /** Screen-poll ticks since the last background session-identity scan. */
@@ -1178,6 +1185,7 @@ public class ClaudeSessionController {
             terminalPasteAfterCR = false;
             terminalLineEntered = false;
             terminalHistoryRecall = false;
+            terminalCompletionEdited = false;
             terminalRecalledSubmission = false;
         }
     }
@@ -2992,16 +3000,18 @@ public class ClaudeSessionController {
                 }
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
-                boolean recalled = terminalHistoryRecall;
+                boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
                 terminalHistoryRecall = false;
+                terminalCompletionEdited = false;
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
                 terminalLineEntered = true;
-                if (recalled) {
-                    // The line was filled from the TUI history (Up/Down) and may
-                    // have been edited since: the characters recorded here are
-                    // only a part of the prompt, so its text is unknown and an
-                    // in-process resume must be followed by file times.
+                if (unknownText) {
+                    // The line was filled from the TUI history (Up/Down) or
+                    // completed by Tab and may have been edited since: the
+                    // characters recorded here are only a part of the prompt,
+                    // so its text is unknown and an in-process resume must be
+                    // followed by file times.
                     terminalRecalledSubmission = true;
                 } else if (!line.isEmpty()) {
                     submitted = line;
@@ -3011,9 +3021,15 @@ public class ClaudeSessionController {
             } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
-                // Clearing the input also discards a recalled prompt, so what
-                // is typed next is known in full again.
+                // Clearing the input also discards a recalled or completed
+                // prompt, so what is typed next is known in full again.
                 terminalHistoryRecall = false;
+                terminalCompletionEdited = false;
+            } else if (c == '\t') {
+                // A live Tab makes the TUI complete the input from its file or
+                // command suggestions; the inserted text never reaches this
+                // parser, so the line recorded so far is only a prefix.
+                terminalCompletionEdited = true;
             } else if (c >= 0x20) {
                 insertTerminalChar(c);
             }

@@ -471,6 +471,55 @@ class ClaudeSessionStoreTest {
                 OLD_TS.toEpochMilli(), "   "));
     }
 
+    /**
+     * Claude stores tool results as {@code type: "user"} records while it
+     * works. A sibling tab finishing a tool must not look like a human prompt
+     * submitted in this tab.
+     */
+    @Test
+    void containsUserMessageSince_ignoresToolResults() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        writeJsonl(file,
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":["
+                        + "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\","
+                        + "\"content\":\"file contents\"}]},\"timestamp\":\""
+                        + OLD_TS.plusSeconds(60) + "\"}");
+
+        assertFalse(ClaudeSessionStore.containsUserMessageSince(workDir, tmpDir, "s1",
+                        OLD_TS.toEpochMilli()),
+                "a tool result is written by Claude, not by the human");
+    }
+
+    /** A system-injected (meta) user record is not a human prompt either. */
+    @Test
+    void containsUserMessageSince_ignoresMetaRecords() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        writeJsonl(file, "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\","
+                + "\"content\":\"injected context\"},\"timestamp\":\""
+                + OLD_TS.plusSeconds(60) + "\"}");
+
+        assertFalse(ClaudeSessionStore.containsUserMessageSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli()));
+    }
+
+    @Test
+    void containsUserMessageSince_acceptsHumanText() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        writeJsonl(file,
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":["
+                        + "{\"type\":\"text\",\"text\":\"a typed prompt\"}]},\"timestamp\":\""
+                        + OLD_TS.plusSeconds(60) + "\"}");
+
+        assertTrue(ClaudeSessionStore.containsUserMessageSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli()));
+    }
+
     @Test
     void findSession_returnsRequestedSessionOnly() throws IOException {
         Path workDir = tmpDir.resolve("myproject");

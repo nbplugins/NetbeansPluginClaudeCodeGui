@@ -394,10 +394,30 @@ public final class ClaudeSessionStore {
             if (!"user".equals(node.path("type").asText())) return false;
             JsonNode tsNode = node.get("timestamp");
             if (tsNode == null || !tsNode.isTextual()) return false;
-            return Instant.parse(tsNode.asText()).toEpochMilli() >= sinceMillis;
+            if (Instant.parse(tsNode.asText()).toEpochMilli() < sinceMillis) return false;
+            return isHumanUserMessage(node);
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * Returns whether a {@code type: "user"} record was typed by the human.
+     *
+     * <p>Claude also stores tool results as {@code type: "user"} records while
+     * it works, and writes system-injected messages with {@code isMeta}; neither
+     * is a prompt, so neither is evidence that this process submitted one.
+     */
+    private static boolean isHumanUserMessage(JsonNode node) {
+        if (node.path("isMeta").asBoolean(false)) return false;
+        JsonNode content = node.path("message").get("content");
+        if (content == null) return false;
+        if (content.isTextual()) return !content.asText().isBlank();
+        if (!content.isArray()) return false;
+        for (JsonNode block : content) {
+            if ("text".equals(block.path("type").asText())) return true;
+        }
+        return false;
     }
 
     /** Returns whether the JSONL {@code line} is a user message carrying {@code prompt}. */

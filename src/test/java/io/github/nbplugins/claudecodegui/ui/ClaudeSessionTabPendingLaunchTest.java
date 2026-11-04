@@ -177,10 +177,14 @@ class ClaudeSessionTabPendingLaunchTest {
                     ClaudeSessionTab.resolveLaunchConfigDir(profile, profiles),
                     "the environment override must win over the storage dir");
 
-            assertNull(ClaudeSessionTab.resolveLaunchConfigDir(
-                            io.github.nbplugins.claudecodegui.settings.ClaudeProfile.createDefault(),
-                            profiles),
-                    "the default profile keeps the default store");
+            io.github.nbplugins.claudecodegui.settings.ClaudeProfile fallback =
+                    io.github.nbplugins.claudecodegui.settings.ClaudeProfile.createDefault();
+            Path defaultOverride = profiles.resolve("default-override-store");
+            fallback.setExtraEnvVars(java.util.Collections.singletonList(
+                    new String[]{"CLAUDE_CONFIG_DIR", defaultOverride.toString()}));
+            assertEquals(defaultOverride,
+                    ClaudeSessionTab.resolveLaunchConfigDir(fallback, profiles),
+                    "the default profile's environment override must be honored too");
         } finally {
             profiles.toFile().delete();
         }
