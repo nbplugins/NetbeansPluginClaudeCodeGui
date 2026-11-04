@@ -2163,6 +2163,56 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * While a choice menu is open, Up/Down move the menu cursor and Enter
+     * selects the item; the typed line stays empty just as it does for a prompt
+     * recalled from the TUI history, but no prompt is submitted. Recording it
+     * as a recall would let the mtime-only fallback adopt a sibling's newest
+     * file even though the conversation on screen never changed.
+     */
+    @Test
+    void arrowKeysInAChoiceMenuDoNotRecallThePromptHistory() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Pick one", List.of(
+                    new ChoiceMenuModel.Option("Yes", "1"),
+                    new ChoiceMenuModel.Option("No", "2")), 0));
+            // The sibling writes its own turn while the menu is open.
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            // Up moves the menu cursor; Enter selects the item.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L);
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "menu navigation is not a prompt history recall");
+        } finally {
+            model.clearChoiceMenu();
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * After joining another tab's conversation and submitting a prompt there,
      * the identity scan may only run after the user started typing the next
      * draft. A draft edit must not invalidate the submitted prompt's evidence,

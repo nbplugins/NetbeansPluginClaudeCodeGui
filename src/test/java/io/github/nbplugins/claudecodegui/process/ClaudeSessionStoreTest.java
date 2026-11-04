@@ -411,6 +411,51 @@ class ClaudeSessionStoreTest {
                 OLD_TS.plusSeconds(30).toEpochMilli(), "the prompt from this tab"));
     }
 
+    /**
+     * A record longer than the read block spans several blocks; the backward
+     * scan must still reassemble the record boundaries correctly and find the
+     * prompt that follows it.
+     */
+    @Test
+    void containsUserPromptSince_findsPromptAfterRecordsSpanningSeveralBlocks() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(userLine("prompt after huge records", OLD_TS.plusSeconds(60))).append('\n');
+        // Each record is about 1 MiB, i.e. two read blocks of 512 KiB.
+        String filler = "y".repeat(1024 * 1024);
+        for (int i = 0; i < 3; i++) {
+            sb.append("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"")
+                    .append(filler).append("\"},\"timestamp\":\"")
+                    .append(OLD_TS.plusSeconds(61 + i)).append("\"}\n");
+        }
+        Files.writeString(file, sb.toString(), StandardCharsets.UTF_8);
+
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.plusSeconds(30).toEpochMilli(), "prompt after huge records"));
+    }
+
+    /**
+     * A file that is one record with no newline at all must be scanned to its
+     * very beginning without losing the first bytes kept across blocks.
+     */
+    @Test
+    void containsUserPromptSince_scansAFileMadeOfOneHugeRecord() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"")
+                .append("z".repeat(3 * 1024 * 1024)).append("\"}");
+        Files.writeString(file, sb.toString(), StandardCharsets.UTF_8);
+
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "never present"));
+    }
+
     @Test
     void containsUserPromptSince_noEvidence_returnsFalse() throws IOException {
         Path workDir = tmpDir.resolve("myproject");

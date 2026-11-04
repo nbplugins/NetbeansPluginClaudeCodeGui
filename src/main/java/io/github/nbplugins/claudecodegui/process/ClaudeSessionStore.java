@@ -283,30 +283,42 @@ public final class ClaudeSessionStore {
             // than the cutoff is reached, since records are appended in time
             // order.
             long pos = raf.length();
-            byte[] carry = new byte[0]; // tail of the line cut at the block start
+            // Bytes read so far that belong to a record cut by the block
+            // boundaries, kept as separate chunks in file order: a record
+            // spanning many blocks is never recopied while it is being found.
+            java.util.ArrayDeque<byte[]> pending = new java.util.ArrayDeque<>();
+            byte[] buffer = new byte[PROMPT_EVIDENCE_BLOCK_BYTES];
             while (pos > 0) {
                 int size = (int) Math.min(PROMPT_EVIDENCE_BLOCK_BYTES, pos);
                 long start = pos - size;
-                byte[] block = new byte[size + carry.length];
                 raf.seek(start);
-                raf.readFully(block, 0, size);
-                System.arraycopy(carry, 0, block, size, carry.length);
+                raf.readFully(buffer, 0, size);
                 pos = start;
 
-                int firstLine = 0;
-                if (pos > 0) {
+                int newline = indexOf(buffer, size, (byte) '\n');
+                if (pos > 0 && newline < 0) {
+                    // The record fills this whole block and continues earlier:
+                    // keep the bytes and look for its start in the next block.
+                    pending.addFirst(java.util.Arrays.copyOf(buffer, size));
+                    continue;
+                }
+
+                // Assemble the complete lines once: the part of this block after
+                // its first newline (or all of it when the file starts here),
+                // followed by the chunks already collected.
+                int firstLine = pos > 0 ? newline + 1 : 0;
+                java.io.ByteArrayOutputStream joined = new java.io.ByteArrayOutputStream(
+                        size + pending.stream().mapToInt(chunk -> chunk.length).sum());
+                joined.write(buffer, firstLine, size - firstLine);
+                for (byte[] chunk : pending) joined.write(chunk, 0, chunk.length);
+                pending.clear();
+                if (pos > 0 && newline > 0) {
                     // The first line is cut in the middle: its beginning is in
                     // the block read next, so keep its bytes for that block.
-                    int newline = indexOf(block, (byte) '\n');
-                    if (newline < 0) {
-                        carry = block;
-                        continue;
-                    }
-                    carry = java.util.Arrays.copyOf(block, newline);
-                    firstLine = newline + 1;
+                    pending.addFirst(java.util.Arrays.copyOf(buffer, newline));
                 }
-                String text = new String(block, firstLine, block.length - firstLine,
-                        StandardCharsets.UTF_8);
+
+                String text = joined.toString(StandardCharsets.UTF_8);
                 String[] lines = text.split("\n", -1);
                 for (int i = lines.length - 1; i >= 0; i--) {
                     if (isUserMessageWith(lines[i], sinceMillis, wanted)) return true;
@@ -320,9 +332,9 @@ public final class ClaudeSessionStore {
         }
     }
 
-    /** Returns the index of the first occurrence of {@code b} in {@code bytes}, or {@code -1}. */
-    private static int indexOf(byte[] bytes, byte b) {
-        for (int i = 0; i < bytes.length; i++) {
+    /** Returns the index of the first occurrence of {@code b} in the first {@code length} bytes, or {@code -1}. */
+    private static int indexOf(byte[] bytes, int length, byte b) {
+        for (int i = 0; i < length; i++) {
             if (bytes[i] == b) return i;
         }
         return -1;

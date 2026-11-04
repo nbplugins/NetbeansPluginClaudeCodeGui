@@ -2986,8 +2986,13 @@ public class ClaudeSessionController {
             case 'A', 'B' -> {
                 // Up/Down recall a prompt from the TUI history into its input;
                 // the text never reaches this parser. Remember that whatever is
-                // submitted next was not typed here.
-                if (terminalInputLine.isEmpty()) terminalHistoryRecall = true;
+                // submitted next was not typed here. While a choice menu is
+                // open the same keys move its cursor instead — the line stays
+                // empty too, but Enter selects a menu item rather than a
+                // recalled prompt, so it must not be recorded as a submission.
+                if (terminalInputLine.isEmpty() && model.getActiveChoiceMenu() == null) {
+                    terminalHistoryRecall = true;
+                }
             }
             default -> { /* other keys do not edit the line */ }
         }
