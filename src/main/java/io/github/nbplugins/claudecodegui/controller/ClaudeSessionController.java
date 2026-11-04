@@ -703,7 +703,12 @@ public class ClaudeSessionController {
      */
     public boolean canSendPrompt() { return connector != null; }
 
-    public void stopProcess() {
+    /**
+     * Kills the PTY process and detaches the terminal, but keeps the identity
+     * inputs so the conversation that was on screen can still be resolved
+     * after the writer is gone.
+     */
+    void stopWriter() {
         if (statusTimer != null) {
             statusTimer.stop();
             statusTimer = null;
@@ -714,9 +719,17 @@ public class ClaudeSessionController {
         }
         ClaudeProcess processToStop = claudeProcess;
         if (processToStop != null) {
-            processToStop.stop();
+            processToStop.killOnly();
         }
         connector = null;
+    }
+
+    public void stopProcess() {
+        stopWriter();
+        ClaudeProcess processToStop = claudeProcess;
+        if (processToStop != null) {
+            processToStop.stop();
+        }
         // The generation bump, the identity inputs and the ownership bookkeeping
         // are reset under one lock: a scan queued between the bump and the reset
         // would otherwise capture the new generation together with the old run's
@@ -779,25 +792,19 @@ public class ClaudeSessionController {
         // long on projects with thousands of conversations. The prompt panel's
         // "New session" action stops with a blank name; no rename will be
         // attempted, so that work is skipped before the PTY is stopped.
-        String sessionId = rename ? resolveActiveSessionId() : null;
-        // The identity inputs are cleared by stopProcess(); keep the snapshot
-        // for one last lookup once the process has exited.
-        Set<String> preStart;
-        long since;
-        synchronized (processOwnershipLock) {
-            preStart = preStartSessionIds;
-            since = Math.max(processStartedAt, promptSubmittedAt);
+        String sessionId = null;
+        if (rename) {
+            sessionId = resolveActiveSessionId();
+            // The writer may still be finishing a turn, and the user may have
+            // switched the conversation in the TUI with the new file not yet
+            // written. Stop it first, then resolve once more with the same
+            // evidence rules: whatever it wrote last is on disk now.
+            stopWriter();
+            sessionId = resolveActiveSessionId();
         }
         stopProcess();
 
         if (!rename) return;
-        if (sessionId == null && dir != null && configDir != null && since > 0) {
-            // A new session's first record can be written between the lookup
-            // above and the moment the process exits — Claude flushes its turn
-            // while shutting down. The writer is gone now, so the file is final.
-            sessionId = ClaudeSessionStore.findLatestSessionIdWrittenSince(
-                    dir.toPath(), configDir, since, preStart);
-        }
         if (dir == null || configDir == null || sessionId == null) {
             LOG.warning("Could not rename session: no active session file found in "
                     + ClaudeSessionStore.sessionDirForLog(

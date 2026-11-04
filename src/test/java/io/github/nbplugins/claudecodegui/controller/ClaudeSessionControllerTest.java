@@ -2179,7 +2179,7 @@ class ClaudeSessionControllerTest {
         ClaudeSessionController underTest =
                 new ClaudeSessionController(model, Collections::emptyList) {
                     @Override
-                    public void stopProcess() {
+                    void stopWriter() {
                         if (written.compareAndSet(false, true)) {
                             try {
                                 writeSession(dir, "late", "late");
@@ -2190,7 +2190,7 @@ class ClaudeSessionControllerTest {
                                 throw new IllegalStateException(e);
                             }
                         }
-                        super.stopProcess();
+                        super.stopWriter();
                     }
                 };
         underTest.simulateProcessStart(START_MS, true);
@@ -2203,6 +2203,55 @@ class ClaudeSessionControllerTest {
                         work, config, "late");
         assertNotNull(saved, "the session written while stopping must be renamed");
         assertEquals("Late session", saved.customTitle());
+    }
+
+    /**
+     * A tab tracks conversation A, the user switches to B in the TUI, and B's
+     * first record is only written while the process shuts down. The title must
+     * follow B — the conversation that was on screen — not the previously
+     * tracked A.
+     */
+    @Test
+    void aConversationSwitchedWhileStoppingIsRenamedInsteadOfThePreviousOne() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        java.util.concurrent.atomic.AtomicBoolean written =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        ClaudeSessionController underTest =
+                new ClaudeSessionController(model, Collections::emptyList) {
+                    @Override
+                    void stopWriter() {
+                        if (written.compareAndSet(false, true)) {
+                            try {
+                                writeSession(dir, "b", "b");
+                                appendUserPrompt(dir, "b", "switched prompt",
+                                        START_MS + 5_000L);
+                                setMtime(dir.resolve("b.jsonl"), START_MS + 5_000L);
+                            } catch (Exception e) {
+                                throw new IllegalStateException(e);
+                            }
+                        }
+                        super.stopWriter();
+                    }
+                };
+        underTest.simulateProcessStart(START_MS, true);
+        underTest.simulateLiveSession(config, "a", Set.of("a"));
+
+        underTest.stopAndRename("Switched session");
+
+        io.github.nbplugins.claudecodegui.model.SavedSession saved =
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore.findSession(
+                        work, config, "b");
+        assertNotNull(saved, "the conversation written while stopping is the one on screen");
+        assertEquals("Switched session", saved.customTitle());
+        assertEquals(0, countCustomTitles(dir.resolve("a.jsonl"), "Switched session"),
+                "the previously tracked conversation must not be renamed");
     }
 
     /**
