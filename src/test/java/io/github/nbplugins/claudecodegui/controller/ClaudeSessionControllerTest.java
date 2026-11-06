@@ -3661,6 +3661,59 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * An Enter on the still-empty terminal line does nothing on the TUI, so it
+     * must not invalidate the prompt evidence: the submitted prompt would stop
+     * matching, and the resumed conversation's live claim stays excluded from
+     * the file-time fallbacks, leaving Save &amp; Switch on the previous
+     * conversation.
+     */
+    @Test
+    void anEmptyTerminalEnterKeepsTheSubmittedPromptEvidence() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A live sibling holds the conversation resumed in the TUI.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("hello", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+            // An Enter on the empty line before the scan.
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 11_500L);
+
+            // The submission lands in the resumed conversation.
+            appendUserPrompt(dir, "b", "hello", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_700L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "an empty Enter must not hide the submitted prompt");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The cancellation of a picker must be consumed before the next escape
      * sequence: a bracketed paste starts with its own {@code ESC} in a separate
      * write, and starting that sequence must not forget that the previous Esc

@@ -1532,6 +1532,7 @@ public class ClaudeSessionController {
             terminalPasteAfterCR = false;
             terminalEscapeOnMenu = false;
             terminalLineEntered = false;
+            terminalEnterOnEmptyLine = false;
             terminalHistoryRecall = false;
             terminalCompletionEdited = false;
             terminalRecalledSubmission = false;
@@ -3307,16 +3308,20 @@ public class ClaudeSessionController {
     private String onTerminalInput(byte[] bytes, long now) {
         String submitted;
         boolean entered;
+        boolean emptyEnter;
         boolean recalled;
         synchronized (terminalInputLine) {
             terminalLineEntered = false;
+            terminalEnterOnEmptyLine = false;
             submitted = appendTerminalInput(bytes);
             entered = terminalLineEntered;
             terminalLineEntered = false;
+            emptyEnter = terminalEnterOnEmptyLine;
+            terminalEnterOnEmptyLine = false;
             recalled = terminalRecalledSubmission;
             terminalRecalledSubmission = false;
         }
-        if (entered) {
+        if (entered && !emptyEnter) {
             externalInputAt = now;
         }
         if (submitted != null) {
@@ -3460,6 +3465,12 @@ public class ClaudeSessionController {
                 terminalInputLine.setLength(0);
                 terminalInputCursor = 0;
                 terminalLineEntered = true;
+                // An Enter on the still-empty line does nothing on the TUI
+                // unless a choice menu is open: it is neither a prompt nor a
+                // history recall nor a picker selection, so it must not
+                // invalidate the evidence of the prompt already submitted.
+                terminalEnterOnEmptyLine = line.isEmpty() && !unknownText
+                        && model.getActiveChoiceMenu() == null;
                 if (unknownText) {
                     // The line was filled from the TUI history (Up/Down) or
                     // completed by Tab and may have been edited since: the
@@ -3504,6 +3515,13 @@ public class ClaudeSessionController {
 
     /** Set when {@link #appendTerminalInput(byte[])} saw Enter, cleared by the caller. */
     private boolean terminalLineEntered;
+
+    /**
+     * Set when that Enter closed a line that was still empty and no choice menu
+     * was open, i.e. it acted on nothing: cleared by the caller like
+     * {@link #terminalLineEntered}.
+     */
+    private boolean terminalEnterOnEmptyLine;
 
     /** Inserts {@code c} at the cursor and advances it. */
     private void insertTerminalChar(char c) {
