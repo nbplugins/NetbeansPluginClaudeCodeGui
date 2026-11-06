@@ -954,8 +954,15 @@ public class ClaudeSessionController {
                 // saved file (both resumed it, so one of them only borrows it):
                 // it must stay preferred, or an unrelated file carrying the
                 // same prompt text would be adopted in its place.
+                //
+                // That exception belongs to the launch ID only. An identity
+                // adopted later (a sibling's conversation followed while both
+                // tabs submitted identical text) is the sibling's, and keeping
+                // it preferred would pin this tab to it even after its own
+                // launch conversation holds the prompt and is strictly newer.
                 String ownPreferred = activeId != null
-                        && (launchIdentityKnown || !otherOwned.contains(activeId))
+                        && (activeId.equals(launchSessionId)
+                                || !otherOwned.contains(activeId))
                         ? activeId : null;
                 newest = findPromptBearingSession(dir, configDir, since, ownExclude,
                         ownPreferred, promptAt, promptText);

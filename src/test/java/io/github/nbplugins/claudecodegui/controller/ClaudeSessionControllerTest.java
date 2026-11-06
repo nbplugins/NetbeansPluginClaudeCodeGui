@@ -2520,6 +2520,63 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The same race with known prompt text. Once the tab has borrowed a
+     * sibling's conversation, the launch-known preference must not keep it
+     * there: the borrowed file is owned by another live tab, so its own launch
+     * conversation — which now holds the submitted text and is strictly newer —
+     * must take the identity back.
+     */
+    @Test
+    void aKnownPromptRecoversTheLaunchConversationAfterASharedGuess() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The sibling's identical prompt lands first.
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_500L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "with no record of its own yet, the tab follows the sibling");
+
+            // This tab's submission lands in its launch conversation, later.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_600L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the launch conversation's record must take the identity back");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "later scans must keep the recovered conversation");
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the sibling keeps its own conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * An unresolved NEW tab submits a Tab-completed prompt, so its text is
      * unknown, while a live sibling submits its own human prompt. The sibling
      * holds the only claimed file, but this tab's own new file also contains a
