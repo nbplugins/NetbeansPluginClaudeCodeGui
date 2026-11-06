@@ -2713,6 +2713,128 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Two live tabs launched the same saved conversation {@code a}; this tab
+     * then resumed {@code b} in the TUI and submits a recalled prompt there.
+     * The other launcher writes its own human message into {@code a}. A record
+     * in the launch file is not proof that this tab's submission went there, so
+     * the strictly newer resumed conversation must win.
+     */
+    @Test
+    void aSharedLaunchFileDoesNotOverrideAConversationResumedLater() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The TUI resume into b: the conversation is written without any
+            // prompt from this tab yet, so the scan follows the file time.
+            appendUserPrompt(dir, "b", "earlier turn", START_MS + 5_000L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 5_500L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the resumed conversation becomes the tracked identity");
+
+            // Up recalls a prompt and Enter submits it: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The other launcher's own human message lands in the shared file.
+            appendUserPrompt(dir, "a", "other tab turn", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed conversation, later.
+            appendUserPrompt(dir, "b", "recalled prompt", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the resumed conversation written last is the one on screen");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A tab launched as a second writer of saved conversation {@code a}
+     * temporarily adopts a live sibling's conversation {@code c} while its own
+     * record is not flushed yet. Once its matching record lands in {@code a},
+     * the launch file must be eligible again: it is established by another live
+     * tab, so the ownership exclusion alone would keep the sibling preferred.
+     */
+    @Test
+    void aSharedLaunchConversationWinsBackAfterATemporaryAdoption() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "c"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "c"));
+
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS + 1_000L, true);
+        tabC.simulateLiveSession(config, "c", Set.of("a", "c"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The sibling's conversation holds the text first.
+            appendUserPrompt(dir, "c", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 11_500L);
+            assertEquals("c", controller.resolveActiveSessionId(),
+                    "the sibling's conversation is adopted while no own record exists");
+
+            // This tab's record lands in the shared launch conversation, later.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_600L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the launch conversation's record must take the identity back");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "later scans must keep the launch conversation");
+        } finally {
+            tabC.stopProcess();
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The same race with known prompt text. Once the tab has borrowed a
      * sibling's conversation, the launch-known preference must not keep it
      * there: the borrowed file is owned by another live tab, so its own launch

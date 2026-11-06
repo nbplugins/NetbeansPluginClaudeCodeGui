@@ -975,6 +975,13 @@ public class ClaudeSessionController {
             // session it established.
             Set<String> ownExclude = new HashSet<>(exclude);
             ownExclude.addAll(otherOwned);
+            // The launch conversation is this tab's own even when another live
+            // tab established it (both resumed the same saved file): a
+            // temporary adoption of a sibling's conversation must not make the
+            // launch file ineligible, or the sibling keeps winning the search.
+            if (launchIdentityKnown && launchSessionId != null) {
+                ownExclude.remove(launchSessionId);
+            }
             if (promptAt > 0 && promptAt >= externalAt) {
                 // First look for the tab's own conversation: a file nobody else
                 // claims that already holds this prompt. It must win over a
@@ -1055,16 +1062,12 @@ public class ClaudeSessionController {
                 // displace the shared conversation it switched into.
                 //
                 // Its launch conversation is different: a user record appended
-                // to that file after the submission proves the submission went
-                // there, so a temporary shared guess (a sibling whose own prompt
-                // landed around the same time) is taken back as soon as the
-                // record appears. Without this the released claim would leave
-                // the tab pinned to the sibling's conversation.
-                if (launchIdentityKnown && launchSessionId != null
-                        && ClaudeSessionStore.containsUserMessageSince(dir.toPath(), configDir,
-                                launchSessionId, promptAt)) {
-                    newest = launchSessionId;
-                }
+                // to that file after the submission suggests the submission
+                // went there, so the shared search below keeps it eligible. It
+                // must not be conclusive on its own, though: when another live
+                // tab launched the same saved file, its own turn also appends a
+                // human record there, and a TUI resume into a newer conversation
+                // must still win.
                 if (newest == null && !launchIdentityKnown) {
                     // A record is not proof of ownership: a sibling's file the
                     // tab borrowed earlier is now held by this tab too, so the
@@ -1084,9 +1087,19 @@ public class ClaudeSessionController {
                     // that wrote its own conversation after the submission and
                     // then exited is unclaimed, and its newer mtime would
                     // otherwise hide the resumed conversation.
+                    //
+                    // The launch conversation is a candidate too, even when
+                    // another live tab holds it: this tab's submission may have
+                    // gone there. The store's newest-first order then decides
+                    // between it and a conversation the tab resumed into, so a
+                    // shared launch file whose record came from the other live
+                    // tab does not win merely by being the launch file.
                     Set<String> shared = new HashSet<>(claimed);
                     shared.addAll(otherLiveClaims);
                     if (activeId != null) shared.add(activeId);
+                    if (launchIdentityKnown && launchSessionId != null) {
+                        shared.add(launchSessionId);
+                    }
                     newest = newestSharedSessionWrittenSince(dir, configDir, since,
                             promptAt, shared, exclude);
                     if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
