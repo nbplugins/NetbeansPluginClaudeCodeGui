@@ -332,6 +332,14 @@ public class ClaudeSessionController {
     private final StringBuilder terminalEscapeParams = new StringBuilder();
 
     /**
+     * True when the {@code ESC} that may still turn out to be a standalone
+     * cancel was pressed while a choice menu was open. Text typed into a
+     * picker's search box never reaches a prompt, so when the {@code ESC} is
+     * confirmed as a live cancellation the recorded line is discarded.
+     */
+    private boolean terminalEscapeOnMenu;
+
+    /**
      * True while a bracketed paste ({@code ESC [ 200 ~} … {@code ESC [ 201 ~})
      * is being recorded: its newlines belong to the pasted prompt and must not
      * submit the line.
@@ -1165,6 +1173,11 @@ public class ClaudeSessionController {
                         // eligible for the submission that went there.
                         ownCandidates = claimedSessionIds(dir, configDir);
                         ownCandidates.add(ownSessionId);
+                        // A file another live tab also writes is not proof of
+                        // this tab's submission: that tab's concurrent turn
+                        // appends a human record of its own. It competes with
+                        // the other shared candidates below by recency.
+                        ownCandidates.removeAll(otherLiveClaims);
                     }
                     if (ownCandidates == null) {
                         newest = newestSessionWithUserMessageSince(dir, configDir, since,
@@ -1175,7 +1188,7 @@ public class ClaudeSessionController {
                                     ownExclude);
                         }
                         ownEvidence = newest != null;
-                    } else {
+                    } else if (!ownCandidates.isEmpty()) {
                         newest = newestSharedSessionWrittenSince(dir, configDir, since,
                                 promptAt, ownCandidates, exclude);
                         if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
@@ -1485,6 +1498,7 @@ public class ClaudeSessionController {
             terminalEscapeParams.setLength(0);
             terminalInputPaste = false;
             terminalPasteAfterCR = false;
+            terminalEscapeOnMenu = false;
             terminalLineEntered = false;
             terminalHistoryRecall = false;
             terminalCompletionEdited = false;
@@ -3287,6 +3301,10 @@ public class ClaudeSessionController {
                 terminalInputEscape = 1;
                 terminalEscapeParams.setLength(0);
                 terminalPasteAfterCR = false;
+                // A standalone Esc cancels a choice menu (the /resume picker):
+                // the recorded line then holds the picker's search text, not a
+                // prompt draft.
+                terminalEscapeOnMenu = model.getActiveChoiceMenu() != null;
                 // A new Esc belongs to this write, so it is not the carried
                 // standalone one and may start a sequence even right after it.
                 carriedEscape = false;
@@ -3302,6 +3320,14 @@ public class ClaudeSessionController {
                 if (carriedEscape) {
                     terminalInputEscape = 0;
                     i--;
+                    if (terminalEscapeOnMenu) {
+                        // The carried Esc was a standalone cancellation of a
+                        // choice menu: discard the picker's search text so it
+                        // cannot prefix the next prompt.
+                        terminalInputLine.setLength(0);
+                        terminalInputCursor = 0;
+                        terminalEscapeOnMenu = false;
+                    }
                 } else if (c == '[') {
                     terminalInputEscape = 2;
                 } else if (c == 'O') {

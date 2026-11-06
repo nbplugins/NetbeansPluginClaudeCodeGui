@@ -3024,6 +3024,85 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A resolved own file that another live tab also writes is not proof of
+     * this tab's submission: that tab's concurrent turn appends a user record
+     * of its own. It must compete with the other shared candidates by recency,
+     * so a conversation the run actually joined and that is strictly newer
+     * wins, instead of the own priority returning the shared file.
+     */
+    @Test
+    void anOwnFileSharedWithAnotherWriterCompetesWithTheSharedCandidates() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the first-file priority resolves the run's own conversation");
+
+            // A second tab resumes the resolved conversation, and a third one
+            // writes the conversation this tab switches to.
+            tabB.simulateProcessStart(START_MS + 12_000L, true);
+            tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+            tabC.simulateProcessStart(START_MS + 12_000L, true);
+            tabC.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+            // A recalled prompt is submitted; the second tab's concurrent turn
+            // appends a human record to the shared own file, while the actual
+            // submission lands in b and is strictly newer.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 21_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 21_001L));
+
+            appendUserPrompt(dir, "a", "other tab turn", START_MS + 21_100L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 21_200L);
+            appendUserPrompt(dir, "b", "recalled prompt", START_MS + 21_300L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 21_400L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the shared own file must not beat the strictly newer joined file");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the joined conversation");
+
+            Set<String> held = controller.claimedSessionIds(work.toFile(), config);
+            controller.simulateProcessExit();
+            assertEquals("b", controller.resolveIdentityWithPreservedClaims(held),
+                    "the final lookup must make the same comparison");
+        } finally {
+            tabC.stopProcess();
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * A NEW run's resolved conversation must stay eligible even after a later
      * recalled submission temporarily borrowed a live sibling's file: adopting
      * the sibling releases the claim on the run's own file, so the final lookup
@@ -3436,6 +3515,32 @@ class ClaudeSessionControllerTest {
                 "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 START_MS + 1L),
                 "the menu selection must not prefix the submitted prompt");
+    }
+
+    /**
+     * Text typed into a picker's search box is not prompt draft. When a live
+     * Esc cancels the picker (the GUI cancel path already resets the recorder),
+     * the search text must be discarded too, or the next prompt is published
+     * with the stale prefix and can no longer match the conversation it was
+     * written to.
+     */
+    @Test
+    void aPickerSearchCancelledLiveDoesNotPrefixTheNextPrompt() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume", List.of(
+                new ChoiceMenuModel.Option("One", "1"),
+                new ChoiceMenuModel.Option("Two", "2")), 0));
+
+        controller.simulateTerminalInput(
+                "work".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // The user cancels the picker with Esc in the terminal.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 1L);
+        // The screen no longer shows the picker.
+        model.clearChoiceMenu();
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L),
+                "the cancelled picker search must not prefix the submitted prompt");
     }
 
     /**
