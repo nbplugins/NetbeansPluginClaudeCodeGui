@@ -190,6 +190,35 @@ class ClaudeSessionTabPendingLaunchTest {
         }
     }
 
+    /**
+     * The Save &amp; Switch dialog lists conversations for the replacement
+     * launch, which reloads the profile from the store. If the profile's
+     * storage directory was changed in Options while the session was running,
+     * the dialog must follow the new directory — the same store the restart
+     * will write to — instead of the one captured when the session started.
+     */
+    @Test
+    void saveAndSwitchListsTheStoreTheReplacementLaunchWillUse() throws Exception {
+        Path profiles = Files.createTempDirectory("dialog-config-test");
+        try {
+            io.github.nbplugins.claudecodegui.settings.ClaudeProfile profile =
+                    io.github.nbplugins.claudecodegui.settings.ClaudeProfile.createNamed("Work");
+            Path runningDir = profiles.resolve("old-store");
+            profile.setStorageDir(runningDir.toString());
+            assertEquals(runningDir,
+                    ClaudeSessionTab.dialogSessionListConfigDir(profile, profiles, runningDir),
+                    "an unchanged profile lists the store the running session uses");
+
+            Path movedDir = profiles.resolve("new-store");
+            profile.setStorageDir(movedDir.toString());
+            assertEquals(movedDir,
+                    ClaudeSessionTab.dialogSessionListConfigDir(profile, profiles, runningDir),
+                    "a storage dir changed in Options must be listed by the dialog");
+        } finally {
+            profiles.toFile().delete();
+        }
+    }
+
     private static String pathToRestore(ClaudeSessionTab tab) throws Exception {
         Field f = ClaudeSessionTab.class.getDeclaredField("pathToRestore");
         f.setAccessible(true);

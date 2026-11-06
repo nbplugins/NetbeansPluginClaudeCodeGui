@@ -3011,6 +3011,60 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Two tabs resume the same saved conversation, so the second one legitimately
+     * borrows the file the first owns. A launch-known identity is that tab's own
+     * conversation even when another live tab shares it: an unrelated, exited
+     * conversation that recorded the same text after the submission must not be
+     * adopted in its place.
+     */
+    @Test
+    void aSharedLaunchIdBeatsAnUnrelatedConversationWithTheSamePrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "third", "third");
+        setMtime(dir.resolve("third.jsonl"), START_MS - 5_000L);
+
+        // This tab resumes the saved conversation and therefore owns it.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "shared", Set.of("shared", "third"));
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+        // A second tab resumes the same conversation and only borrows the file.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("shared", "third"));
+        tabB.simulatePromptText("continue");
+        tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+        try {
+            appendUserPrompt(dir, "shared", "continue", START_MS + 10_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 10_600L);
+
+            // An exited conversation records the same text after the submission.
+            appendUserPrompt(dir, "third", "continue", START_MS + 11_000L);
+            setMtime(dir.resolve("third.jsonl"), START_MS + 11_200L);
+
+            assertEquals("shared", tabB.resolveActiveSessionId(),
+                    "a shared launch identity must not yield to an unrelated newer file");
+            assertEquals("shared", tabB.resolveActiveSessionId(),
+                    "later scans must keep resolving the shared conversation");
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "the owning tab keeps the conversation it launched");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * Up recalls a draft that is never submitted before the tab restarts. The
      * replacement process starts with empty input, so the first typed prompt is
      * known in full; a leftover recall flag would record it as unknown text and

@@ -1284,17 +1284,18 @@ public class ClaudeSessionTab extends TopComponent
         if (workingDir == null) return;
 
         // The controller captured the effective config dir and session ID at launch,
-        // so the dialog lists/prefills the same store the running process uses.
-        // While a launch is pending, its config dir is the one the process will use.
-        Path claudeConfigDir = currentOrPendingConfigDir();
+        // so the running session's name and ID are read from that same store.
+        Path runningConfigDir = currentOrPendingConfigDir();
         String currentId = controller.resolveActiveSessionId();
         SavedSession current = currentId != null
-                ? ClaudeSessionStore.findSession(workingDir.toPath(), claudeConfigDir, currentId)
+                ? ClaudeSessionStore.findSession(workingDir.toPath(), runningConfigDir, currentId)
                 : null;
         String currentName = prefillSessionName(current);
 
         final ClaudeSessionTab self = this;
-        final Path configDir = claudeConfigDir;
+        final Path configDir = dialogSessionListConfigDir(
+                ClaudeProfileStore.findByName(selectorPanel.getSelectedProfileName()),
+                ClaudeCodePreferences.getProfilesDir(), runningConfigDir);
         java.awt.Frame mainFrame = org.openide.windows.WindowManager.getDefault().getMainWindow();
         SaveAndSwitchDialog dialog = new SaveAndSwitchDialog(
                 mainFrame,
@@ -1398,6 +1399,29 @@ public class ClaudeSessionTab extends TopComponent
         // Not skipped for Default: its extra environment variables may set
         // CLAUDE_CONFIG_DIR, and the launched process resolves it from there.
         return ClaudeProcess.resolveConfigDir(profile, profilesDir);
+    }
+
+    /**
+     * Config directory whose conversations the Save &amp; Switch dialog lists.
+     *
+     * <p>The dialog belongs to the running session, but "Resume specific" starts
+     * a replacement process that reloads the selected profile from
+     * {@link ClaudeProfileStore}. If the profile's storage directory was changed
+     * in Options after this session started, the replacement writes to the new
+     * directory; listing the one captured at launch would offer conversations
+     * that process cannot resume. The running session's own name is still read
+     * from its captured directory.
+     *
+     * @param profile          profile the replacement launch will use; may be {@code null}
+     * @param profilesDir      base directory for profile config dirs
+     * @param runningConfigDir config dir of the running session, used when the
+     *                         launch directory cannot be resolved
+     * @return the config dir the replacement launch will use
+     */
+    static Path dialogSessionListConfigDir(ClaudeProfile profile, Path profilesDir,
+                                           Path runningConfigDir) {
+        Path launchDir = resolveLaunchConfigDir(profile, profilesDir);
+        return launchDir != null ? launchDir : runningConfigDir;
     }
 
     public void onSaveAndSwitch(String sessionName, SessionMode mode, String resumeId) {

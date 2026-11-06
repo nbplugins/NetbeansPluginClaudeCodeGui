@@ -935,7 +935,14 @@ public class ClaudeSessionController {
                 // unresolved NEW tabs submitting identical text, the evidence
                 // is indistinguishable, and displacing the current claim would
                 // merely swap the two conversations.
-                String ownPreferred = activeId != null && !otherOwned.contains(activeId)
+                //
+                // A launch-known identity (--continue/--resume) is this tab's
+                // own conversation even when another live tab shares the same
+                // saved file (both resumed it, so one of them only borrows it):
+                // it must stay preferred, or an unrelated file carrying the
+                // same prompt text would be adopted in its place.
+                String ownPreferred = activeId != null
+                        && (launchIdentityKnown || !otherOwned.contains(activeId))
                         ? activeId : null;
                 newest = findPromptBearingSession(dir, configDir, since, ownExclude,
                         ownPreferred, promptAt, promptText);
