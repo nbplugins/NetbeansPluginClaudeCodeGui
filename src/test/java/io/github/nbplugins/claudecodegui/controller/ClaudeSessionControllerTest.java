@@ -2835,6 +2835,69 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A NEW tab has resolved its own conversation {@code a} and a sibling NEW
+     * tab is borrowing it. Stopping the writer runs the exit callback, which
+     * releases this tab's claims — the final lookup before the rename must
+     * still treat {@code a} as this tab's own, or it falls back to an unrelated
+     * conversation that merely received a user record after the submission,
+     * even though {@code a} is strictly newer.
+     */
+    @Test
+    void theFinalStopLookupKeepsTheConversationsTheTabHeld() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "noise", "noise");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("a", "noise"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+
+        try {
+            // Up recalls a prompt, Enter submits it: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            appendUserPrompt(dir, "a", "recalled prompt", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the tab's own conversation is adopted");
+
+            // A sibling NEW tab borrows the resolved conversation.
+            tabB.simulateProcessStart(START_MS + 12_000L, true);
+            tabB.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+            // An unrelated conversation also receives a human record after the
+            // submission; the tab's own file stays strictly newer.
+            appendUserPrompt(dir, "noise", "unrelated work", START_MS + 12_100L);
+            setMtime(dir.resolve("noise.jsonl"), START_MS + 12_200L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_600L);
+
+            Set<String> held = controller.claimedSessionIds(work.toFile(), config);
+            assertEquals(Set.of("a"), held, "the resolved conversation is held");
+
+            // The waiter runs the exit callback while the writer is stopping.
+            controller.simulateProcessExit();
+
+            assertEquals("a", controller.resolveIdentityWithPreservedClaims(held),
+                    "the final lookup must keep the conversations the tab held");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The same race with known prompt text. Once the tab has borrowed a
      * sibling's conversation, the launch-known preference must not keep it
      * there: the borrowed file is owned by another live tab, so its own launch

@@ -243,6 +243,16 @@ public class ClaudeSessionController {
     private volatile String launchSessionId;
 
     /**
+     * Session IDs this tab held before it stopped its writer, kept eligible for
+     * the final post-stop identity lookup of {@link #stopAndRename(String)}.
+     * Stopping the PTY runs the exit callback, which releases this tab's live
+     * claims; without the preserved evidence this tab's own conversation would
+     * then look like another live tab's file (or like a file established by
+     * another tab) and the lookup could pick an unrelated conversation.
+     */
+    private volatile Set<String> preservedClaims = Set.of();
+
+    /**
      * Time (epoch millis) a prompt was last submitted from the plugin. Used to
      * attribute the session file created by a new process to this tab promptly,
      * before any sibling tab could guess and claim it.
@@ -809,6 +819,7 @@ public class ClaudeSessionController {
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
             releaseAllClaims();
+            preservedClaims = Set.of();
         }
         terminalWidget = null;
         modelComboPopulated = false;
@@ -849,9 +860,12 @@ public class ClaudeSessionController {
             // The writer may still be finishing a turn, and the user may have
             // switched the conversation in the TUI with the new file not yet
             // written. Stop it first, then resolve once more with the same
-            // evidence rules: whatever it wrote last is on disk now.
+            // evidence rules: whatever it wrote last is on disk now. The exit
+            // callback releases this tab's claims, so the conversations it held
+            // are carried over explicitly.
+            Set<String> held = claimedSessionIds(dir, configDir);
             stopWriter();
-            sessionId = resolveActiveSessionId();
+            sessionId = resolveIdentityWithPreservedClaims(held);
         }
         stopProcess();
 
@@ -892,6 +906,29 @@ public class ClaudeSessionController {
     public String resolveActiveSessionId() {
         refreshSessionIdentity();
         return activeSessionId;
+    }
+
+    /**
+     * Resolves the identity of a tab whose writer has just been stopped, while
+     * keeping the conversations it held before the stop eligible.
+     *
+     * <p>The post-stop lookup must use the pre-stop ownership evidence: once
+     * the exit callback has released this tab's claims, a conversation the tab
+     * established would otherwise look like another live tab's file, and the
+     * lookup could fall back to an unrelated conversation that merely received
+     * a user record after the submission.
+     *
+     * @param heldIds session IDs this tab held before the writer was stopped
+     * @return the resolved session ID, or {@code null}
+     */
+    String resolveIdentityWithPreservedClaims(Set<String> heldIds) {
+        Set<String> previous = preservedClaims;
+        preservedClaims = heldIds != null ? Set.copyOf(heldIds) : Set.of();
+        try {
+            return resolveActiveSessionId();
+        } finally {
+            preservedClaims = previous;
+        }
     }
 
     /**
@@ -1517,11 +1554,33 @@ public class ClaudeSessionController {
                     || !key.projectDir().equals(wantedProject)) {
                 return;
             }
+            // A file this tab held until it stopped its writer is its own, so
+            // the post-stop lookup must not treat it as another tab's.
+            if (preservedClaims.contains(key.sessionId())) return;
             for (ClaudeSessionController owner : claims.owners) {
                 if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
                     ids.add(key.sessionId());
                     return;
                 }
+            }
+        });
+        return ids;
+    }
+
+    /**
+     * Package-private for tests and the stop path: session IDs this controller
+     * currently holds in the given store.
+     */
+    Set<String> claimedSessionIds(java.io.File dir, java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, claims) -> {
+            if (key.configDir().equals(wantedConfig)
+                    && key.projectDir().equals(wantedProject)
+                    && claims.holders.contains(this)) {
+                ids.add(key.sessionId());
             }
         });
         return ids;
@@ -1545,8 +1604,12 @@ public class ClaudeSessionController {
             }
             // A session shared with another tab (both resumed the same saved
             // conversation) is still this tab's own conversation: excluding it
-            // would make the scan pick an unrelated file.
-            if (claims.holders.contains(this)) {
+            // would make the scan pick an unrelated file. The same holds for a
+            // file this tab held before it stopped its writer: the exit
+            // callback has already released the claim, but that must not turn
+            // the tab's own conversation into another tab's file.
+            if (claims.holders.contains(this)
+                    || preservedClaims.contains(key.sessionId())) {
                 return;
             }
             for (ClaudeSessionController holder : claims.holders) {
