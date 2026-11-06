@@ -492,6 +492,16 @@ public class ClaudeSessionController {
         rememberChoiceMenuAnswer(answer);
     }
 
+    /**
+     * Package-private for tests: the recorder and evidence part of
+     * {@link #sendPrompt(String)}.
+     *
+     * @return the line the conversation receives
+     */
+    String simulateGuiSend(String text, long sentAt) {
+        return reconcileGuiSend(text, sentAt);
+    }
+
     /** Package-private for tests: the number of identity scans started. */
     long simulateScanSequence() {
         synchronized (processOwnershipLock) {
@@ -1305,6 +1315,24 @@ public class ClaudeSessionController {
                                 since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
                     }
                 }
+                if (guiSwitchAt > 0) {
+                    // The conversation was switched from the GUI (/resume or
+                    // the session picker), and the destination may be a saved
+                    // conversation no live tab holds — the shared pass above
+                    // cannot see it. A matching record in a shared file is not
+                    // conclusive either: a sibling that submitted the same
+                    // recalled text writes one too. A record in a conversation
+                    // nobody holds can only have come from this process.
+                    String switched = newestSessionWithUserMessageSince(dir, configDir,
+                            since, promptAt, Set.of());
+                    if (switched == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        switched = newestSessionWithUserMessageSince(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, Set.of());
+                    }
+                    if (switched != null) {
+                        newest = switched;
+                    }
+                }
             }
             if (newest == null) {
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
@@ -1896,11 +1924,11 @@ public class ClaudeSessionController {
         if (!text.isBlank()) {
             model.addPromptToHistory(text);
         }
-        rememberSentPrompt(text, System.currentTimeMillis());
+        String submitted = reconcileGuiSend(text, System.currentTimeMillis());
 
         Thread t = new Thread(() -> {
             try {
-                writePty(text);
+                writePty(submitted);
                 Thread.sleep(200);
                 writePty("\r");
             } catch (IOException ex) {
@@ -1914,6 +1942,40 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Records a prompt sent from the prompt panel as the evidence the identity
+     * scan matches, composing it with a draft still open in the terminal.
+     *
+     * <p>The plugin writes the prompt at the TUI's cursor, so a draft typed
+     * there is part of the line the conversation receives. That draft is
+     * recorded as part of the evidence and then forgotten: the panel's
+     * submission consumed the terminal line, so it must not prefix the next
+     * line typed in the terminal either.
+     *
+     * @param text   prompt sent from the prompt panel
+     * @param sentAt submission time
+     * @return the line the conversation receives
+     */
+    private String reconcileGuiSend(String text, long sentAt) {
+        String submitted;
+        synchronized (terminalInputLine) {
+            String draft = terminalInputLine.toString();
+            int cursor = Math.min(terminalInputCursor, draft.length());
+            submitted = draft.substring(0, cursor) + text + draft.substring(cursor);
+        }
+        resetTerminalInputRecording();
+        if (isConversationCommand(text)) {
+            // A TUI command is not a prompt written to the current
+            // conversation: /resume and /clear can switch it, and these
+            // writes are made by the plugin, so no terminal input marks
+            // the switch. The panel text is checked, not the composed line:
+            // a draft must not hide the command.
+            guiConversationSwitchAt = sentAt;
+        }
+        rememberSentPrompt(submitted, sentAt);
+        return submitted;
+    }
+
+    /**
      * Records a prompt sent from the plugin as the evidence the identity scan
      * matches: its text and the submission time.
      *
@@ -1924,13 +1986,6 @@ public class ClaudeSessionController {
      * kept instead.
      */
     private void rememberSentPrompt(String text, long sentAt) {
-        if (isConversationCommand(text)) {
-            // A TUI command is not a prompt written to the current
-            // conversation: /resume and /clear can switch it, and these
-            // writes are made by the plugin, so no terminal input marks
-            // the switch.
-            guiConversationSwitchAt = sentAt;
-        }
         if (!text.isBlank()) {
             lastPromptText = text;
             promptSubmittedAt = sentAt;

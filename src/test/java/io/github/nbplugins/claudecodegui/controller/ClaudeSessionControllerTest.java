@@ -3191,7 +3191,7 @@ class ClaudeSessionControllerTest {
         try {
             // The user switches the conversation from the GUI: /resume from
             // the prompt panel, then the session picked from the menu.
-            controller.simulateSentPrompt("/resume", START_MS + 10_000L);
+            controller.simulateGuiSend("/resume", START_MS + 10_000L);
             controller.simulateGuiChoiceAnswer("ARROW:1");
 
             // The new conversation is not followed by the identity poll yet
@@ -3209,6 +3209,64 @@ class ClaudeSessionControllerTest {
 
             assertEquals("b", controller.resolveActiveSessionId(),
                     "a GUI-driven switch must not leave the launch conversation");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A conversation switch made from the GUI can land in a saved conversation
+     * no live tab holds. A recalled prompt leaves only user records as
+     * evidence, and a concurrent turn of the writer remaining on the shared
+     * launch file must not end the search: the strictly newer destination
+     * holds this tab's submission.
+     */
+    @Test
+    void anUnknownPromptFollowsAGuiSwitchIntoAnUnclaimedConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A second tab launched the same saved file and only follows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The user switches the conversation from the GUI: /resume from
+            // the prompt panel, then the session picked from the menu.
+            controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.simulateGuiChoiceAnswer("ARROW:1");
+
+            // A recalled prompt: its text is unknown.
+            controller.simulatePromptSubmittedAt(START_MS + 11_000L);
+            controller.simulatePromptText(null);
+
+            // The other launcher's own turn lands in the shared launch file.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed saved conversation,
+            // which no live tab holds, strictly later.
+            appendUserPrompt(dir, "b", "recalled", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the shared launch record must not hide the unclaimed destination");
             assertEquals("b", controller.resolveActiveSessionId(),
                     "later scans must keep the resumed conversation");
         } finally {
@@ -3771,6 +3829,24 @@ class ClaudeSessionControllerTest {
         } finally {
             tabB.stopProcess();
         }
+    }
+
+    /**
+     * A draft typed in the terminal is consumed by a prompt sent from the GUI:
+     * its characters are part of that submission, so the next line typed in
+     * the terminal must not carry them, and the submission's evidence is the
+     * whole line the TUI receives.
+     */
+    @Test
+    void aGuiSendConsumesTheTerminalDraftBeforeTheNextLine() {
+        controller.simulateTerminalInput(
+                "draft".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        assertEquals("drafthello", controller.simulateGuiSend("hello", START_MS + 1_000L),
+                "the GUI submission takes the terminal draft with it");
+        assertEquals("next", controller.simulateTerminalInput(
+                        "next\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 2_000L),
+                "the consumed draft must not prefix the next terminal line");
     }
 
     /**
