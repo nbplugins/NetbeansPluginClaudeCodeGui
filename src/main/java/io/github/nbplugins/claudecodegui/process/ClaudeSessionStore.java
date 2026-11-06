@@ -333,9 +333,11 @@ public final class ClaudeSessionStore {
         try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
             // Read backwards in blocks: the newest records are the most likely
             // match, and a long turn can push the prompt arbitrarily far from
-            // the end of the file. The scan stops as soon as a record older
-            // than the cutoff is reached, since records are appended in time
-            // order.
+            // the end of the file. The scan stops as soon as a conversation
+            // record older than the cutoff is reached, since those records are
+            // appended in time order. Rename titles are not: they are appended
+            // after a read of the file and may carry a timestamp sampled
+            // before records already in it, so the scan goes past them.
             long pos = raf.length();
             // Bytes read so far that belong to a record cut by the block
             // boundaries, kept as separate chunks in file order: a record
@@ -376,7 +378,9 @@ public final class ClaudeSessionStore {
                 String[] lines = text.split("\n", -1);
                 for (int i = lines.length - 1; i >= 0; i--) {
                     if (match.test(lines[i])) return true;
-                    if (isOlderThan(lines[i], sinceMillis)) return false;
+                    if (!isTitleRecord(lines[i]) && isOlderThan(lines[i], sinceMillis)) {
+                        return false;
+                    }
                 }
             }
             return false;
@@ -395,9 +399,26 @@ public final class ClaudeSessionStore {
     }
 
     /**
-     * Returns whether the JSONL {@code line} is a record dated before
-     * {@code cutoffMillis}. Records are appended in time order, so everything
-     * before such a line is older still and the backward scan can stop.
+     * Returns whether the JSONL {@code line} is a session rename title record.
+     *
+     * <p>Such a record is appended after a read of the file, so it can be dated
+     * before records already in it; its position does not prove that the
+     * records above it are older.
+     */
+    private static boolean isTitleRecord(String line) {
+        if (line.isBlank() || !line.contains("custom-title")) return false;
+        try {
+            return "custom-title".equals(MAPPER.readTree(line).path("type").asText());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Returns whether the JSONL {@code line} is a conversation record dated
+     * before {@code cutoffMillis}. Those records are appended in time order, so
+     * everything before such a line is older still and the backward scan can
+     * stop.
      */
     private static boolean isOlderThan(String line, long cutoffMillis) {
         if (line.isBlank()) return false;
@@ -745,6 +766,10 @@ public final class ClaudeSessionStore {
         if (!Files.exists(file)) {
             throw new IOException("Session file not found: " + file);
         }
+        // Read first and sample the clock afterwards: the title is appended
+        // last, so it must not be dated before the records it follows, or a
+        // reader that relies on the append order stops before them.
+        String existing = Files.readString(file, StandardCharsets.UTF_8);
         String timestamp = Instant.now().toString();
         String line = MAPPER.writeValueAsString(
                 MAPPER.createObjectNode()
@@ -754,7 +779,6 @@ public final class ClaudeSessionStore {
                         .put("timestamp", timestamp)
         );
         // Append with newline
-        String existing = Files.readString(file, StandardCharsets.UTF_8);
         String newContent = existing.endsWith("\n") ? existing + line + "\n" : existing + "\n" + line + "\n";
         Files.writeString(file, newContent, StandardCharsets.UTF_8);
         LOG.fine("Renamed session " + sessionId + " to '" + newName + "'");

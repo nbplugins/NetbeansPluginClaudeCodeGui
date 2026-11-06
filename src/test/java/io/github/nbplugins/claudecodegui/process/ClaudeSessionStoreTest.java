@@ -473,6 +473,33 @@ class ClaudeSessionStoreTest {
                 OLD_TS.toEpochMilli(), "never present"));
     }
 
+    /**
+     * A rename appends a {@code custom-title} record whose timestamp is
+     * sampled before the file is read, so it can be dated before a user record
+     * already in the file. The backward scan must not treat that metadata
+     * record as the end of the evidence window and hide the prompt above it,
+     * for either evidence API.
+     */
+    @Test
+    void containsUserPromptSince_findsThePromptAboveAnOlderTitleRecord() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        Path file = sessionDir.resolve("s1.jsonl");
+        // Dated in the future so the title appended by the rename below is
+        // older than the prompt, as when the clock is sampled before the read.
+        java.time.Instant promptAt = java.time.Instant.now().plusSeconds(60);
+        writeJsonl(file, userLine("the prompt from this tab", promptAt));
+
+        ClaudeSessionStore.renameSession(workDir, tmpDir, "s1", "Renamed");
+
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                promptAt.minusSeconds(30).toEpochMilli(), "the prompt from this tab"),
+                "a title record dated before the prompt must not end the scan");
+        assertTrue(ClaudeSessionStore.containsUserMessageSince(workDir, tmpDir, "s1",
+                promptAt.minusSeconds(30).toEpochMilli()),
+                "the unknown-text evidence must not be hidden either");
+    }
+
     @Test
     void containsUserPromptSince_noEvidence_returnsFalse() throws IOException {
         Path workDir = tmpDir.resolve("myproject");

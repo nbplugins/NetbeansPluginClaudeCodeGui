@@ -1098,7 +1098,30 @@ public class ClaudeSessionController {
                             since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
                             ownPreferred, promptAt, promptText);
                 }
-                if (newest != null) {
+                boolean ownFileMatch = newest != null;
+                if (newest != null && otherLiveClaims.contains(newest)) {
+                    // A conversation another live tab also writes is not proof
+                    // that this tab's submission went there: that tab's own turn
+                    // can submit the same text. A live conversation holding the
+                    // same text and written strictly later is then the one on
+                    // screen, so let the live candidates decide by recency
+                    // instead of ending the search here.
+                    Set<String> live = new HashSet<>(claimed);
+                    live.addAll(otherLiveClaims);
+                    if (activeId != null) live.add(activeId);
+                    Set<String> orderedLive = new LinkedHashSet<>(
+                            ClaudeSessionStore.listSessionIdsWrittenSince(
+                                    dir.toPath(), configDir, 0L, null, live, live.size()));
+                    String newerLive = findPromptBearingSession(dir, configDir,
+                            orderedLive, null, promptAt, promptText);
+                    if (newerLive != null && !newerLive.equals(newest)) {
+                        newest = newerLive;
+                        // Another live tab's conversation is not the file this
+                        // run created for its own submission.
+                        ownFileMatch = false;
+                    }
+                }
+                if (ownFileMatch) {
                     // The own-prompt evidence found this run's conversation:
                     // a NEW run has created the file it writes to.
                     ownEvidence = true;
