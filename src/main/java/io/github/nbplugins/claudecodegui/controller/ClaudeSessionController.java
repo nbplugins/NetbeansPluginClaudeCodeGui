@@ -472,6 +472,11 @@ public class ClaudeSessionController {
         lastPromptText = text;
     }
 
+    /** Package-private for tests: the prompt-evidence part of {@link #sendPrompt(String)}. */
+    void simulateSentPrompt(String text, long sentAt) {
+        rememberSentPrompt(text, sentAt);
+    }
+
     /** Package-private for tests: the number of identity scans started. */
     long simulateScanSequence() {
         synchronized (processOwnershipLock) {
@@ -1529,6 +1534,17 @@ public class ClaudeSessionController {
         }
     }
 
+    /**
+     * Discards the recorded input after a standalone {@code ESC} cancelled a
+     * choice menu: the line then holds the picker's search text, not a prompt
+     * draft. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private void discardPickerSearchText() {
+        terminalInputLine.setLength(0);
+        terminalInputCursor = 0;
+        terminalEscapeOnMenu = false;
+    }
+
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
     void simulateProcessNotRunning() {
         claudeProcess = new ClaudeProcess();
@@ -1816,9 +1832,7 @@ public class ClaudeSessionController {
         if (!text.isBlank()) {
             model.addPromptToHistory(text);
         }
-        lastPromptText = text;
-        promptSubmittedAt = System.currentTimeMillis();
-        scheduleIdentityRefresh();
+        rememberSentPrompt(text, System.currentTimeMillis());
 
         Thread t = new Thread(() -> {
             try {
@@ -1833,6 +1847,24 @@ public class ClaudeSessionController {
         }, "pty-send-prompt");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * Records a prompt sent from the plugin as the evidence the identity scan
+     * matches: its text and the submission time.
+     *
+     * <p>Blank text is not a prompt of this tab. The GUI still permits sending
+     * it (a lone Enter), but recording it would turn the submission into an
+     * unknown-text one: with no text of ours in this tab's file, a sibling's
+     * newer prompt would then win the shared search. The previous evidence is
+     * kept instead.
+     */
+    private void rememberSentPrompt(String text, long sentAt) {
+        if (!text.isBlank()) {
+            lastPromptText = text;
+            promptSubmittedAt = sentAt;
+            scheduleIdentityRefresh();
+        }
     }
 
     /**
@@ -3321,6 +3353,13 @@ public class ClaudeSessionController {
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (c == 0x1b) {
+                if (carriedEscape && terminalEscapeOnMenu) {
+                    // The Esc carried from the previous write was a standalone
+                    // cancellation of a choice menu, and this Esc begins a new
+                    // sequence: the cancellation is complete, so the picker's
+                    // search text must not become prompt draft.
+                    discardPickerSearchText();
+                }
                 terminalInputEscape = 1;
                 terminalEscapeParams.setLength(0);
                 terminalPasteAfterCR = false;
@@ -3347,9 +3386,7 @@ public class ClaudeSessionController {
                         // The carried Esc was a standalone cancellation of a
                         // choice menu: discard the picker's search text so it
                         // cannot prefix the next prompt.
-                        terminalInputLine.setLength(0);
-                        terminalInputCursor = 0;
-                        terminalEscapeOnMenu = false;
+                        discardPickerSearchText();
                     }
                 } else if (c == '[') {
                     terminalInputEscape = 2;

@@ -3607,6 +3607,93 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The cancellation of a picker must be consumed before the next escape
+     * sequence: a bracketed paste starts with its own {@code ESC} in a separate
+     * write, and starting that sequence must not forget that the previous Esc
+     * cancelled the picker, or the stale search text prefixes the pasted
+     * prompt.
+     */
+    @Test
+    void aPickerCancellationIsConsumedBeforeTheNextEscapeSequence() {
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume", List.of(
+                new ChoiceMenuModel.Option("One", "1"),
+                new ChoiceMenuModel.Option("Two", "2")), 0));
+
+        controller.simulateTerminalInput("work".getBytes(utf8), START_MS);
+        // The user cancels the picker with Esc in the terminal.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 1L);
+        // The screen no longer shows the picker.
+        model.clearChoiceMenu();
+
+        // A bracketed paste begins with its own escape sequence.
+        controller.simulateTerminalInput("\u001b[200~".getBytes(utf8), START_MS + 2L);
+        controller.simulateTerminalInput("hello".getBytes(utf8), START_MS + 3L);
+        controller.simulateTerminalInput("\u001b[201~".getBytes(utf8), START_MS + 4L);
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 5L),
+                "the cancelled picker search must not prefix the pasted prompt");
+    }
+
+    /**
+     * A whitespace-only GUI send carries no prompt text of this tab, so it must
+     * not replace the evidence of the previous prompt: otherwise the scan looks
+     * for an unknown-text submission, and a sibling that appends a real prompt
+     * afterwards is adopted even though this tab's own conversation is strictly
+     * newer.
+     */
+    @Test
+    void aWhitespaceOnlySendKeepsThePreviousPromptEvidence() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a and wrote a prompt there.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+        appendUserPrompt(dir, "a", "first prompt", START_MS + 5_000L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 5_500L);
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "the launch conversation holds this tab's prompt");
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            // The GUI sends a lone Enter: no prompt text of this tab is written.
+            controller.simulateSentPrompt("   ", START_MS + 10_000L);
+            // This tab's turn only appends assistant output, which is newer.
+            java.nio.file.Files.writeString(dir.resolve("a.jsonl"),
+                    "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\","
+                            + "\"content\":\"assistant turn\"},\"timestamp\":\""
+                            + java.time.Instant.ofEpochMilli(START_MS + 10_500L) + "\"}\n",
+                    java.nio.file.StandardOpenOption.APPEND);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_000L);
+            // The sibling submits a real prompt afterwards.
+            appendUserPrompt(dir, "b", "hello", START_MS + 12_000L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_500L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the sibling's prompt must not replace the previous evidence");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "later scans must keep the launch conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * Pasting before a large draft must insert the pasted text in one
      * operation. Inserting character by character copies the whole unchanged
      * suffix for every character, which took seconds for a half-megabyte
