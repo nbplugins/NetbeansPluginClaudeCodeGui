@@ -1104,25 +1104,29 @@ public class ClaudeSessionController {
                             ownPreferred, promptAt, promptText);
                 }
                 boolean ownFileMatch = newest != null;
-                if (newest != null && otherLiveClaims.contains(newest)) {
+                if (newest != null && externalAt > 0 && otherLiveClaims.contains(newest)) {
                     // A conversation another live tab also writes is not proof
                     // that this tab's submission went there: that tab's own turn
-                    // can submit the same text. A live conversation holding the
-                    // same text and written strictly later is then the one on
-                    // screen, so let the live candidates decide by recency
-                    // instead of ending the search here.
-                    Set<String> live = new HashSet<>(claimed);
-                    live.addAll(otherLiveClaims);
-                    if (activeId != null) live.add(activeId);
-                    Set<String> orderedLive = new LinkedHashSet<>(
-                            ClaudeSessionStore.listSessionIdsWrittenSince(
-                                    dir.toPath(), configDir, 0L, null, live, live.size()));
-                    String newerLive = findPromptBearingSession(dir, configDir,
-                            orderedLive, null, promptAt, promptText);
-                    if (newerLive != null && !newerLive.equals(newest)) {
-                        newest = newerLive;
-                        // Another live tab's conversation is not the file this
-                        // run created for its own submission.
+                    // can submit the same text. When the user has typed in the
+                    // terminal, the TUI may have switched the conversation, and
+                    // a file holding the same text and written strictly later
+                    // — including one no live tab holds yet, e.g. a saved
+                    // conversation resumed with the picker — is then the one on
+                    // screen. Every file written since the submission competes
+                    // by recency instead of the shared match ending the search.
+                    // A GUI-only run cannot have switched conversations that
+                    // way, so its launch conversation stays conclusive.
+                    String newer = findPromptBearingSession(dir, configDir, since,
+                            Set.of(), null, promptAt, promptText);
+                    if (newer == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        newer = findPromptBearingSession(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, Set.of(), null,
+                                promptAt, promptText);
+                    }
+                    if (newer != null && !newer.equals(newest)) {
+                        newest = newer;
+                        // A conversation written later by someone else is not
+                        // the file this run created for its own submission.
                         ownFileMatch = false;
                     }
                 }

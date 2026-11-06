@@ -3103,6 +3103,60 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The destination of a shared launch-file match may be a saved conversation
+     * the user resumed in the TUI that no live tab holds yet: a record written
+     * strictly later with the same text is then the conversation on screen.
+     */
+    @Test
+    void aSharedLaunchFileMatchYieldsToAStrictlyNewerUnclaimedConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A second tab launched the same saved file and only follows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The other launcher's own turn submits the same literal text into
+            // the shared launch file.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed saved conversation,
+            // which no live tab holds, later.
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the shared launch match must not beat the strictly newer file");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * A launch file that another live tab also writes is not proof that this
      * tab's submission went there: that tab's own turn can submit the same
      * literal text. A live conversation holding the same text and written
