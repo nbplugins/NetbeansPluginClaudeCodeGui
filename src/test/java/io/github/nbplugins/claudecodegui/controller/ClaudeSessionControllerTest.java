@@ -2958,6 +2958,140 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A launch-known tab temporarily adopted a sibling's conversation {@code c}
+     * because the sibling flushed the identical prompt first. Once the
+     * conversation the tab actually joined holds the submission and is strictly
+     * newer, the borrowed guess must not stay preferred: the newest-first
+     * candidate order has to decide, or Save &amp; Switch renames the sibling's
+     * conversation.
+     */
+    @Test
+    void aBorrowedGuessDoesNotPinALaunchKnownTabToTheOlderConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b", "c"));
+
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS, true);
+        tabC.simulateLiveSession(config, "c", Set.of("a", "b", "c"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b", "c"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The sibling's conversation holds the text first.
+            appendUserPrompt(dir, "c", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 11_500L);
+            assertEquals("c", controller.resolveActiveSessionId(),
+                    "the identical sibling prompt is adopted while nothing else matches");
+
+            // The conversation this tab actually joined gets its record later.
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the borrowed guess must not beat the strictly newer joined file");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the joined conversation");
+        } finally {
+            tabC.stopProcess();
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A NEW run resolved its own conversation for the first submission. When it
+     * later joins a live sibling's conversation and submits a recalled prompt
+     * (unknown text), the first-file priority is spent: an exited tab's
+     * unrelated unclaimed file must not be adopted ahead of the shared
+     * conversation that holds the submission, even though that file is newer
+     * than nothing else considered.
+     */
+    @Test
+    void theFirstFilePriorityEndsAfterANewRunResolvedItsOwnFile() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b", "c"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, null, Set.of("a", "b", "c"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // This run creates its own conversation for the first submission.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the first-file priority resolves the run's own conversation");
+
+            // A recalled prompt is submitted after the TUI joined b.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 21_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 21_001L));
+
+            // An unrelated exited tab's conversation also received a human
+            // record; the joined conversation gets the actual submission and
+            // is strictly newer.
+            appendUserPrompt(dir, "c", "other work", START_MS + 21_600L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 21_700L);
+            appendUserPrompt(dir, "b", "recalled prompt", START_MS + 21_900L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 22_000L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the shared conversation holding the submission must win");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the shared conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The same race with known prompt text. Once the tab has borrowed a
      * sibling's conversation, the launch-known preference must not keep it
      * there: the borrowed file is owned by another live tab, so its own launch

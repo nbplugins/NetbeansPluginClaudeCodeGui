@@ -243,6 +243,17 @@ public class ClaudeSessionController {
     private volatile String launchSessionId;
 
     /**
+     * {@code true} once a {@link SessionMode#NEW} run has resolved the file it
+     * created for its own first submission. The unknown-text own-file priority
+     * belongs to that first file only: afterwards the run's conversation is
+     * established, and a later recalled prompt must be looked up among the
+     * shared conversations instead of adopting an unrelated unclaimed file that
+     * merely received a user record after the submission (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private volatile boolean ownFileResolved;
+
+    /**
      * Session IDs this tab established or guessed as its own before it stopped
      * its writer, kept eligible for the final post-stop identity lookup of
      * {@link #stopAndRename(String)}. Stopping the PTY runs the exit callback,
@@ -432,6 +443,7 @@ public class ClaudeSessionController {
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
         launchIdentityKnown = sessionId != null;
         launchSessionId = sessionId;
+        ownFileResolved = false;
     }
 
     /** Package-private for tests: one tick of the periodic identity refresh. */
@@ -664,6 +676,7 @@ public class ClaudeSessionController {
         activeSessionId = launch.sessionId();
         launchIdentityKnown = activeSessionId != null;
         launchSessionId = activeSessionId;
+        ownFileResolved = false;
 
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
@@ -817,6 +830,7 @@ public class ClaudeSessionController {
             preStartSessionIds = Set.of();
             launchIdentityKnown = false;
             launchSessionId = null;
+            ownFileResolved = false;
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
@@ -998,6 +1012,7 @@ public class ClaudeSessionController {
             }
         }
         String newest = null;
+        boolean ownEvidence = false;
         if (dir != null && configDir != null && since > 0) {
             // A conversation owned by a live tab (or by this tab) that already
             // contains the prompt submitted from here is the strongest evidence
@@ -1072,6 +1087,11 @@ public class ClaudeSessionController {
                             since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
                             ownPreferred, promptAt, promptText);
                 }
+                if (newest != null) {
+                    // The own-prompt evidence found this run's conversation:
+                    // a NEW run has created the file it writes to.
+                    ownEvidence = true;
+                }
                 if (newest == null) {
                     // Only then may a conversation another live tab writes be
                     // adopted: that is an in-process /resume from this terminal.
@@ -1086,8 +1106,16 @@ public class ClaudeSessionController {
                             ClaudeSessionStore.listSessionIdsWrittenSince(
                                     dir.toPath(), configDir, 0L, null, borrowed,
                                     borrowed.size()));
-                    newest = findPromptBearingSession(dir, configDir, ordered, activeId,
-                            promptAt, promptText);
+                    // The tracked conversation is preferred here only when it is
+                    // the launch identity. A borrowed identity was itself
+                    // guessed from the same prompt text, so keeping it
+                    // preferred would pin this tab to a sibling's file even
+                    // after the conversation it actually joined holds the
+                    // submission and is strictly newer.
+                    String borrowedPreferred = activeId != null
+                            && activeId.equals(launchSessionId) ? activeId : null;
+                    newest = findPromptBearingSession(dir, configDir, ordered,
+                            borrowedPreferred, promptAt, promptText);
                 }
             }
             if (promptAt > 0 && promptAt >= externalAt
@@ -1097,13 +1125,17 @@ public class ClaudeSessionController {
                 // user record is what proves a file was written for this
                 // submission.
                 //
-                // Only an unresolved NEW tab gets the new-file priority: it
-                // writes its own file without any other tab claiming it, while
-                // a sibling's record submitted around the same time may just be
-                // that tab's own turn. A tab whose conversation was known at
-                // launch had nothing new to create, so an unrelated unclaimed
-                // human record (e.g. an exited third tab's own prompt) must not
-                // displace the shared conversation it switched into.
+                // Only a NEW tab gets this priority: it may write its first
+                // file without any other tab claiming it, while a sibling's
+                // record submitted around the same time may just be that tab's
+                // own turn. A tab whose conversation was known at launch had
+                // nothing new to create, so an unrelated unclaimed human record
+                // (e.g. an exited third tab's own prompt) must not displace the
+                // shared conversation it switched into. Once a NEW run has
+                // resolved its own file, the priority is limited to the
+                // conversations this tab holds: a later submission cannot be
+                // the one creating the first file, so an unrelated unclaimed
+                // record must yield to the shared conversation the run joined.
                 //
                 // Its launch conversation is different: a user record appended
                 // to that file after the submission suggests the submission
@@ -1117,11 +1149,33 @@ public class ClaudeSessionController {
                     // tab borrowed earlier is now held by this tab too, so the
                     // claim-based exclusion no longer hides it. Only a file no
                     // other live tab established may count as this tab's own.
-                    newest = newestSessionWithUserMessageSince(dir, configDir, since,
-                            promptAt, ownExclude);
-                    if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
-                        newest = newestSessionWithUserMessageSince(dir, configDir,
-                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, ownExclude);
+                    Set<String> ownCandidates = null;
+                    if (ownFileResolved) {
+                        // The run has already created its own file, so a later
+                        // unknown-text submission cannot be the one that
+                        // creates it. Only this tab's own conversations keep
+                        // the priority: an unrelated unclaimed file (e.g. an
+                        // exited tab's record) must yield to the shared
+                        // conversation the run joined.
+                        ownCandidates = claimedSessionIds(dir, configDir);
+                    }
+                    if (ownCandidates == null) {
+                        newest = newestSessionWithUserMessageSince(dir, configDir, since,
+                                promptAt, ownExclude);
+                        if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                            newest = newestSessionWithUserMessageSince(dir, configDir,
+                                    since - SESSION_MTIME_GRANULARITY_MS, promptAt,
+                                    ownExclude);
+                        }
+                        ownEvidence = newest != null;
+                    } else {
+                        newest = newestSharedSessionWrittenSince(dir, configDir, since,
+                                promptAt, ownCandidates, exclude);
+                        if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                            newest = newestSharedSessionWrittenSince(dir, configDir,
+                                    since - SESSION_MTIME_GRANULARITY_MS, promptAt,
+                                    ownCandidates, exclude);
+                        }
                     }
                 }
                 if (newest == null) {
@@ -1175,7 +1229,8 @@ public class ClaudeSessionController {
                         since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
             }
         }
-        return publishIdentityScanResult(generation, scanId, dir, configDir, newest);
+        return publishIdentityScanResult(generation, scanId, dir, configDir, newest,
+                ownEvidence);
     }
 
     /**
@@ -1309,7 +1364,7 @@ public class ClaudeSessionController {
     private boolean publishIdentityScanResult(long generation, long scanId,
                                               java.io.File dir,
                                               java.nio.file.Path configDir,
-                                              String newest) {
+                                              String newest, boolean ownEvidence) {
         synchronized (processOwnershipLock) {
             if (generation != processGeneration) {
                 return activeSessionId != null;
@@ -1318,6 +1373,9 @@ public class ClaudeSessionController {
                 return activeSessionId != null;
             }
             lastPublishedScanId = scanId;
+            if (ownEvidence && newest != null) {
+                ownFileResolved = true;
+            }
             if (newest != null && !newest.equals(activeSessionId)) {
                 String previous = activeSessionId;
                 activeSessionId = newest;
@@ -1341,12 +1399,13 @@ public class ClaudeSessionController {
     /** Package-private for tests: publishes a result scanned for an older process run. */
     boolean simulatePublishStaleScanResult(long generation, String newest) {
         return publishIdentityScanResult(generation, simulateBeginIdentityScan(),
-                null, activeConfigDir, newest);
+                null, activeConfigDir, newest, false);
     }
 
     /** Package-private for tests: publishes a scan result with explicit ordering. */
     boolean simulatePublishScanResult(long generation, long scanId, String newest) {
-        return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest);
+        return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest,
+                false);
     }
 
     /** Package-private for tests: the identity inputs {@link #refreshSessionIdentity()} captures. */
