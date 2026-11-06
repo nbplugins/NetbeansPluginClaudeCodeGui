@@ -3024,6 +3024,78 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A NEW run's resolved conversation must stay eligible even after a later
+     * recalled submission temporarily borrowed a live sibling's file: adopting
+     * the sibling releases the claim on the run's own file, so the final lookup
+     * must keep it as a candidate rather than considering only the borrowed
+     * sibling. Once the run's own file holds the submission and is strictly
+     * newer, it is the answer.
+     */
+    @Test
+    void aResolvedNewConversationStaysEligibleAfterABorrowedGuess() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the first-file priority resolves the run's own conversation");
+
+            // A recalled prompt is submitted; the live sibling writes its own
+            // record first, so the run temporarily borrows the sibling's file.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 21_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 21_001L));
+
+            appendUserPrompt(dir, "b", "sibling turn", START_MS + 21_100L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 21_200L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the sibling's file is borrowed while the own file is not written yet");
+
+            // The run's own file receives the submission, strictly newer.
+            appendUserPrompt(dir, "a", "recalled prompt", START_MS + 21_300L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 21_400L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the run's own file must win once it holds the submission");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "later scans must keep the run's own file");
+
+            Set<String> held = controller.claimedSessionIds(work.toFile(), config);
+            controller.simulateProcessExit();
+            assertEquals("a", controller.resolveIdentityWithPreservedClaims(held),
+                    "the final lookup must keep the run's own file eligible");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * A NEW run resolved its own conversation for the first submission. When it
      * later joins a live sibling's conversation and submits a recalled prompt
      * (unknown text), the first-file priority is spent: an exited tab's
@@ -3342,6 +3414,28 @@ class ClaudeSessionControllerTest {
             model.clearChoiceMenu();
             tabB.stopProcess();
         }
+    }
+
+    /**
+     * A digit typed while a numbered choice menu is open selects an item
+     * immediately and is consumed by the TUI, so it must not become draft text
+     * for the prompt typed after the menu is dismissed: the malformed text
+     * could no longer match the file the prompt was actually written to.
+     */
+    @Test
+    void aMenuSelectionDigitIsNotRecordedAsPromptDraft() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Pick one", List.of(
+                new ChoiceMenuModel.Option("Yes", "1"),
+                new ChoiceMenuModel.Option("No", "2")), 0));
+
+        controller.simulateTerminalInput(new byte[]{'1'}, START_MS);
+        // The screen no longer shows the menu.
+        model.clearChoiceMenu();
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 1L),
+                "the menu selection must not prefix the submitted prompt");
     }
 
     /**

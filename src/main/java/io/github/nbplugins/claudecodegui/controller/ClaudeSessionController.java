@@ -243,15 +243,18 @@ public class ClaudeSessionController {
     private volatile String launchSessionId;
 
     /**
-     * {@code true} once a {@link SessionMode#NEW} run has resolved the file it
-     * created for its own first submission. The unknown-text own-file priority
-     * belongs to that first file only: afterwards the run's conversation is
-     * established, and a later recalled prompt must be looked up among the
-     * shared conversations instead of adopting an unrelated unclaimed file that
-     * merely received a user record after the submission (see
+     * Session ID a {@link SessionMode#NEW} run resolved as the file it created
+     * for its own submission, or {@code null} before that. The unknown-text
+     * own-file priority belongs to that file only: afterwards the run's
+     * conversation is established, and a later recalled prompt must be looked
+     * up among the run's own and the shared conversations instead of adopting
+     * an unrelated unclaimed file that merely received a user record after the
+     * submission. The ID is kept even when the tab adopts a borrowed
+     * conversation and releases its claim: the own file must stay a candidate
+     * for the submission that actually went there (see
      * {@link #refreshSessionIdentity()}).
      */
-    private volatile boolean ownFileResolved;
+    private volatile String ownSessionId;
 
     /**
      * Session IDs this tab established or guessed as its own before it stopped
@@ -443,7 +446,7 @@ public class ClaudeSessionController {
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
         launchIdentityKnown = sessionId != null;
         launchSessionId = sessionId;
-        ownFileResolved = false;
+        ownSessionId = null;
     }
 
     /** Package-private for tests: one tick of the periodic identity refresh. */
@@ -676,7 +679,7 @@ public class ClaudeSessionController {
         activeSessionId = launch.sessionId();
         launchIdentityKnown = activeSessionId != null;
         launchSessionId = activeSessionId;
-        ownFileResolved = false;
+        ownSessionId = null;
 
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
@@ -830,7 +833,7 @@ public class ClaudeSessionController {
             preStartSessionIds = Set.of();
             launchIdentityKnown = false;
             launchSessionId = null;
-            ownFileResolved = false;
+            ownSessionId = null;
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
@@ -1150,14 +1153,18 @@ public class ClaudeSessionController {
                     // claim-based exclusion no longer hides it. Only a file no
                     // other live tab established may count as this tab's own.
                     Set<String> ownCandidates = null;
-                    if (ownFileResolved) {
+                    if (ownSessionId != null) {
                         // The run has already created its own file, so a later
                         // unknown-text submission cannot be the one that
                         // creates it. Only this tab's own conversations keep
                         // the priority: an unrelated unclaimed file (e.g. an
                         // exited tab's record) must yield to the shared
-                        // conversation the run joined.
+                        // conversation the run joined. The resolved own ID is
+                        // listed explicitly: adopting a borrowed conversation
+                        // releases its claim, and the file must still be
+                        // eligible for the submission that went there.
                         ownCandidates = claimedSessionIds(dir, configDir);
+                        ownCandidates.add(ownSessionId);
                     }
                     if (ownCandidates == null) {
                         newest = newestSessionWithUserMessageSince(dir, configDir, since,
@@ -1374,7 +1381,7 @@ public class ClaudeSessionController {
             }
             lastPublishedScanId = scanId;
             if (ownEvidence && newest != null) {
-                ownFileResolved = true;
+                ownSessionId = newest;
             }
             if (newest != null && !newest.equals(activeSessionId)) {
                 String previous = activeSessionId;
@@ -3393,7 +3400,13 @@ public class ClaudeSessionController {
                     terminalCompletionEdited = true;
                 }
             } else if (c >= 0x20) {
-                insertTerminalChar(c);
+                // While a choice menu is open, a printed digit selects an item
+                // immediately (see writePtyAnswer) and never becomes part of a
+                // prompt: recording it would prefix the next prompt's evidence
+                // with the selection and make the actual text unmatchable.
+                if (!(model.getActiveChoiceMenu() != null && c >= '0' && c <= '9')) {
+                    insertTerminalChar(c);
+                }
             }
         }
         return submitted;
