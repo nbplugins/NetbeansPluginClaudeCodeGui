@@ -243,12 +243,17 @@ public class ClaudeSessionController {
     private volatile String launchSessionId;
 
     /**
-     * Session IDs this tab held before it stopped its writer, kept eligible for
-     * the final post-stop identity lookup of {@link #stopAndRename(String)}.
-     * Stopping the PTY runs the exit callback, which releases this tab's live
-     * claims; without the preserved evidence this tab's own conversation would
-     * then look like another live tab's file (or like a file established by
-     * another tab) and the lookup could pick an unrelated conversation.
+     * Session IDs this tab established or guessed as its own before it stopped
+     * its writer, kept eligible for the final post-stop identity lookup of
+     * {@link #stopAndRename(String)}. Stopping the PTY runs the exit callback,
+     * which releases this tab's live claims; without the preserved evidence
+     * this tab's own conversation would then look like another live tab's file
+     * (or like a file established by another tab) and the lookup could pick an
+     * unrelated conversation.
+     *
+     * <p>A conversation the tab only borrowed is not listed: it belongs to
+     * another live tab, and preserving it would make the borrowed file win over
+     * the file this tab actually created.
      */
     private volatile Set<String> preservedClaims = Set.of();
 
@@ -861,8 +866,10 @@ public class ClaudeSessionController {
             // switched the conversation in the TUI with the new file not yet
             // written. Stop it first, then resolve once more with the same
             // evidence rules: whatever it wrote last is on disk now. The exit
-            // callback releases this tab's claims, so the conversations it held
-            // are carried over explicitly.
+            // callback releases this tab's claims, so the conversations it
+            // established or guessed as its own are carried over explicitly.
+            // A borrowed conversation is another live tab's file and stays
+            // eligible to that tab instead.
             Set<String> held = claimedSessionIds(dir, configDir);
             stopWriter();
             sessionId = resolveIdentityWithPreservedClaims(held);
@@ -1569,7 +1576,12 @@ public class ClaudeSessionController {
 
     /**
      * Package-private for tests and the stop path: session IDs this controller
-     * currently holds in the given store.
+     * established or guessed as its own in the given store.
+     *
+     * <p>A held conversation that this controller only borrowed (another live
+     * tab established it or was writing it first) is another tab's file and is
+     * not included: preserving it as this tab's own would let it win the final
+     * post-stop lookup over the file this tab actually created.
      */
     Set<String> claimedSessionIds(java.io.File dir, java.nio.file.Path configDir) {
         Set<String> ids = new HashSet<>();
@@ -1579,7 +1591,8 @@ public class ClaudeSessionController {
         SESSION_CLAIMS.forEach((key, claims) -> {
             if (key.configDir().equals(wantedConfig)
                     && key.projectDir().equals(wantedProject)
-                    && claims.holders.contains(this)) {
+                    && claims.holders.contains(this)
+                    && !claims.borrowed.contains(this)) {
                 ids.add(key.sessionId());
             }
         });

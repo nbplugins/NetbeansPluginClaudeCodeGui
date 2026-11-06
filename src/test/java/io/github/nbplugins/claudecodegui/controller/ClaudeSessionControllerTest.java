@@ -2898,6 +2898,66 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A NEW tab temporarily borrows a live sibling's conversation because both
+     * submitted the same text before its own file was flushed. The borrowed
+     * file is the sibling's, so the final stop lookup must not preserve it as
+     * this tab's own: once this tab's own file is flushed during the stop, that
+     * file is the answer even if the sibling's conversation is currently
+     * tracked.
+     */
+    @Test
+    void aBorrowedConversationIsNotPreservedForTheFinalStopLookup() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The sibling's conversation holds the text first.
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_500L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the sibling's conversation is borrowed while no own file exists");
+
+            // This tab's own file is flushed during the stop, strictly newest.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_600L);
+
+            Set<String> held = controller.claimedSessionIds(work.toFile(), config);
+            assertEquals(Set.of(), held,
+                    "a borrowed conversation is not this tab's own file");
+
+            controller.simulateProcessExit();
+
+            assertEquals("a", controller.resolveIdentityWithPreservedClaims(held),
+                    "the tab's own file must win over the borrowed one");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The same race with known prompt text. Once the tab has borrowed a
      * sibling's conversation, the launch-known preference must not keep it
      * there: the borrowed file is owned by another live tab, so its own launch
