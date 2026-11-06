@@ -3157,6 +3157,66 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The conversation can also be switched from the GUI alone — a slash
+     * command such as {@code /resume} sent from the prompt panel and the
+     * picker answer — and those writes are made by the plugin, so no raw
+     * terminal input marks the switch. A shared launch-file match must then
+     * yield to the strictly newer conversation exactly as it does after
+     * typing in the terminal.
+     */
+    @Test
+    void aSharedLaunchFileMatchYieldsToAGuiDrivenSwitch() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A second tab launched the same saved file and only follows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The user switches the conversation from the GUI: /resume from
+            // the prompt panel, then the session picked from the menu.
+            controller.simulateSentPrompt("/resume", START_MS + 10_000L);
+            controller.simulateGuiChoiceAnswer("ARROW:1");
+
+            // The new conversation is not followed by the identity poll yet
+            // when the next prompt is sent.
+            controller.simulateSentPrompt("continue", START_MS + 11_000L);
+
+            // The other launcher's own turn submits the same literal text into
+            // the shared launch file.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed saved conversation,
+            // which no live tab holds, later.
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "a GUI-driven switch must not leave the launch conversation");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * A launch file that another live tab also writes is not proof that this
      * tab's submission went there: that tab's own turn can submit the same
      * literal text. A live conversation holding the same text and written

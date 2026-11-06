@@ -304,6 +304,16 @@ public class ClaudeSessionController {
     private volatile long externalInputAt;
 
     /**
+     * Time (epoch millis) of the last conversation change driven from the
+     * GUI, e.g. {@code /resume} or {@code /clear} sent from the prompt panel
+     * or the answer to the {@code /resume} picker. Those writes are made by the
+     * plugin, so they do not count as terminal input, but they still switch the
+     * conversation the process writes: prompt evidence captured before them no
+     * longer proves the shared launch conversation is the one on screen.
+     */
+    private volatile long guiConversationSwitchAt;
+
+    /**
      * Line being typed in the terminal, assembled from the raw PTY input so
      * that a prompt submitted from the keyboard is recognised as evidence for
      * the conversation on screen (see {@link #onTerminalInput(byte[], long)}).
@@ -475,6 +485,11 @@ public class ClaudeSessionController {
     /** Package-private for tests: the prompt-evidence part of {@link #sendPrompt(String)}. */
     void simulateSentPrompt(String text, long sentAt) {
         rememberSentPrompt(text, sentAt);
+    }
+
+    /** Package-private for tests: the choice-menu bookkeeping of {@link #writePtyAnswer(String)}. */
+    void simulateGuiChoiceAnswer(String answer) {
+        rememberChoiceMenuAnswer(answer);
     }
 
     /** Package-private for tests: the number of identity scans started. */
@@ -850,6 +865,7 @@ public class ClaudeSessionController {
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
+            guiConversationSwitchAt = 0;
             resetTerminalInputRecording();
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -995,6 +1011,7 @@ public class ClaudeSessionController {
         long since;
         long promptAt;
         long externalAt;
+        long guiSwitchAt;
         String promptText;
         String activeId;
         Set<String> exclude = new HashSet<>();
@@ -1009,6 +1026,7 @@ public class ClaudeSessionController {
             since = Math.max(processStartedAt, promptSubmittedAt);
             promptAt = promptSubmittedAt;
             externalAt = externalInputAt;
+            guiSwitchAt = guiConversationSwitchAt;
             promptText = lastPromptText;
             activeId = activeSessionId;
             if (dir != null && configDir != null && since > 0) {
@@ -1104,7 +1122,8 @@ public class ClaudeSessionController {
                             ownPreferred, promptAt, promptText);
                 }
                 boolean ownFileMatch = newest != null;
-                if (newest != null && externalAt > 0 && otherLiveClaims.contains(newest)) {
+                if (newest != null && (externalAt > 0 || guiSwitchAt > 0)
+                        && otherLiveClaims.contains(newest)) {
                     // A conversation another live tab also writes is not proof
                     // that this tab's submission went there: that tab's own turn
                     // can submit the same text. When the user has typed in the
@@ -1114,8 +1133,10 @@ public class ClaudeSessionController {
                     // conversation resumed with the picker — is then the one on
                     // screen. Every file written since the submission competes
                     // by recency instead of the shared match ending the search.
-                    // A GUI-only run cannot have switched conversations that
-                    // way, so its launch conversation stays conclusive.
+                    // A switch made from the GUI (/resume or /clear sent from
+                    // the prompt panel, or the picker answer) leaves the
+                    // terminal-input time at zero but is such a switch as well.
+                    // Without either, the launch conversation stays conclusive.
                     String newer = findPromptBearingSession(dir, configDir, since,
                             Set.of(), null, promptAt, promptText);
                     if (newer == null && since > SESSION_MTIME_GRANULARITY_MS) {
@@ -1865,10 +1886,42 @@ public class ClaudeSessionController {
      * kept instead.
      */
     private void rememberSentPrompt(String text, long sentAt) {
+        if (isConversationCommand(text)) {
+            // A TUI command is not a prompt written to the current
+            // conversation: /resume and /clear can switch it, and these
+            // writes are made by the plugin, so no terminal input marks
+            // the switch.
+            guiConversationSwitchAt = sentAt;
+        }
         if (!text.isBlank()) {
             lastPromptText = text;
             promptSubmittedAt = sentAt;
             scheduleIdentityRefresh();
+        }
+    }
+
+    /**
+     * Returns {@code true} when the prompt-panel text is a TUI command that
+     * changes the conversation the process writes rather than a message in it.
+     *
+     * @param text text submitted from the prompt panel
+     */
+    private static boolean isConversationCommand(String text) {
+        String command = text.stripLeading();
+        return command.startsWith("/resume") || command.startsWith("/clear");
+    }
+
+    /**
+     * Records that the GUI answered a choice menu. An {@code ARROW:n} answer
+     * selects an entry in an unnumbered picker (e.g. the {@code /resume}
+     * session list), which changes the conversation the process writes; the
+     * write is made by the plugin, so it leaves the terminal-input time alone.
+     *
+     * @param answer answer passed to {@link #writePtyAnswer(String)}
+     */
+    void rememberChoiceMenuAnswer(String answer) {
+        if (answer != null && answer.startsWith("ARROW:")) {
+            guiConversationSwitchAt = System.currentTimeMillis();
         }
     }
 
@@ -1919,6 +1972,7 @@ public class ClaudeSessionController {
      * @param answer the answer string from the choice-menu callback
      */
     public void writePtyAnswer(String answer) {
+        rememberChoiceMenuAnswer(answer);
         // Choosing an option is the GUI consuming the picker: text typed into
         // its search box belongs to the picker, not to the next prompt.
         resetTerminalInputRecording();
