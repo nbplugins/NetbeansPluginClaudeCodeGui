@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -576,6 +577,40 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Makes the launch identity describe the store the process will actually
+     * write.
+     *
+     * <p>The identity is prepared on a worker thread, while the spawn re-reads
+     * the profile. If the profile's storage directory or
+     * {@code CLAUDE_CONFIG_DIR} override changed in between, the prepared
+     * snapshot lists the old store's sessions: every file in the new store
+     * would look new, and a conversation written there within the file-time
+     * slack could be adopted as this tab's own. The snapshot is then
+     * recaptured against the spawn store before the process starts writing.
+     *
+     * @param dir             working directory
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @param prepared        identity prepared earlier; may be {@code null}
+     * @param spawnConfigDir  config dir the process will use, or {@code null}
+     *                        when it cannot be resolved
+     * @return the prepared identity when it already describes
+     *         {@code spawnConfigDir}, otherwise a fresh snapshot of that store
+     */
+    static LaunchIdentity reconcileLaunchIdentity(java.io.File dir, SessionMode mode,
+                                                  String resumeSessionId,
+                                                  LaunchIdentity prepared,
+                                                  java.nio.file.Path spawnConfigDir) {
+        if (spawnConfigDir == null) return prepared;
+        if (prepared != null && prepared.configDir() != null
+                && prepared.configDir().toAbsolutePath().normalize()
+                        .equals(spawnConfigDir.toAbsolutePath().normalize())) {
+            return prepared;
+        }
+        return prepareLaunchIdentity(dir, spawnConfigDir, mode, resumeSessionId);
+    }
+
+    /**
      * Starts the PTY process using a session identity prepared earlier with
      * {@link #prepareLaunchIdentity(java.io.File, String, SessionMode, String)}.
      *
@@ -603,9 +638,13 @@ public class ClaudeSessionController {
 
         // The session identity was captured before launch so that stopping/renaming
         // later targets the session this process will actually use (see stopAndRename).
+        // The profile is re-read above for the spawn, so a profile whose storage
+        // moved in Options while the background preparation scanned needs the
+        // snapshot recaptured in the store the process is about to write.
         SessionMode effectiveMode = mode != null ? mode : SessionMode.NEW;
-        LaunchIdentity launch = identity != null ? identity
-                : prepareLaunchIdentity(dir, profileName, effectiveMode, resumeSessionId);
+        LaunchIdentity launch = reconcileLaunchIdentity(dir, effectiveMode, resumeSessionId,
+                identity,
+                ClaudeProcess.resolveConfigDir(profile, ClaudeCodePreferences.getProfilesDir()));
         preStartSessionIds = launch.preStartSessionIds();
         activeSessionId = launch.sessionId();
         launchIdentityKnown = activeSessionId != null;
@@ -1085,13 +1124,20 @@ public class ClaudeSessionController {
      * {@code mtimeCutoff}, skipping {@code exclude}, whose JSONL already
      * contains {@code promptText} since {@code promptAt}, or {@code null}.
      *
+     * <p>The candidates keep the store's newest-first order: when several
+     * unclaimed files hold the same text, the first match must be the one
+     * written most recently (this tab's own file), not an older conversation
+     * another tab submitted the same prompt to and then left.
+     *
      * @param preferred session ID to check first; may be {@code null}
      */
     private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
                                             long mtimeCutoff, Set<String> exclude,
                                             String preferred, long promptAt, String promptText) {
-        Set<String> candidates = new HashSet<>(ClaudeSessionStore.listSessionIdsWrittenSince(
-                dir.toPath(), configDir, mtimeCutoff, exclude, PROMPT_EVIDENCE_CANDIDATES));
+        Set<String> candidates = new LinkedHashSet<>(
+                ClaudeSessionStore.listSessionIdsWrittenSince(
+                        dir.toPath(), configDir, mtimeCutoff, exclude,
+                        PROMPT_EVIDENCE_CANDIDATES));
         return findPromptBearingSession(dir, configDir, candidates, preferred, promptAt,
                 promptText);
     }

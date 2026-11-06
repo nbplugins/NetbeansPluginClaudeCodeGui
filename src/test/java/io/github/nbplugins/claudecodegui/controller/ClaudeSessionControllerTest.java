@@ -2520,6 +2520,84 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Two unclaimed files hold the same prompt: an exited tab's conversation and
+     * this NEW tab's own file, written later. The store returns the newest
+     * first; the scan must keep that order and take this tab's own file, or the
+     * older conversation is renamed and kept as the identity on later scans.
+     */
+    @Test
+    void anUnclaimedNewerOwnFileWinsOverAnOlderOneWithTheSamePrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "z", "z");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("z.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, false);
+        controller.simulateLiveSession(config, null, Set.of("a", "z"));
+
+        controller.simulateTerminalInput(
+                "same".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 11_000L);
+        assertEquals("same", controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 11_001L));
+
+        // The exited tab's conversation already holds the same prompt.
+        appendUserPrompt(dir, "a", "same", START_MS + 11_400L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+        // This tab's own file was written later.
+        appendUserPrompt(dir, "z", "same", START_MS + 11_600L);
+        setMtime(dir.resolve("z.jsonl"), START_MS + 12_600L);
+
+        assertEquals("z", controller.resolveActiveSessionId(),
+                "the newest unclaimed match is this tab's own file");
+        assertEquals("z", controller.resolveActiveSessionId(),
+                "later scans must keep the same file");
+    }
+
+    /**
+     * The launch snapshot is prepared on a worker thread and the spawn re-reads
+     * the profile. If the profile's storage moved in between, the snapshot
+     * lists the old store, whose files make every file in the new store look
+     * new — one written within the file-time slack could then be adopted as
+     * this tab's own. The snapshot must be recaptured in the spawn store.
+     */
+    @Test
+    void aProfileMovedDuringPreparationRecapturesTheLaunchSnapshot() throws Exception {
+        java.nio.file.Path oldConfig = tmpDir.resolve("old-config");
+        java.nio.file.Path newConfig = tmpDir.resolve("new-config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+
+        writeSession(sessionDir(oldConfig, work), "old", "old");
+        writeSession(sessionDir(newConfig, work), "current", "current");
+
+        ClaudeSessionController.LaunchIdentity prepared =
+                ClaudeSessionController.prepareLaunchIdentity(
+                        work.toFile(), oldConfig,
+                        io.github.nbplugins.claudecodegui.model.SessionMode.NEW, null);
+        assertEquals(Set.of("old"), prepared.preStartSessionIds());
+
+        ClaudeSessionController.LaunchIdentity same =
+                ClaudeSessionController.reconcileLaunchIdentity(
+                        work.toFile(),
+                        io.github.nbplugins.claudecodegui.model.SessionMode.NEW,
+                        null, prepared, oldConfig);
+        assertSame(prepared, same, "an unchanged store keeps the prepared snapshot");
+
+        ClaudeSessionController.LaunchIdentity moved =
+                ClaudeSessionController.reconcileLaunchIdentity(
+                        work.toFile(),
+                        io.github.nbplugins.claudecodegui.model.SessionMode.NEW,
+                        null, prepared, newConfig);
+        assertEquals(newConfig, moved.configDir());
+        assertEquals(Set.of("current"), moved.preStartSessionIds(),
+                "the snapshot must describe the store the process will write");
+    }
+
+    /**
      * The same race with known prompt text. Once the tab has borrowed a
      * sibling's conversation, the launch-known preference must not keep it
      * there: the borrowed file is owned by another live tab, so its own launch
