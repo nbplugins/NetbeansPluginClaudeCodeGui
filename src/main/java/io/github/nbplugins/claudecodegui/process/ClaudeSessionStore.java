@@ -220,6 +220,30 @@ public final class ClaudeSessionStore {
     public static List<String> listSessionIdsWrittenSince(Path workingDir, Path claudeConfigDir,
                                                           long sinceMillis, Set<String> excludeIds,
                                                           int limit) {
+        return listSessionIdsWrittenSince(workingDir, claudeConfigDir, sinceMillis,
+                excludeIds, null, limit);
+    }
+
+    /**
+     * Returns up to {@code limit} IDs of session files modified at or after
+     * {@code sinceMillis}, newest first, skipping {@code excludeIds}.
+     *
+     * <p>When {@code includeIds} is non-{@code null}, only those sessions are
+     * considered <em>before</em> the limit is applied. A caller that is looking
+     * for a specific known conversation (e.g. one another tab is writing) must
+     * not let newer unrelated files fill the limited list and hide it.
+     *
+     * @param workingDir      working directory
+     * @param claudeConfigDir Claude config base dir; {@code null} means {@code ~/.claude}
+     * @param sinceMillis     earliest acceptable file modification time (epoch millis)
+     * @param excludeIds      session IDs to ignore; may be {@code null}
+     * @param includeIds      session IDs to consider, or {@code null} for all
+     * @param limit           maximum number of IDs to return
+     * @return session IDs, newest first; empty if none match
+     */
+    public static List<String> listSessionIdsWrittenSince(Path workingDir, Path claudeConfigDir,
+                                                          long sinceMillis, Set<String> excludeIds,
+                                                          Set<String> includeIds, int limit) {
         if (limit <= 0) return List.of();
         Path dir = sessionsDir(workingDir, claudeConfigDir);
         if (!Files.isDirectory(dir)) return List.of();
@@ -229,6 +253,7 @@ public final class ClaudeSessionStore {
                 String name = file.getFileName().toString();
                 if (!name.endsWith(".jsonl")) continue;
                 String id = sessionIdOf(file);
+                if (includeIds != null && !includeIds.contains(id)) continue;
                 if (excludeIds != null && excludeIds.contains(id)) continue;
                 long mtime;
                 try {

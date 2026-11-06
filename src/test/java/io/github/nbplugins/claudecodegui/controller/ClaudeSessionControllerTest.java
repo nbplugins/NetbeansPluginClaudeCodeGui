@@ -2356,6 +2356,112 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A tab whose conversation was known at launch switches to another live
+     * tab's conversation and submits a recalled prompt. An exited tab wrote its
+     * own human prompt afterwards, so its file is unclaimed and holds a user
+     * record; the shared conversation holds this tab's submission. The new-file
+     * priority belongs to unresolved NEW tabs only, so the unrelated record
+     * must not pin this tab and make Save &amp; Switch rename it.
+     */
+    @Test
+    void anUnknownPromptFromALaunchedTabKeepsTheSharedDestination() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        writeSession(dir, "exited", "exited");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("exited.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared", "exited"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared", "exited"));
+
+        try {
+            // Up recalls a prompt and Enter submits it: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The shared conversation receives the submission.
+            appendUserPrompt(dir, "shared", "recalled prompt", START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+            // An exited tab wrote its own human prompt after the submission.
+            appendUserPrompt(dir, "exited", "unrelated work", START_MS + 11_600L);
+            setMtime(dir.resolve("exited.jsonl"), START_MS + 13_000L);
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "the shared submission must win over an unrelated human record");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The destination of a recalled prompt is another live tab's conversation,
+     * but many newer unclaimed files (assistant output only) were written since
+     * the submission. The shared conversations must be filtered before the
+     * candidate list is truncated, or the destination is never inspected and
+     * the file-time fallback renames an unrelated conversation.
+     */
+    @Test
+    void aSharedDestinationIsFoundDespiteManyNewerUnclaimedFiles() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("shared.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "own", Set.of("own", "shared"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "shared", Set.of("own", "shared"));
+
+        try {
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The shared conversation receives the submission.
+            appendUserPrompt(dir, "shared", "recalled prompt", START_MS + 11_500L);
+            setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+
+            // A crowd of newer, unclaimed conversations with assistant output
+            // only fills a globally limited candidate list.
+            for (int i = 1; i <= 8; i++) {
+                writeSession(dir, "noise" + i, "noise" + i);
+                setMtime(dir.resolve("noise" + i + ".jsonl"), START_MS + 12_000L + i * 100L);
+            }
+
+            assertEquals("shared", controller.resolveActiveSessionId(),
+                    "the shared conversations must be filtered before the limit");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * An unresolved NEW tab submits a Tab-completed prompt, so its text is
      * unknown, while a live sibling submits its own human prompt. The sibling
      * holds the only claimed file, but this tab's own new file also contains a

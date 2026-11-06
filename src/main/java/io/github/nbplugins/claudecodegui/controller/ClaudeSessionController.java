@@ -973,15 +973,20 @@ public class ClaudeSessionController {
                 // user record is what proves a file was written for this
                 // submission.
                 //
-                // This tab's own new conversation must win over a sibling: an
-                // unresolved NEW tab writes its file without any other tab
-                // claiming it, while a sibling's record submitted around the
-                // same time may just be that tab's own turn.
-                newest = newestSessionWithUserMessageSince(dir, configDir, since,
-                        promptAt, exclude);
-                if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
-                    newest = newestSessionWithUserMessageSince(dir, configDir,
-                            since - SESSION_MTIME_GRANULARITY_MS, promptAt, exclude);
+                // Only an unresolved NEW tab gets the new-file priority: it
+                // writes its own file without any other tab claiming it, while
+                // a sibling's record submitted around the same time may just be
+                // that tab's own turn. A tab whose conversation was known at
+                // launch had nothing new to create, so an unrelated unclaimed
+                // human record (e.g. an exited third tab's own prompt) must not
+                // displace the shared conversation it switched into.
+                if (!launchIdentityKnown) {
+                    newest = newestSessionWithUserMessageSince(dir, configDir, since,
+                            promptAt, exclude);
+                    if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        newest = newestSessionWithUserMessageSince(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, exclude);
+                    }
                 }
                 if (newest == null) {
                     // Only then may a conversation another live tab holds be
@@ -1120,9 +1125,13 @@ public class ClaudeSessionController {
         if (shared.isEmpty()) return null;
         Set<String> sharedExclude = new HashSet<>(exclude);
         sharedExclude.removeAll(shared);
+        // Only the shared conversations may be considered: newer unrelated
+        // files must not fill the limited candidate list and hide the
+        // destination that holds this tab's submission.
         for (String id : ClaudeSessionStore.listSessionIdsWrittenSince(
-                dir.toPath(), configDir, mtimeCutoff, sharedExclude, PROMPT_EVIDENCE_CANDIDATES)) {
-            if (shared.contains(id) && ClaudeSessionStore.containsUserMessageSince(
+                dir.toPath(), configDir, mtimeCutoff, sharedExclude, shared,
+                PROMPT_EVIDENCE_CANDIDATES)) {
+            if (ClaudeSessionStore.containsUserMessageSince(
                     dir.toPath(), configDir, id, promptCutoff)) {
                 return id;
             }

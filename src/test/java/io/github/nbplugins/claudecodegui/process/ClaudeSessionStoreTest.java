@@ -324,6 +324,23 @@ class ClaudeSessionStoreTest {
                 "files older than the cutoff are not candidates");
     }
 
+    @Test
+    void listSessionIdsWrittenSince_appliesIncludedIdsBeforeTheLimit() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeTimedSession(sessionDir, "wanted", OLD_TS, BASE_MTIME + 1_000L);
+        for (int i = 1; i <= 8; i++) {
+            writeTimedSession(sessionDir, "noise" + i, OLD_TS,
+                    BASE_MTIME + 1_000L + i * 100L);
+        }
+
+        assertEquals(java.util.List.of("wanted"),
+                ClaudeSessionStore.listSessionIdsWrittenSince(
+                        workDir, tmpDir, BASE_MTIME, java.util.Set.of(),
+                        java.util.Set.of("wanted"), 8),
+                "newer unrelated files must not fill the limited list");
+    }
+
     // -------------------------------------------------------------------------
     // containsUserPromptSince
     // -------------------------------------------------------------------------
