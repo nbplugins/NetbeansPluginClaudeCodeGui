@@ -232,6 +232,16 @@ public class ClaudeSessionController {
     private volatile boolean launchIdentityKnown;
 
     /**
+     * Session ID the process was launched with ({@code --continue} or
+     * {@code --resume}), or {@code null} for a {@code NEW} launch. Kept after
+     * the tracked identity changes: when a prompt submitted later turns out to
+     * have been appended to the launch conversation, that record proves the
+     * conversation never actually switched (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private volatile String launchSessionId;
+
+    /**
      * Time (epoch millis) a prompt was last submitted from the plugin. Used to
      * attribute the session file created by a new process to this tab promptly,
      * before any sibling tab could guess and claim it.
@@ -405,6 +415,7 @@ public class ClaudeSessionController {
         activeSessionId = sessionId;
         preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
         launchIdentityKnown = sessionId != null;
+        launchSessionId = sessionId;
     }
 
     /** Package-private for tests: one tick of the periodic identity refresh. */
@@ -598,6 +609,7 @@ public class ClaudeSessionController {
         preStartSessionIds = launch.preStartSessionIds();
         activeSessionId = launch.sessionId();
         launchIdentityKnown = activeSessionId != null;
+        launchSessionId = activeSessionId;
 
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
@@ -750,6 +762,7 @@ public class ClaudeSessionController {
             activeSessionId = null;
             preStartSessionIds = Set.of();
             launchIdentityKnown = false;
+            launchSessionId = null;
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
@@ -980,7 +993,19 @@ public class ClaudeSessionController {
                 // launch had nothing new to create, so an unrelated unclaimed
                 // human record (e.g. an exited third tab's own prompt) must not
                 // displace the shared conversation it switched into.
-                if (!launchIdentityKnown) {
+                //
+                // Its launch conversation is different: a user record appended
+                // to that file after the submission proves the submission went
+                // there, so a temporary shared guess (a sibling whose own prompt
+                // landed around the same time) is taken back as soon as the
+                // record appears. Without this the released claim would leave
+                // the tab pinned to the sibling's conversation.
+                if (launchIdentityKnown && launchSessionId != null
+                        && ClaudeSessionStore.containsUserMessageSince(dir.toPath(), configDir,
+                                launchSessionId, promptAt)) {
+                    newest = launchSessionId;
+                }
+                if (newest == null && !launchIdentityKnown) {
                     newest = newestSessionWithUserMessageSince(dir, configDir, since,
                             promptAt, exclude);
                     if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
@@ -3073,31 +3098,43 @@ public class ClaudeSessionController {
                 if (!terminalInputPaste) applyCursorKey(c);
             } else if (terminalInputPaste) {
                 // Inside a paste every newline is part of the prompt, not a
-                // submission of the line typed so far.
-                if (c == '\r') {
-                    insertTerminalChar('\n');
-                    terminalPasteAfterCR = true;
-                } else if (c == '\n') {
-                    if (!terminalPasteAfterCR) insertTerminalChar('\n');
-                    terminalPasteAfterCR = false;
-                } else if (c >= 0x20 || c == '\t') {
-                    // Tab is literal text in a paste (Claude matches the prompt
-                    // exactly), while the same key typed live completes it.
-                    // Insert the whole contiguous run at once: inserting one
-                    // character at a time would copy the still-unchanged suffix
-                    // of the draft for every character, which makes a paste
-                    // before long existing text quadratic. The run stops before
-                    // a control character, so a terminal escape sequence (the
-                    // end of the paste) is still parsed on its own.
-                    int end = i + 1;
-                    while (end < text.length()) {
-                        char next = text.charAt(end);
-                        if (next != '\t' && next < 0x20) break;
+                // submission of the line typed so far. Collect the whole
+                // textual run — printable characters, tabs (literal text in a
+                // paste, while the same key typed live completes the input)
+                // and line breaks, with CRLF normalized to one newline — and
+                // insert it in a single operation. Inserting one character or
+                // one line break at a time copies the still-unchanged suffix
+                // of the draft for every insertion, which makes a large paste
+                // before long existing text quadratic. The run stops before an
+                // escape sequence (the end-of-paste marker) or any other
+                // control character, which are still parsed on their own.
+                StringBuilder pasted = new StringBuilder();
+                boolean afterCR = terminalPasteAfterCR;
+                int end = i;
+                while (end < text.length()) {
+                    char next = text.charAt(end);
+                    if (next == '\r') {
+                        pasted.append('\n');
+                        afterCR = true;
                         end++;
+                    } else if (next == '\n') {
+                        // The LF of a CRLF pair split across writes is part of
+                        // the same line break.
+                        if (!afterCR) pasted.append('\n');
+                        afterCR = false;
+                        end++;
+                    } else if (next == '\t' || next >= 0x20) {
+                        pasted.append(next);
+                        afterCR = false;
+                        end++;
+                    } else {
+                        break;
                     }
-                    insertTerminalText(text.subSequence(i, end));
+                }
+                if (end > i) {
+                    insertTerminalText(pasted);
+                    terminalPasteAfterCR = afterCR;
                     i = end - 1;
-                    terminalPasteAfterCR = false;
                 }
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();

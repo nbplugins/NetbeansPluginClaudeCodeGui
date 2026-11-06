@@ -2462,6 +2462,64 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A launch-known tab submits a recalled prompt at about the same time as a
+     * live sibling submits its own human prompt: the shared pass adopts the
+     * sibling's conversation for a moment. The launch conversation then
+     * receives this tab's user record and becomes the newest file, so the tab
+     * must take its identity back instead of staying pinned to the sibling —
+     * otherwise Save &amp; Switch renames the sibling's conversation.
+     */
+    @Test
+    void anUnknownPromptRecoversTheLaunchConversationAfterASharedGuess() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            // Up recalls a prompt and Enter submits it: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The sibling's own human prompt lands first.
+            appendUserPrompt(dir, "b", "sibling prompt", START_MS + 11_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_500L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "with no record of its own yet, the tab follows the sibling");
+
+            // This tab's submission lands in its launch conversation, later.
+            appendUserPrompt(dir, "a", "recalled prompt", START_MS + 11_600L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_600L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the launch conversation's record must take the identity back");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "later scans must keep the recovered conversation");
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the sibling keeps its own conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * An unresolved NEW tab submits a Tab-completed prompt, so its text is
      * unknown, while a live sibling submits its own human prompt. The sibling
      * holds the only claimed file, but this tab's own new file also contains a
@@ -2685,6 +2743,37 @@ class ClaudeSessionControllerTest {
                 "the whole pasted text must precede the draft");
         assertTrue(elapsedMillis < 3_000,
                 "a paste must not rescan the draft per character (took "
+                        + elapsedMillis + " ms)");
+    }
+
+    /**
+     * A paste with many line breaks must be inserted in the same single
+     * operation as its text. Handling every newline on its own copies the
+     * unchanged draft once per line, which turns a line-heavy paste into
+     * seconds of quadratic work on the thread feeding the terminal.
+     */
+    @Test
+    void aNewlineHeavyPasteBeforeALargeDraftIsInsertedQuickly() {
+        String draft = "d".repeat(512 * 1024);
+        String pasted = "x\n".repeat(512 * 1024);
+        controller.simulateTerminalInput(
+                draft.getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // Home, then a bracketed paste at the beginning of the draft.
+        controller.simulateTerminalInput(
+                new byte[]{0x1b, '[', 'H'}, START_MS + 1L);
+
+        long started = System.nanoTime();
+        assertNull(controller.simulateTerminalInput(
+                ("\u001b[200~" + pasted + "\u001b[201~")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L));
+        long elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+        assertEquals(pasted.length() + draft.length(), controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 3L).length(),
+                "the whole pasted text, line breaks included, must precede the draft");
+        assertTrue(elapsedMillis < 3_000,
+                "a paste must not rescan the draft per line (took "
                         + elapsedMillis + " ms)");
     }
 
