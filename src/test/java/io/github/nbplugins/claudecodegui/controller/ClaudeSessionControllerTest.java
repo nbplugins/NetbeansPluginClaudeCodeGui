@@ -2598,6 +2598,121 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Two live conversations held by sibling tabs both contain the submitted
+     * text; the tab must adopt the one written last, which is the conversation
+     * the process is actually on. Searching an unordered set could pick the
+     * older sibling instead.
+     */
+    @Test
+    void borrowedPromptCandidatesAreSearchedNewestFirst() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, false);
+        controller.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS + 1_000L, true);
+        tabC.simulateLiveSession(config, "a", Set.of("a"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("b"));
+
+        try {
+            controller.simulateTerminalInput(
+                    "continue".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 11_000L);
+            assertEquals("continue", controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            // The older sibling's conversation holds the text first...
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // ...and the newer one holds it too, written strictly later.
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the live conversation written last is the one on screen");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the same conversation");
+        } finally {
+            tabB.stopProcess();
+            tabC.stopProcess();
+        }
+    }
+
+    /**
+     * A NEW tab submits a recalled prompt and borrows a live sibling's
+     * conversation while its own file does not exist yet. Once its own file
+     * does exist, it must win even if the sibling writes again later: the
+     * borrowed file is established by another live tab, so the claim-based
+     * exclusion alone (this tab now holds the sibling's file too) would keep
+     * choosing the sibling.
+     */
+    @Test
+    void anUnknownPromptPrefersItsOwnNewFileOverTheBorrowedSiblings() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("b"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("b"));
+
+        try {
+            // Up recalls a prompt, Enter submits it: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 11_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_001L));
+
+            appendUserPrompt(dir, "b", "sibling prompt", START_MS + 11_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_500L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the sibling's conversation is borrowed while no own file exists");
+
+            // This tab's own file appears, then the sibling writes again later.
+            writeSession(dir, "own", "own");
+            appendUserPrompt(dir, "own", "own prompt", START_MS + 11_600L);
+            setMtime(dir.resolve("own.jsonl"), START_MS + 11_700L);
+            appendUserPrompt(dir, "b", "sibling again", START_MS + 12_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_700L);
+
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "the tab's own file must win over the borrowed sibling's");
+            assertEquals("own", controller.resolveActiveSessionId(),
+                    "later scans must keep the tab's own file");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * The same race with known prompt text. Once the tab has borrowed a
      * sibling's conversation, the launch-known preference must not keep it
      * there: the borrowed file is owned by another live tab, so its own launch

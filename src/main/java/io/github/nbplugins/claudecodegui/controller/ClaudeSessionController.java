@@ -967,6 +967,14 @@ public class ClaudeSessionController {
             // A line submitted from the terminal itself counts as the latest
             // prompt (same millisecond), so a resume driven entirely from the
             // keyboard is still followed.
+            // The tab's own evidence excludes every conversation another live
+            // tab established: such a file is not this tab's own, even when it
+            // is the identity currently tracked (a false adoption). A merely
+            // borrowed or provisionally claimed file does not count: a sibling
+            // following this tab's conversation must not cost this tab the
+            // session it established.
+            Set<String> ownExclude = new HashSet<>(exclude);
+            ownExclude.addAll(otherOwned);
             if (promptAt > 0 && promptAt >= externalAt) {
                 // First look for the tab's own conversation: a file nobody else
                 // claims that already holds this prompt. It must win over a
@@ -974,8 +982,6 @@ public class ClaudeSessionController {
                 // file appears a moment after the sibling that submitted the
                 // same prompt — adopting the sibling then would pin this tab to
                 // another tab's conversation.
-                Set<String> ownExclude = new HashSet<>(exclude);
-                ownExclude.addAll(otherOwned);
                 // A session another live tab established is not this tab's own,
                 // even when it is the identity currently tracked (a false
                 // adoption). A merely borrowed or provisionally claimed file
@@ -1018,10 +1024,18 @@ public class ClaudeSessionController {
                 if (newest == null) {
                     // Only then may a conversation another live tab writes be
                     // adopted: that is an in-process /resume from this terminal.
+                    // Order the candidates newest first: several live files can
+                    // hold the same text, and the one written last is the
+                    // conversation the process is on — an older sibling that
+                    // submitted the same prompt must not win.
                     Set<String> borrowed = new HashSet<>(claimed);
                     borrowed.addAll(otherLiveClaims);
                     if (activeId != null) borrowed.add(activeId);
-                    newest = findPromptBearingSession(dir, configDir, borrowed, activeId,
+                    Set<String> ordered = new LinkedHashSet<>(
+                            ClaudeSessionStore.listSessionIdsWrittenSince(
+                                    dir.toPath(), configDir, 0L, null, borrowed,
+                                    borrowed.size()));
+                    newest = findPromptBearingSession(dir, configDir, ordered, activeId,
                             promptAt, promptText);
                 }
             }
@@ -1052,11 +1066,15 @@ public class ClaudeSessionController {
                     newest = launchSessionId;
                 }
                 if (newest == null && !launchIdentityKnown) {
+                    // A record is not proof of ownership: a sibling's file the
+                    // tab borrowed earlier is now held by this tab too, so the
+                    // claim-based exclusion no longer hides it. Only a file no
+                    // other live tab established may count as this tab's own.
                     newest = newestSessionWithUserMessageSince(dir, configDir, since,
-                            promptAt, exclude);
+                            promptAt, ownExclude);
                     if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                         newest = newestSessionWithUserMessageSince(dir, configDir,
-                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, exclude);
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, ownExclude);
                     }
                 }
                 if (newest == null) {
