@@ -1105,10 +1105,24 @@ public class ClaudeSessionController {
                 // tabs submitted identical text) is the sibling's, and keeping
                 // it preferred would pin this tab to it even after its own
                 // launch conversation holds the prompt and is strictly newer.
-                String ownPreferred = activeId != null
+                //
+                // The file this run resolved for its own submission is
+                // preferred over whichever identity is currently tracked: a
+                // borrowed sibling file that matched the identical prompt
+                // before this tab's record was flushed must not keep winning
+                // once this tab's own file holds the prompt. Only a file no
+                // other live tab established and this tab does not merely
+                // follow counts: an explicit resume of the same file by
+                // another tab owns it.
+                String ownPreferred = null;
+                if (ownSessionId != null && !otherOwned.contains(ownSessionId)
+                        && !isBorrowedByThisTab(dir, configDir, ownSessionId)) {
+                    ownPreferred = ownSessionId;
+                } else if (activeId != null
                         && (activeId.equals(launchSessionId)
-                                || !otherOwned.contains(activeId))
-                        ? activeId : null;
+                                || !otherOwned.contains(activeId))) {
+                    ownPreferred = activeId;
+                }
                 newest = findPromptBearingSession(dir, configDir, since, ownExclude,
                         ownPreferred, promptAt, promptText);
                 if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
@@ -1121,7 +1135,11 @@ public class ClaudeSessionController {
                             since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
                             ownPreferred, promptAt, promptText);
                 }
-                boolean ownFileMatch = newest != null;
+                // A match in a file this tab only follows is not proof that
+                // this run created it: it is another live tab's conversation,
+                // matched because both tabs submitted the same text.
+                boolean ownFileMatch = newest != null
+                        && !isBorrowedByThisTab(dir, configDir, newest);
                 if (newest != null && (externalAt > 0 || guiSwitchAt > 0)
                         && otherLiveClaims.contains(newest)) {
                     // A conversation another live tab also writes is not proof
@@ -1189,17 +1207,24 @@ public class ClaudeSessionController {
                 // user record is what proves a file was written for this
                 // submission.
                 //
-                // Only a NEW tab gets this priority: it may write its first
-                // file without any other tab claiming it, while a sibling's
-                // record submitted around the same time may just be that tab's
-                // own turn. A tab whose conversation was known at launch had
+                // The unclaimed-record priority belongs to a run that has not
+                // created a file of its own yet: it may write its first file
+                // without any other tab claiming it, while a sibling's record
+                // submitted around the same time may just be that tab's own
+                // turn. A tab whose conversation was known at launch had
                 // nothing new to create, so an unrelated unclaimed human record
                 // (e.g. an exited third tab's own prompt) must not displace the
-                // shared conversation it switched into. Once a NEW run has
-                // resolved its own file, the priority is limited to the
-                // conversations this tab holds: a later submission cannot be
-                // the one creating the first file, so an unrelated unclaimed
-                // record must yield to the shared conversation the run joined.
+                // shared conversation it switched into. Once a run has resolved
+                // its own file, the priority is limited to the conversations
+                // this tab holds: a later submission cannot be the one creating
+                // the first file, so an unrelated unclaimed record must yield
+                // to the shared conversation the run joined.
+                //
+                // A launch-known run is treated the same way once it has
+                // switched to another conversation and resolved it: a later
+                // recalled submission must keep that conversation eligible, or
+                // the sibling file it temporarily follows is renamed in its
+                // place.
                 //
                 // Its launch conversation is different: a user record appended
                 // to that file after the submission suggests the submission
@@ -1208,7 +1233,7 @@ public class ClaudeSessionController {
                 // tab launched the same saved file, its own turn also appends a
                 // human record there, and a TUI resume into a newer conversation
                 // must still win.
-                if (newest == null && !launchIdentityKnown) {
+                if (newest == null && (!launchIdentityKnown || ownSessionId != null)) {
                     // A record is not proof of ownership: a sibling's file the
                     // tab borrowed earlier is now held by this tab too, so the
                     // claim-based exclusion no longer hides it. Only a file no
@@ -1574,6 +1599,19 @@ public class ClaudeSessionController {
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
     void simulateProcessNotRunning() {
         claudeProcess = new ClaudeProcess();
+    }
+
+    /**
+     * Returns whether this tab only follows {@code sessionId} written by
+     * another live tab. A borrowed conversation is not this tab's own, even
+     * when its file matched the own-prompt evidence before the tab's own file
+     * was flushed.
+     */
+    private boolean isBorrowedByThisTab(java.io.File dir, java.nio.file.Path configDir,
+                                        String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
+        return claims != null && claims.borrowed.contains(this);
     }
 
     private static SessionKey keyFor(java.io.File dir, java.nio.file.Path configDir,
