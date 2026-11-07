@@ -3275,6 +3275,143 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A Tab-completed or recalled draft holds only a part of the submitted
+     * line, so a GUI submission carrying it is recorded as unknown text
+     * instead of an exact prompt the conversation never received.
+     */
+    @Test
+    void aGuiSendWithACompletedDraftRecordsUnknownText() {
+        controller.simulatePromptSubmittedAt(START_MS - 10_000L);
+        controller.simulatePromptText("earlier");
+
+        controller.simulateTerminalInput(
+                "@fi".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{'\t'}, START_MS + 1_000L);
+
+        assertEquals("@fi hello", controller.simulateGuiSend(" hello", START_MS + 2_000L),
+                "the composed line is still what the conversation receives");
+        assertNull(controller.simulateLastPromptText(),
+                "a completed draft makes the submitted text unknown");
+        assertEquals(START_MS + 2_000L, controller.simulatePromptSubmittedAtValue(),
+                "the submission time is still recorded");
+    }
+
+    /**
+     * A switch driven from the terminal (a resume picked with the keyboard)
+     * must be followed for an unknown prompt as well: the shared launch file's
+     * concurrent record must not hide the unclaimed destination.
+     */
+    @Test
+    void anUnknownPromptFollowsATerminalSwitchIntoAnUnclaimedConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A second tab launched the same saved file and only follows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The user resumes the saved conversation b from the terminal and
+            // submits a prompt recalled from the history.
+            controller.simulateTerminalInput(
+                    "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 9_000L);
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 10_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_000L));
+
+            // The other launcher's own turn lands in the shared launch file.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed saved conversation,
+            // which no live tab holds, strictly later.
+            appendUserPrompt(dir, "b", "recalled", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "a terminal-driven switch must follow the unclaimed destination");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * An unheld file is not proof on its own: a tab that submitted its own
+     * prompt and exited leaves one behind, and it must not replace the shared
+     * conversation on screen when it was written earlier.
+     */
+    @Test
+    void anUnheldOlderRecordDoesNotDisplaceTheSharedConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        // The live sibling on b.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b", "c"));
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b", "c"));
+
+        try {
+            // The user switches to the live conversation b from the GUI.
+            controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.simulateGuiChoiceAnswer("ARROW:1");
+
+            // A recalled prompt: its text is unknown.
+            controller.simulatePromptSubmittedAt(START_MS + 11_000L);
+            controller.simulatePromptText(null);
+
+            // A tab that submitted its own prompt and exited leaves an unheld
+            // record behind, earlier than this tab's submission.
+            appendUserPrompt(dir, "c", "third", START_MS + 11_400L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 11_500L);
+            // The live conversation holds the actual submission, strictly
+            // later.
+            appendUserPrompt(dir, "b", "recalled", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "an older unheld record must not displace the shared conversation");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the shared conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * A conversation this tab resolved after a GUI switch stays selected. The
      * switch marker lasts until the run ends, so a later recalled prompt in
      * that own conversation must not be replaced by a live sibling that merely

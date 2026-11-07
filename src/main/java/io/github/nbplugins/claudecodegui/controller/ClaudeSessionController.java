@@ -304,14 +304,15 @@ public class ClaudeSessionController {
     private volatile long externalInputAt;
 
     /**
-     * Time (epoch millis) of the last conversation change driven from the
-     * GUI, e.g. {@code /resume} or {@code /clear} sent from the prompt panel
-     * or the answer to the {@code /resume} picker. Those writes are made by the
-     * plugin, so they do not count as terminal input, but they still switch the
-     * conversation the process writes: prompt evidence captured before them no
-     * longer proves the shared launch conversation is the one on screen.
+     * Time (epoch millis) of the last conversation change driven by a
+     * {@code /resume} or {@code /clear} command or by the answer to the
+     * {@code /resume} picker, whether sent from the prompt panel or typed in
+     * the terminal. Such a command is not a prompt written to the conversation:
+     * it switches the conversation the process writes, so prompt evidence
+     * captured before it no longer proves the shared launch conversation is the
+     * one on screen.
      */
-    private volatile long guiConversationSwitchAt;
+    private volatile long conversationSwitchAt;
 
     /**
      * Line being typed in the terminal, assembled from the raw PTY input so
@@ -480,6 +481,16 @@ public class ClaudeSessionController {
     /** Package-private for tests: records the text of the last submitted prompt. */
     void simulatePromptText(String text) {
         lastPromptText = text;
+    }
+
+    /** Package-private for tests: the recorded text of the last submission. */
+    String simulateLastPromptText() {
+        return lastPromptText;
+    }
+
+    /** Package-private for tests: the recorded time of the last submission. */
+    long simulatePromptSubmittedAtValue() {
+        return promptSubmittedAt;
     }
 
     /** Package-private for tests: the prompt-evidence part of {@link #sendPrompt(String)}. */
@@ -875,7 +886,7 @@ public class ClaudeSessionController {
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
-            guiConversationSwitchAt = 0;
+            conversationSwitchAt = 0;
             resetTerminalInputRecording();
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -1021,7 +1032,7 @@ public class ClaudeSessionController {
         long since;
         long promptAt;
         long externalAt;
-        long guiSwitchAt;
+        long switchAt;
         String promptText;
         String activeId;
         Set<String> exclude = new HashSet<>();
@@ -1036,7 +1047,7 @@ public class ClaudeSessionController {
             since = Math.max(processStartedAt, promptSubmittedAt);
             promptAt = promptSubmittedAt;
             externalAt = externalInputAt;
-            guiSwitchAt = guiConversationSwitchAt;
+            switchAt = conversationSwitchAt;
             promptText = lastPromptText;
             activeId = activeSessionId;
             if (dir != null && configDir != null && since > 0) {
@@ -1150,7 +1161,7 @@ public class ClaudeSessionController {
                 // matched because both tabs submitted the same text.
                 boolean ownFileMatch = newest != null
                         && !isBorrowedByThisTab(dir, configDir, newest);
-                if (newest != null && (externalAt > 0 || guiSwitchAt > 0)
+                if (newest != null && (externalAt > 0 || switchAt > 0)
                         && otherLiveClaims.contains(newest)) {
                     // A conversation another live tab also writes is not proof
                     // that this tab's submission went there: that tab's own turn
@@ -1161,9 +1172,9 @@ public class ClaudeSessionController {
                     // conversation resumed with the picker — is then the one on
                     // screen. Every file written since the submission competes
                     // by recency instead of the shared match ending the search.
-                    // A switch made from the GUI (/resume or /clear sent from
-                    // the prompt panel, or the picker answer) leaves the
-                    // terminal-input time at zero but is such a switch as well.
+                    // A switch made with a resume command — sent from the
+                    // prompt panel, typed in the terminal, or answered in the
+                    // picker — is such a switch as well.
                     // Without either, the launch conversation stays conclusive.
                     String newer = findPromptBearingSession(dir, configDir, since,
                             Set.of(), null, promptAt, promptText);
@@ -1318,15 +1329,17 @@ public class ClaudeSessionController {
                                 since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
                     }
                 }
-                if (guiSwitchAt > 0 && !ownRecordMatch) {
-                    // The conversation was switched from the GUI (/resume or
-                    // the session picker), and the destination may be a saved
-                    // conversation no live tab holds — the shared pass above
-                    // cannot see it. A matching record in a shared file is not
-                    // conclusive either: a sibling that submitted the same
-                    // recalled text writes one too. A record in a conversation
-                    // nobody holds can only have come from this process, so
-                    // the files another live tab holds are left out.
+                if (switchAt > 0 && !ownRecordMatch) {
+                    // The conversation was switched with a resume command —
+                    // sent from the prompt panel, typed in the terminal or
+                    // answered in the picker — and the destination may be a
+                    // saved conversation no live tab holds, which the shared
+                    // pass above cannot see. A matching record in a shared
+                    // file is not conclusive either: a sibling that submitted
+                    // the same recalled text writes one too. A record in a
+                    // conversation nobody holds can only have come from this
+                    // process, so the files another live tab holds are left
+                    // out.
                     //
                     // A conversation this pass already established as this
                     // run's own keeps the submission: the switch was followed,
@@ -1340,7 +1353,16 @@ public class ClaudeSessionController {
                         switched = newestSessionWithUserMessageSince(dir, configDir,
                                 since - SESSION_MTIME_GRANULARITY_MS, promptAt, unheld);
                     }
-                    if (switched != null) {
+                    // Unheld status alone does not prove this process wrote the
+                    // file: a tab that submitted its own prompt and then
+                    // exited leaves one behind. Only a file written strictly
+                    // later than the shared match is the conversation on
+                    // screen; otherwise the shared match stands.
+                    if (switched != null && (newest == null
+                            || ClaudeSessionStore.sessionFileModified(dir.toPath(),
+                                    configDir, switched)
+                               > ClaudeSessionStore.sessionFileModified(dir.toPath(),
+                                    configDir, newest))) {
                         newest = switched;
                     }
                 }
@@ -1972,10 +1994,16 @@ public class ClaudeSessionController {
      */
     private String reconcileGuiSend(String text, long sentAt) {
         String submitted;
+        boolean isTextExact;
         synchronized (terminalInputLine) {
             String draft = terminalInputLine.toString();
             int cursor = Math.min(terminalInputCursor, draft.length());
             submitted = draft.substring(0, cursor) + text + draft.substring(cursor);
+            // A history recall or a Tab completion leaves only a part of the
+            // line in the recorder: composing it would publish text the
+            // conversation never received, and the exact-match search would
+            // miss the real prompt.
+            isTextExact = !terminalHistoryRecall && !terminalCompletionEdited;
         }
         resetTerminalInputRecording();
         if (isConversationCommand(text)) {
@@ -1984,9 +2012,9 @@ public class ClaudeSessionController {
             // writes are made by the plugin, so no terminal input marks
             // the switch. The panel text is checked, not the composed line:
             // a draft must not hide the command.
-            guiConversationSwitchAt = sentAt;
+            conversationSwitchAt = sentAt;
         }
-        rememberSentPrompt(submitted, sentAt);
+        rememberSentPrompt(submitted, sentAt, isTextExact);
         return submitted;
     }
 
@@ -2001,7 +2029,29 @@ public class ClaudeSessionController {
      * kept instead.
      */
     private void rememberSentPrompt(String text, long sentAt) {
-        if (!text.isBlank()) {
+        rememberSentPrompt(text, sentAt, true);
+    }
+
+    /**
+     * Records a prompt sent from the plugin as the evidence the identity scan
+     * matches, or, when only a part of its line is known, as a submission of
+     * unknown text.
+     *
+     * @param text        the prompt text, or the part of it that is known
+     * @param sentAt      submission time
+     * @param isTextExact {@code false} when {@code text} is only a part of the
+     *                    submitted line (a history recall or a Tab completion)
+     */
+    private void rememberSentPrompt(String text, long sentAt, boolean isTextExact) {
+        if (!isTextExact) {
+            // The recorder saw only a part of the line: publishing it as the
+            // prompt would make the exact-match search look for text the
+            // conversation never received. The submission is unknown-text
+            // instead, so the file times and the user records decide.
+            lastPromptText = null;
+            promptSubmittedAt = sentAt;
+            scheduleIdentityRefresh();
+        } else if (!text.isBlank()) {
             lastPromptText = text;
             promptSubmittedAt = sentAt;
             scheduleIdentityRefresh();
@@ -2029,7 +2079,7 @@ public class ClaudeSessionController {
      */
     void rememberChoiceMenuAnswer(String answer) {
         if (answer != null && answer.startsWith("ARROW:")) {
-            guiConversationSwitchAt = System.currentTimeMillis();
+            conversationSwitchAt = System.currentTimeMillis();
         }
     }
 
@@ -3461,7 +3511,8 @@ public class ClaudeSessionController {
      * conversation. A complete line submitted with Enter is the exception — it
      * is a prompt written to the conversation on screen, so it becomes the new
      * evidence, which is what lets a resume driven entirely from the keyboard
-     * be followed.
+     * be followed. A resume command typed there is the other exception: it
+     * switches the conversation instead of writing to it.
      *
      * @param bytes raw input bytes
      * @param now   time of the input (epoch millis)
@@ -3487,7 +3538,17 @@ public class ClaudeSessionController {
             externalInputAt = now;
         }
         if (submitted != null) {
-            lastPromptText = submitted;
+            if (isConversationCommand(submitted)) {
+                // A resume command typed in the terminal is not a prompt the
+                // conversation receives: it switches the conversation, and the
+                // destination may be a saved one no live tab holds. Its text
+                // must not become the prompt evidence either — no file holds
+                // it — so the submission is recorded as unknown-text.
+                conversationSwitchAt = now;
+                lastPromptText = null;
+            } else {
+                lastPromptText = submitted;
+            }
             promptSubmittedAt = now;
             scheduleIdentityRefresh();
         } else if (recalled) {

@@ -278,6 +278,28 @@ public final class ClaudeSessionStore {
     }
 
     /**
+     * Returns when the session's conversation file was last written.
+     *
+     * @param workingDir      the project directory the session belongs to
+     * @param claudeConfigDir the Claude configuration directory
+     * @param sessionId       the session ID
+     * @return the last-modified time in epoch millis, or {@code 0} when the file
+     *         does not exist or cannot be read
+     */
+    public static long sessionFileModified(Path workingDir, Path claudeConfigDir,
+                                           String sessionId) {
+        Path file = sessionsDir(workingDir, claudeConfigDir)
+                .resolve(sessionId + ".jsonl");
+        long modified = 0L;
+        try {
+            modified = Files.getLastModifiedTime(file).toMillis();
+        } catch (IOException e) {
+            LOG.fine("Could not read the time of " + file + ": " + e.getMessage());
+        }
+        return modified;
+    }
+
+    /**
      * Returns whether the session file contains a user message with
      * {@code prompt} whose timestamp is at or after {@code sinceMillis}.
      *
