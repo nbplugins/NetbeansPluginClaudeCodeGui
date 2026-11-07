@@ -3978,6 +3978,147 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A standalone Esc that cancelled the picker is consumed by the next
+     * input. When that input is a GUI submission, the picker's search text must
+     * not be published as part of the line, since the TUI submits only the
+     * panel text.
+     */
+    @Test
+    void aPickerSearchCancelledBeforeAGuiSendIsNotPublished() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume", List.of(
+                new ChoiceMenuModel.Option("One", "1"),
+                new ChoiceMenuModel.Option("Two", "2")), 0));
+
+        controller.simulateTerminalInput(
+                "work".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // The user cancels the picker with Esc in the terminal; no terminal
+        // input follows before the prompt is sent from the panel.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 1L);
+
+        assertEquals("hello", controller.simulateGuiSend("hello", START_MS + 2L),
+                "the cancelled picker search must not prefix the GUI prompt");
+    }
+
+    /**
+     * A launch-known tab owns only the conversation it launched on. Following a
+     * NEW sibling's provisional file must not make that file owned by this tab,
+     * or the sibling that created it loses it.
+     */
+    @Test
+    void aLaunchKnownTabDoesNotOwnAnAdoptedConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // The NEW sibling tab, which guessed the conversation b.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, false);
+        tabB.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // Both tabs submit the same text; the sibling's conversation holds
+            // it and this tab starts following that file.
+            controller.simulateSentPrompt("continue", START_MS + 10_000L);
+            tabB.simulateSentPrompt("continue", START_MS + 10_000L);
+            appendUserPrompt(dir, "b", "continue", START_MS + 10_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_500L);
+            assertEquals("b", controller.resolveActiveSessionId());
+
+            // The launch file's own record of the same text is flushed late, so
+            // it is written after the sibling's but stamped earlier: the
+            // sibling must keep its strictly newer conversation either way.
+            appendUserPrompt(dir, "a", "continue", START_MS + 10_200L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_300L);
+
+            // The creator keeps the conversation it created: the adopted file
+            // must not be marked as owned by this tab.
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the adopted file must stay the sibling's own");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A resume command recalled from the terminal history is not recognised as
+     * one, but the Enter that answers the picker it opened is a conversation
+     * switch: the unclaimed destination must be followed for the next unknown
+     * prompt.
+     */
+    @Test
+    void aRecalledResumeCommandFollowsTheUnclaimedDestination() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A second tab launched the same saved file and only follows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // Up recalls /resume from the history, Enter submits an unknown
+            // command, and the picker it opened is answered with an Enter.
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Resume", List.of(
+                    new ChoiceMenuModel.Option("One", "1")), 0));
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 9_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 9_100L));
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 9_500L));
+            model.clearChoiceMenu();
+
+            // A recalled prompt: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 10_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_000L));
+
+            // The other launcher's own turn lands in the shared launch file.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed saved conversation,
+            // which no live tab holds, strictly later.
+            appendUserPrompt(dir, "b", "recalled", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the picker selection must enable the unclaimed destination");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * An Enter on the still-empty terminal line does nothing on the TUI, so it
      * must not invalidate the prompt evidence: the submitted prompt would stop
      * matching, and the resumed conversation's live claim stays excluded from

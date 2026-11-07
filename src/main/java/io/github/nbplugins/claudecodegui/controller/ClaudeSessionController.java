@@ -351,6 +351,15 @@ public class ClaudeSessionController {
     private boolean terminalEscapeOnMenu;
 
     /**
+     * True when the last Enter confirmed a choice menu selection instead
+     * of submitting a prompt. The {@code /resume} picker changes the
+     * conversation that way, even when the command that opened it was recalled
+     * from the history or completed by Tab and is therefore not recognised as
+     * a command.
+     */
+    private boolean terminalMenuSelection;
+
+    /**
      * True while a bracketed paste ({@code ESC [ 200 ~} … {@code ESC [ 201 ~})
      * is being recorded: its newlines belong to the pasted prompt and must not
      * submit the line.
@@ -1638,6 +1647,7 @@ public class ClaudeSessionController {
             terminalInputPaste = false;
             terminalPasteAfterCR = false;
             terminalEscapeOnMenu = false;
+            terminalMenuSelection = false;
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
             terminalHistoryRecall = false;
@@ -1694,11 +1704,14 @@ public class ClaudeSessionController {
             if (!updated.holders.contains(this)) {
                 // Classify only a new hold: re-claiming the identity on every
                 // scan must not turn an owner into a borrower of its own file.
-                if (launchIdentityKnown && !heldAsOwnerByAnotherLiveTab(updated)) {
-                    // An explicit --continue/--resume knows its conversation.
-                    // A NEW tab's provisional guess — or a borrower following
-                    // one — does not establish the file, so it must not demote
-                    // this claim to borrowing.
+                if (launchIdentityKnown && sessionId.equals(launchSessionId)
+                        && !heldAsOwnerByAnotherLiveTab(updated)) {
+                    // An explicit --continue/--resume knows the conversation it
+                    // launched on, and only that one: a conversation adopted
+                    // later (a sibling's file this tab started following) is
+                    // not established by it and must stay borrowed, or the
+                    // sibling that created it would lose it. A NEW tab's
+                    // provisional guess does not establish the file either.
                     updated.owners.add(this);
                 } else if (heldByAnotherLiveTab(updated)) {
                     // Another tab is already writing this conversation; this
@@ -1996,6 +2009,14 @@ public class ClaudeSessionController {
         String submitted;
         boolean isTextExact;
         synchronized (terminalInputLine) {
+            if (terminalInputEscape == 1 && terminalEscapeOnMenu) {
+                // A standalone Esc cancelled the picker and nothing has been
+                // typed since to consume it: the GUI send is the next input,
+                // and the picker's search text must not become part of the
+                // submitted line.
+                discardPickerSearchText();
+                terminalInputEscape = 0;
+            }
             String draft = terminalInputLine.toString();
             int cursor = Math.min(terminalInputCursor, draft.length());
             submitted = draft.substring(0, cursor) + text + draft.substring(cursor);
@@ -3512,7 +3533,8 @@ public class ClaudeSessionController {
      * is a prompt written to the conversation on screen, so it becomes the new
      * evidence, which is what lets a resume driven entirely from the keyboard
      * be followed. A resume command typed there is the other exception: it
-     * switches the conversation instead of writing to it.
+     * switches the conversation instead of writing to it, and so does an Enter
+     * that answers the {@code /resume} picker.
      *
      * @param bytes raw input bytes
      * @param now   time of the input (epoch millis)
@@ -3523,6 +3545,7 @@ public class ClaudeSessionController {
         boolean entered;
         boolean emptyEnter;
         boolean recalled;
+        boolean menuSelection;
         synchronized (terminalInputLine) {
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
@@ -3533,9 +3556,17 @@ public class ClaudeSessionController {
             terminalEnterOnEmptyLine = false;
             recalled = terminalRecalledSubmission;
             terminalRecalledSubmission = false;
+            menuSelection = terminalMenuSelection;
+            terminalMenuSelection = false;
         }
         if (entered && !emptyEnter) {
             externalInputAt = now;
+        }
+        if (menuSelection) {
+            // Enter with a choice menu open selected an item. The /resume
+            // picker changes the conversation that way, and nothing else in the
+            // input tells which conversation was picked.
+            conversationSwitchAt = now;
         }
         if (submitted != null) {
             if (isConversationCommand(submitted)) {
@@ -3683,6 +3714,7 @@ public class ClaudeSessionController {
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
                 boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
+                boolean onMenu = model.getActiveChoiceMenu() != null;
                 terminalHistoryRecall = false;
                 terminalCompletionEdited = false;
                 terminalInputLine.setLength(0);
@@ -3693,7 +3725,8 @@ public class ClaudeSessionController {
                 // history recall nor a picker selection, so it must not
                 // invalidate the evidence of the prompt already submitted.
                 terminalEnterOnEmptyLine = line.isEmpty() && !unknownText
-                        && model.getActiveChoiceMenu() == null;
+                        && !onMenu;
+                terminalMenuSelection = onMenu;
                 if (unknownText) {
                     // The line was filled from the TUI history (Up/Down) or
                     // completed by Tab and may have been edited since: the
@@ -3701,7 +3734,10 @@ public class ClaudeSessionController {
                     // so its text is unknown and an in-process resume must be
                     // followed by file times.
                     terminalRecalledSubmission = true;
-                } else if (!line.isEmpty()) {
+                } else if (!line.isEmpty() && !onMenu) {
+                    // With a choice menu open Enter selects an item instead of
+                    // submitting the line: what was typed there is the picker's
+                    // search filter, not a prompt.
                     submitted = line;
                 }
             } else if (c == 0x7f || c == 0x08) {
