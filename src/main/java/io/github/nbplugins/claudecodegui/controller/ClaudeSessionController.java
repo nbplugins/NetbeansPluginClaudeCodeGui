@@ -1243,6 +1243,7 @@ public class ClaudeSessionController {
                 // tab launched the same saved file, its own turn also appends a
                 // human record there, and a TUI resume into a newer conversation
                 // must still win.
+                boolean ownRecordMatch = false;
                 if (newest == null && (!launchIdentityKnown || ownSessionId != null)) {
                     // A record is not proof of ownership: a sibling's file the
                     // tab borrowed earlier is now held by this tab too, so the
@@ -1276,6 +1277,7 @@ public class ClaudeSessionController {
                                     ownExclude);
                         }
                         ownEvidence = newest != null;
+                        ownRecordMatch = newest != null;
                     } else if (!ownCandidates.isEmpty()) {
                         newest = newestSharedSessionWrittenSince(dir, configDir, since,
                                 promptAt, ownCandidates, exclude);
@@ -1284,6 +1286,7 @@ public class ClaudeSessionController {
                                     since - SESSION_MTIME_GRANULARITY_MS, promptAt,
                                     ownCandidates, exclude);
                         }
+                        ownRecordMatch = newest != null;
                     }
                 }
                 if (newest == null) {
@@ -1315,19 +1318,27 @@ public class ClaudeSessionController {
                                 since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
                     }
                 }
-                if (guiSwitchAt > 0) {
+                if (guiSwitchAt > 0 && !ownRecordMatch) {
                     // The conversation was switched from the GUI (/resume or
                     // the session picker), and the destination may be a saved
                     // conversation no live tab holds — the shared pass above
                     // cannot see it. A matching record in a shared file is not
                     // conclusive either: a sibling that submitted the same
                     // recalled text writes one too. A record in a conversation
-                    // nobody holds can only have come from this process.
+                    // nobody holds can only have come from this process, so
+                    // the files another live tab holds are left out.
+                    //
+                    // A conversation this pass already established as this
+                    // run's own keeps the submission: the switch was followed,
+                    // and a sibling that merely appends a later record must
+                    // not take the tab over again.
+                    Set<String> unheld = new HashSet<>(exclude);
+                    unheld.addAll(otherLiveClaims);
                     String switched = newestSessionWithUserMessageSince(dir, configDir,
-                            since, promptAt, Set.of());
+                            since, promptAt, unheld);
                     if (switched == null && since > SESSION_MTIME_GRANULARITY_MS) {
                         switched = newestSessionWithUserMessageSince(dir, configDir,
-                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, Set.of());
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, unheld);
                     }
                     if (switched != null) {
                         newest = switched;
@@ -1924,11 +1935,15 @@ public class ClaudeSessionController {
         if (!text.isBlank()) {
             model.addPromptToHistory(text);
         }
-        String submitted = reconcileGuiSend(text, System.currentTimeMillis());
+        reconcileGuiSend(text, System.currentTimeMillis());
 
         Thread t = new Thread(() -> {
             try {
-                writePty(submitted);
+                // Only the panel text is written: the terminal's own draft is
+                // still in the TUI's input line, so it is already part of the
+                // line the Enter submits. Writing the composed line would
+                // duplicate it.
+                writePty(text);
                 Thread.sleep(200);
                 writePty("\r");
             } catch (IOException ex) {

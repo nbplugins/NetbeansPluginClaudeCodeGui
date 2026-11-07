@@ -3275,6 +3275,68 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A conversation this tab resolved after a GUI switch stays selected. The
+     * switch marker lasts until the run ends, so a later recalled prompt in
+     * that own conversation must not be replaced by a live sibling that merely
+     * appended a newer human record.
+     */
+    @Test
+    void aResolvedOwnConversationSurvivesALaterGuiSwitchSearch() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        // The live sibling on c.
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS, true);
+        tabC.simulateLiveSession(config, "c", Set.of("a", "b", "c"));
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b", "c"));
+
+        try {
+            // The user switches the conversation from the GUI.
+            controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.simulateGuiChoiceAnswer("ARROW:1");
+
+            // A literal prompt resolves the unclaimed destination b as this
+            // tab's own conversation.
+            controller.simulateSentPrompt("continue", START_MS + 11_000L);
+            appendUserPrompt(dir, "b", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_500L);
+            assertEquals("b", controller.resolveActiveSessionId());
+
+            // A recalled prompt: its text is unknown. The own conversation
+            // receives the submission, but the sibling appends a newer record.
+            controller.simulatePromptSubmittedAt(START_MS + 12_000L);
+            controller.simulatePromptText(null);
+            appendUserPrompt(dir, "b", "recalled", START_MS + 12_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_500L);
+            appendUserPrompt(dir, "c", "sibling", START_MS + 12_600L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 13_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the resolved own conversation must beat a sibling's later record");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the own conversation");
+        } finally {
+            tabC.stopProcess();
+        }
+    }
+
+    /**
      * A launch file that another live tab also writes is not proof that this
      * tab's submission went there: that tab's own turn can submit the same
      * literal text. A live conversation holding the same text and written
