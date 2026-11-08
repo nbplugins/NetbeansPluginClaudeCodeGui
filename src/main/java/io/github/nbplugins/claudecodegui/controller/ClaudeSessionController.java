@@ -1144,14 +1144,26 @@ public class ClaudeSessionController {
                 // other live tab established and this tab does not merely
                 // follow counts: an explicit resume of the same file by
                 // another tab owns it.
+                //
+                // The tracked identity is subject to the same rule only when
+                // this tab knows the conversation it launched on: two
+                // unresolved tabs that submitted identical text legitimately
+                // keep the file one of them owns provisionally, but a
+                // launch-known tab has its own conversation to prefer over a
+                // provisional file it merely borrows.
+                boolean isActiveYielding = launchIdentityKnown && launchSessionId != null
+                        && activeId != null && !activeId.equals(launchSessionId)
+                        && isBorrowedByThisTab(dir, configDir, activeId);
                 String ownPreferred = null;
                 if (ownSessionId != null && !otherOwned.contains(ownSessionId)
                         && !isBorrowedByThisTab(dir, configDir, ownSessionId)) {
                     ownPreferred = ownSessionId;
-                } else if (activeId != null
+                } else if (activeId != null && !isActiveYielding
                         && (activeId.equals(launchSessionId)
                                 || !otherOwned.contains(activeId))) {
                     ownPreferred = activeId;
+                } else if (launchIdentityKnown && launchSessionId != null) {
+                    ownPreferred = launchSessionId;
                 }
                 newest = findPromptBearingSession(dir, configDir, since, ownExclude,
                         ownPreferred, promptAt, promptText);
@@ -2027,12 +2039,14 @@ public class ClaudeSessionController {
             isTextExact = !terminalHistoryRecall && !terminalCompletionEdited;
         }
         resetTerminalInputRecording();
-        if (isConversationCommand(text)) {
+        if (isConversationCommand(isTextExact ? submitted : text)) {
             // A TUI command is not a prompt written to the current
             // conversation: /resume and /clear can switch it, and these
             // writes are made by the plugin, so no terminal input marks
-            // the switch. The panel text is checked, not the composed line:
-            // a draft must not hide the command.
+            // the switch. The line the process submits is the composed one,
+            // so a command split across a terminal draft and the panel text
+            // counts; a recalled draft makes the composition inexact, and
+            // then only the panel text is trusted.
             conversationSwitchAt = sentAt;
         }
         rememberSentPrompt(submitted, sentAt, isTextExact);

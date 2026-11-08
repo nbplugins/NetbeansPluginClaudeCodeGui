@@ -4119,6 +4119,119 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A provisional conversation borrowed from a NEW sibling is not this tab's
+     * own: preferring it would hide the launch file that actually holds the
+     * prompt, even though that file is strictly newer.
+     */
+    @Test
+    void aBorrowedActiveConversationIsNotPreferred() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // The NEW sibling tab, which guessed the conversation b.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, false);
+        tabB.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // Both tabs submit the same text; only the sibling's file holds it
+            // yet, so this tab temporarily follows it.
+            controller.simulateSentPrompt("continue", START_MS + 10_000L);
+            tabB.simulateSentPrompt("continue", START_MS + 10_000L);
+            appendUserPrompt(dir, "b", "continue", START_MS + 10_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_500L);
+            assertEquals("b", controller.resolveActiveSessionId());
+
+            // This tab's own launch file records the prompt strictly later.
+            appendUserPrompt(dir, "a", "continue", START_MS + 10_600L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_700L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the borrowed file must not outrank this tab's own prompt");
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "later scans must keep the launched conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A /resume command assembled across a terminal draft and the panel text
+     * switches the conversation like a plain one: the unknown prompt that
+     * follows must be recovered from the unclaimed destination.
+     */
+    @Test
+    void aComposedResumeCommandFollowsTheUnclaimedDestination() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A second tab launched the same saved file and only follows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The command is split: the draft was typed in the terminal and the
+            // rest is sent from the panel. The picker it opens is not answered
+            // through the terminal recorder.
+            controller.simulateTerminalInput(
+                    "/res".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 9_000L);
+            assertEquals("/resume",
+                    controller.simulateGuiSend("ume", START_MS + 9_100L));
+
+            // A recalled prompt: its text is unknown.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 10_000L);
+            assertNull(controller.simulateTerminalInput(
+                    new byte[]{'\r'}, START_MS + 11_000L));
+
+            // The other launcher's own turn lands in the shared launch file.
+            appendUserPrompt(dir, "a", "continue", START_MS + 11_400L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_500L);
+            // This tab's submission lands in the resumed saved conversation,
+            // which no live tab holds, strictly later.
+            appendUserPrompt(dir, "b", "recalled", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the composed command must enable the unclaimed destination");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * An Enter on the still-empty terminal line does nothing on the TUI, so it
      * must not invalidate the prompt evidence: the submitted prompt would stop
      * matching, and the resumed conversation's live claim stays excluded from
