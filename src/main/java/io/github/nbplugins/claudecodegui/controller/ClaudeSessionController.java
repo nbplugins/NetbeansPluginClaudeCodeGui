@@ -1973,13 +1973,30 @@ public class ClaudeSessionController {
                 return;
             }
             for (ClaudeSessionController holder : claims.holders) {
-                if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()) {
+                if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()
+                        && !followsOnly(holder, key.sessionId(), claims)) {
                     ids.add(key.sessionId());
                     return;
                 }
             }
         });
         return ids;
+    }
+
+    /**
+     * Returns whether {@code holder} only follows {@code sessionId}: it is not
+     * one of the conversation's owners and the conversation is not the one it
+     * launched on. Such a claim is a guess made from matching prompt text —
+     * e.g. a launch-known tab that follows a sibling's file while its own
+     * conversation has not been flushed yet — and must not hide that file from
+     * the scan of the tab whose process actually writes it, or the creator
+     * adopts another conversation and loses its own.
+     */
+    private static boolean followsOnly(ClaudeSessionController holder, String sessionId,
+                                       SessionClaims claims) {
+        return !claims.owners.contains(holder)
+                && holder.launchIdentityKnown
+                && !sessionId.equals(holder.launchSessionId);
     }
 
     /**

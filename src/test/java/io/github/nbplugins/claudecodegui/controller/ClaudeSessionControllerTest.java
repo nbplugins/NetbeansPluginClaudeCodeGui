@@ -4227,6 +4227,65 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A launch-known tab adopts a sibling's file whenever the sibling's prompt
+     * lands first — but that adoption is a guess, not an established claim. It
+     * must not hide the file from the scan of the tab whose process actually
+     * writes it: the creator would otherwise adopt a different conversation and
+     * later rename it instead of its own.
+     */
+    @Test
+    void aFollowersClaimDoesNotHideTheFileFromItsCreator() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // The NEW sibling tab created conversation b, but has not scanned yet.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, false);
+        tabB.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        try {
+            // Both submitted the same text; the sibling's record lands first
+            // and this tab adopts the file provisionally before the sibling
+            // has had a chance to claim it. The prompt is recorded through the
+            // seams that do not queue a background scan, so the order in which
+            // the two tabs resolve their identity is fixed.
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            controller.simulatePromptText("continue");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("continue");
+            appendUserPrompt(dir, "b", "continue", START_MS + 10_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_500L);
+            assertEquals("b", controller.resolveActiveSessionId());
+
+            // The launch file's own record of the same text is flushed late, so
+            // it is written after the sibling's but stamped earlier.
+            appendUserPrompt(dir, "a", "continue", START_MS + 10_200L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_300L);
+
+            // The creator still finds its own file despite the follower's
+            // claim, even though the launch file carries the same text.
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the follower's guess must not hide the created file");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
      * A resume command recalled from the terminal history is not recognised as
      * one, but the Enter that answers the picker it opened is a conversation
      * switch: the unclaimed destination must be followed for the next unknown
