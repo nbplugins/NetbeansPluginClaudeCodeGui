@@ -102,6 +102,7 @@ public class ClaudeSessionController {
 
     private volatile ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
+    private volatile java.util.function.Consumer<byte[]> ptyWriteHook;
     private java.io.File workingDir;
     private volatile JediTermWidget terminalWidget;
 
@@ -385,6 +386,16 @@ public class ClaudeSessionController {
 
     /** Set when Enter submitted a history-recall or completion-edited line the parser did not record. */
     private boolean terminalRecalledSubmission;
+
+    /**
+     * True when the terminal received any input since the recorder was last
+     * reset, including edits the recorder cannot see in the buffer: Backspace
+     * on an empty recording, cursor keys, Ctrl+U or a Tab completion. Keys typed
+     * during the pause between the GUI prompt's text and its Enter are part of
+     * the line the TUI submits, so they invalidate the composed evidence even
+     * when they leave the recorded line empty.
+     */
+    private boolean terminalInputSinceGuiSend;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -1670,6 +1681,7 @@ public class ClaudeSessionController {
             terminalHistoryRecall = false;
             terminalCompletionEdited = false;
             terminalRecalledSubmission = false;
+            terminalInputSinceGuiSend = false;
         }
     }
 
@@ -2069,12 +2081,20 @@ public class ClaudeSessionController {
      * <p>The Enter and the reset of the recorder run under the recorder's lock,
      * so keys typed between the prompt write and this Enter — which are part of
      * the line the TUI submits — cannot stay behind as the draft of the next
-     * line. They also make the submitted text unknown: the composed evidence
-     * recorded by {@link #reconcileGuiSend} no longer describes that line.
+     * line. Any such input, even an edit that leaves the recorded line empty
+     * (Backspace, cursor keys, Tab), makes the submitted text unknown: the
+     * composed evidence recorded by {@link #reconcileGuiSend} no longer
+     * describes that line.
      */
     void completeGuiSend() {
-        boolean extra;
+        boolean edited;
+        long submittedAt;
         synchronized (terminalInputLine) {
+            // Sampled before the Enter is forwarded: the child may append the
+            // submitted prompt to its session file as soon as it reads the
+            // bytes, and a record written then must still pass the submission
+            // cutoff used by the evidence lookup.
+            submittedAt = System.currentTimeMillis();
             try {
                 writePty("\r");
             } catch (IOException ex) {
@@ -2082,16 +2102,16 @@ public class ClaudeSessionController {
                 resetTerminalInputRecording();
                 return;
             }
-            extra = terminalInputLine.length() > 0;
+            edited = terminalInputSinceGuiSend;
             resetTerminalInputRecording();
         }
-        if (extra) {
-            // Keys arrived while the panel text was being submitted and are
-            // recorded here, but their position relative to the panel text is
-            // not known: only the file times and user records can identify the
-            // conversation the line went to.
+        if (edited) {
+            // Keys arrived while the panel text was being submitted: their
+            // position relative to the panel text is not known, so only the
+            // file times and user records can identify the conversation the
+            // line went to.
             lastPromptText = null;
-            promptSubmittedAt = System.currentTimeMillis();
+            promptSubmittedAt = submittedAt;
             scheduleIdentityRefresh();
         }
     }
@@ -3560,6 +3580,11 @@ public class ClaudeSessionController {
      * captured by {@link #sendPrompt(String)}.
      */
     private void writePty(byte[] bytes) throws IOException {
+        java.util.function.Consumer<byte[]> hook = ptyWriteHook;
+        if (hook != null) {
+            hook.accept(bytes);
+            return;
+        }
         if (connector == null) {
             // No PTY yet (the launch is still being prepared): drop the write,
             // as sendPrompt() does.
@@ -3573,6 +3598,15 @@ public class ClaudeSessionController {
         } finally {
             pluginPtyWrite.set(previous);
         }
+    }
+
+    /**
+     * Package-private for tests: replaces the PTY write, so a test can make the
+     * write take time or observe when it happens. A {@code null} hook restores
+     * the real connector.
+     */
+    void simulatePtyWrite(java.util.function.Consumer<byte[]> hook) {
+        ptyWriteHook = hook;
     }
 
     /** Writes text to the PTY on behalf of the plugin. See {@link #writePty(byte[])}. */
@@ -3604,6 +3638,11 @@ public class ClaudeSessionController {
         boolean recalled;
         boolean menuSelection;
         synchronized (terminalInputLine) {
+            // Any input changes the line the TUI holds — including edits that
+            // leave the recorded buffer unchanged or empty (Backspace, cursor
+            // keys, Ctrl+U, Tab) — so a GUI submission still waiting for its
+            // Enter can no longer rely on the text it composed.
+            terminalInputSinceGuiSend = true;
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
             submitted = appendTerminalInput(bytes);

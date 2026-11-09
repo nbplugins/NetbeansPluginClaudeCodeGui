@@ -3916,6 +3916,53 @@ class ClaudeSessionControllerTest {
                 "keys from the previous submission must not stay in the draft");
     }
 
+    /**
+     * A nonprinting edit during the GUI send's pause changes the TUI line
+     * without leaving anything in the recorded draft: Backspace on the freshly
+     * reset recorder deletes a character of the panel text. The submitted text
+     * is then no longer the composed evidence.
+     */
+    @Test
+    void aNonprintingEditDuringTheGuiSendMakesItsTextUnknown() {
+        controller.simulateGuiSend("hello", START_MS);
+
+        // Backspace during the pause: the TUI line becomes "hell".
+        controller.simulateTerminalInput(new byte[]{0x7f}, START_MS + 100L);
+        controller.completeGuiSend();
+
+        assertNull(controller.simulateLastPromptText(),
+                "the line the Enter submits is no longer the panel text");
+    }
+
+    /**
+     * The child can persist the submitted prompt as soon as it reads the Enter,
+     * so the submission cutoff must be sampled before the bytes are forwarded.
+     * Sampling it after the write makes the cutoff later than the user record
+     * and the evidence lookup rejects the conversation's own file.
+     */
+    @Test
+    void theGuiPromptIsTimestampedBeforeTheEnterIsWritten() {
+        long[] writeStarted = new long[1];
+        controller.simulatePtyWrite(bytes -> {
+            writeStarted[0] = System.currentTimeMillis();
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        controller.simulateGuiSend("hello", START_MS + 1L);
+        controller.simulateTerminalInput(
+                " world".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L);
+        controller.completeGuiSend();
+
+        assertTrue(writeStarted[0] > 0L, "the Enter must be written");
+        assertTrue(controller.simulatePromptSubmittedAtValue() <= writeStarted[0],
+                "the submission time must be captured before the Enter is forwarded");
+    }
+
     /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
     @Test
     void clearingARecalledPromptMakesTheNextSubmissionKnown() {
