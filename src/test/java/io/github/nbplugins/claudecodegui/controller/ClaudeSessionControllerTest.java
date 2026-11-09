@@ -4382,9 +4382,12 @@ class ClaudeSessionControllerTest {
 
         try {
             // Both tabs submit the same text; only the sibling's file holds it
-            // yet, so this tab temporarily follows it.
-            controller.simulateSentPrompt("continue", START_MS + 10_000L);
-            tabB.simulateSentPrompt("continue", START_MS + 10_000L);
+            // yet, so this tab temporarily follows it. The prompt is recorded
+            // through the seams that do not queue a background scan, so the
+            // tab that has not claimed the file yet cannot do so concurrently:
+            // the launch conversation must win on the evidence alone.
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            controller.simulatePromptText("continue");
             appendUserPrompt(dir, "b", "continue", START_MS + 10_400L);
             setMtime(dir.resolve("b.jsonl"), START_MS + 10_500L);
             assertEquals("b", controller.resolveActiveSessionId());

@@ -1195,12 +1195,29 @@ public class ClaudeSessionController {
                 // keep the file one of them owns provisionally, but a
                 // launch-known tab has its own conversation to prefer over a
                 // provisional file it merely borrows.
+                //
+                // A launch-known tab's tracked non-launch identity is a guess
+                // made from matching prompt text: the sibling that actually
+                // writes that file may not have claimed it yet. When the
+                // launch conversation itself holds the submission and is
+                // strictly newer, it is the stronger evidence — the
+                // submission went there, not to the file this tab merely
+                // followed — so the guess yields.
+                boolean launchOutranksOwn = launchIdentityKnown && launchSessionId != null
+                        && ownSessionId != null && !ownSessionId.equals(launchSessionId)
+                        && promptText != null && !promptText.isBlank()
+                        && ClaudeSessionStore.sessionFileModified(dir.toPath(), configDir,
+                                launchSessionId)
+                           > ClaudeSessionStore.sessionFileModified(dir.toPath(), configDir,
+                                ownSessionId)
+                        && containsPrompt(dir, configDir, launchSessionId, promptAt, promptText);
                 boolean isActiveYielding = isSharedGuess(activeId, otherLiveClaims)
                         || (launchIdentityKnown && launchSessionId != null
                                 && activeId != null && !activeId.equals(launchSessionId)
-                                && isBorrowedByThisTab(dir, configDir, activeId));
+                                && (!activeId.equals(ownSessionId) || launchOutranksOwn));
                 String ownPreferred = null;
-                if (ownSessionId != null && !otherOwned.contains(ownSessionId)
+                if (ownSessionId != null && !launchOutranksOwn
+                        && !otherOwned.contains(ownSessionId)
                         && !isSharedGuess(ownSessionId, otherLiveClaims)
                         && !isBorrowedByThisTab(dir, configDir, ownSessionId)) {
                     ownPreferred = ownSessionId;
