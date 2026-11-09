@@ -3985,6 +3985,33 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * An edit followed by a terminal Enter during the GUI send's pause submits
+     * a line that is no longer the panel text. The recorder sees only the empty
+     * buffer (the panel text was never recorded), so the submission must be
+     * classified as unknown at the Enter itself: until {@code completeGuiSend}
+     * runs, the identity scan would otherwise still match the panel text as
+     * exact evidence.
+     */
+    @Test
+    void anEditedGapEnterInvalidatesTheExactEvidenceImmediately() {
+        controller.simulateGuiSend("hello", START_MS);
+
+        // Backspace makes the TUI line "hell"; Enter submits it before the
+        // panel's own Enter.
+        controller.simulateTerminalInput(new byte[]{0x7f}, START_MS + 100L);
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 200L);
+
+        assertNull(controller.simulateLastPromptText(),
+                "the edit made the submitted line differ from the panel text");
+        assertEquals(START_MS + 200L, controller.simulatePromptSubmittedAtValue(),
+                "the terminal Enter's time is the submission time");
+
+        controller.completeGuiSend();
+        assertNull(controller.simulateLastPromptText(),
+                "the panel's no-op Enter must keep the submission unknown");
+    }
+
+    /**
      * Text typed during the pause and then submitted by the terminal Enter is
      * only a part of the line (the panel text is not in the recorder), so the
      * text becomes unknown while the first submission's time is kept.
@@ -4173,6 +4200,31 @@ class ClaudeSessionControllerTest {
         controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 1L);
         // The screen no longer shows the picker.
         model.clearChoiceMenu();
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 2L),
+                "the cancelled picker search must not prefix the submitted prompt");
+    }
+
+    /**
+     * The unnumbered {@code /resume} picker uses {@code ARROW:} answers and
+     * "Type to search": a digit typed there is search text, not a selection,
+     * so it must not retire the menu. Retiring it would let the rest of the
+     * search text be recorded as prompt draft, and the picker's later Esc
+     * would no longer discard it.
+     */
+    @Test
+    void aDigitTypedIntoASearchablePickerDoesNotRetireTheMenu() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0"),
+                new ChoiceMenuModel.Option("Two", "ARROW:1")), 0));
+
+        // Search text typed into the picker: its digits are search text.
+        controller.simulateTerminalInput(
+                "2026".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // The user cancels the picker with Esc in the terminal.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 1L);
 
         assertEquals("hello", controller.simulateTerminalInput(
                 "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),

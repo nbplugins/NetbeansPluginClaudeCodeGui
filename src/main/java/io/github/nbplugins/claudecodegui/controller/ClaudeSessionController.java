@@ -1812,6 +1812,31 @@ public class ClaudeSessionController {
         return false;
     }
 
+    /**
+     * Returns whether a digit typed while {@code menu} is open selects an item
+     * and dismisses the menu.
+     *
+     * <p>Only menus whose answers are the item numbers behave that way. An
+     * unnumbered picker (the {@code ARROW:} answers of the {@code /resume}
+     * list) uses digits as search text and stays open, and a checkbox or
+     * text-input menu only moves to an option on a digit, waiting for its
+     * submit key — retiring those on the first digit would turn the search
+     * text into prompt evidence.
+     */
+    private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu) {
+        if (menu.options().isEmpty()) return false;
+        for (ChoiceMenuModel.Option option : menu.options()) {
+            String response = option.response();
+            if (response == null || response.isEmpty()) return false;
+            for (int i = 0; i < response.length(); i++) {
+                char c = response.charAt(i);
+                if (c < '0' || c > '9') return false;
+            }
+            if (option.hasCheckbox() || option.hasTextInput()) return false;
+        }
+        return true;
+    }
+
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
     void simulateProcessNotRunning() {
         claudeProcess = new ClaudeProcess();
@@ -4001,6 +4026,12 @@ public class ClaudeSessionController {
                 boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
                 ChoiceMenuModel openMenu = openChoiceMenu();
                 boolean onMenu = openMenu != null;
+                // Keys typed during the GUI send's pause edited the line the
+                // panel text was written to, but the recorder holds none of
+                // that text: what this Enter submits is unknown even when the
+                // recorded line is empty (a Backspace on it deletes a
+                // character of the panel text).
+                boolean gapEdited = guiSendAwaitingEnter && terminalInputSinceGuiSend;
                 terminalEnterSinceGuiSend = true;
                 terminalHistoryRecall = false;
                 terminalCompletionEdited = false;
@@ -4012,7 +4043,7 @@ public class ClaudeSessionController {
                 // history recall nor a picker selection, so it must not
                 // invalidate the evidence of the prompt already submitted.
                 terminalEnterOnEmptyLine = line.isEmpty() && !unknownText
-                        && !onMenu;
+                        && !onMenu && !gapEdited;
                 terminalMenuSelection = onMenu;
                 if (onMenu && !isCheckboxMenu(openMenu)) {
                     // A numbered menu closes on the selection Enter (a
@@ -4028,7 +4059,7 @@ public class ClaudeSessionController {
                     // so its text is unknown and an in-process resume must be
                     // followed by file times.
                     terminalRecalledSubmission = true;
-                } else if (!line.isEmpty() && !onMenu) {
+                } else if (!onMenu && (gapEdited || !line.isEmpty())) {
                     // With a choice menu open Enter selects an item instead of
                     // submitting the line: what was typed there is the picker's
                     // search filter, not a prompt.
@@ -4070,10 +4101,7 @@ public class ClaudeSessionController {
                 // with the selection and make the actual text unmatchable.
                 ChoiceMenuModel openMenu = openChoiceMenu();
                 if (openMenu != null && c >= '0' && c <= '9') {
-                    if (!isCheckboxMenu(openMenu)) {
-                        // The digit selected a numbered item and closed the
-                        // menu; a checkbox menu only toggles on a digit and
-                        // waits for its Right to submit.
+                    if (digitSelectionDismissesMenu(openMenu)) {
                         completeTerminalMenu(openMenu);
                     }
                 } else {
