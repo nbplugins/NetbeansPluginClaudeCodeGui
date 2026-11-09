@@ -316,6 +316,15 @@ public class ClaudeSessionController {
     private volatile long conversationSwitchAt;
 
     /**
+     * Serializes prompt sends from the panel, from the text write through the
+     * Enter and the publication of its evidence. Two sends pressed in quick
+     * succession would otherwise interleave: the second reconciliation would
+     * replace the still-unsubmitted pending record of the first, while the
+     * TUI line the first Enter submits already contains both texts.
+     */
+    private final Object guiSendLock = new Object();
+
+    /**
      * Line being typed in the terminal, assembled from the raw PTY input so
      * that a prompt submitted from the keyboard is recognised as evidence for
      * the conversation on screen (see {@link #onTerminalInput(byte[], long)}).
@@ -607,6 +616,21 @@ public class ClaudeSessionController {
      */
     void simulateGuiSendWithText(String text, long sentAt) throws IOException {
         writeGuiPrompt(text, () -> sentAt);
+    }
+
+    /**
+     * Package-private for tests: the body of {@link #sendPrompt(String)}'s
+     * sender thread — the serialized text write, pause and Enter — with a
+     * controllable clock and the real-time sleep replaced by {@code pause}.
+     */
+    void simulateSendPrompt(String text, java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock, Runnable pause)
+            throws IOException {
+        synchronized (guiSendLock) {
+            writeGuiPrompt(text, writeClock);
+            pause.run();
+            completeGuiSend(enterClock);
+        }
     }
 
     /** Package-private for tests: the number of identity scans started. */
@@ -2263,23 +2287,30 @@ public class ClaudeSessionController {
         }
 
         Thread t = new Thread(() -> {
-            try {
-                // Reconciliation and the text write run as one step under the
-                // recorder's lock: an Enter arriving in between would submit
-                // the terminal draft alone, while the evidence recorded for
-                // the send would claim the composed line was submitted.
-                writeGuiPrompt(text);
-                Thread.sleep(200);
-            } catch (IOException ex) {
-                LOG.warning("sendPrompt write failed: " + ex.getMessage());
-                resetTerminalInputRecording();
-                return;
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                resetTerminalInputRecording();
-                return;
+            // One send at a time: the panel accepts another send while the
+            // previous one is still waiting for its Enter, and its
+            // reconciliation would replace the pending evidence of a line
+            // that is still open in the TUI.
+            synchronized (guiSendLock) {
+                try {
+                    // Reconciliation and the text write run as one step under
+                    // the recorder's lock: an Enter arriving in between would
+                    // submit the terminal draft alone, while the evidence
+                    // recorded for the send would claim the composed line was
+                    // submitted.
+                    writeGuiPrompt(text);
+                    Thread.sleep(200);
+                } catch (IOException ex) {
+                    LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                    resetTerminalInputRecording();
+                    return;
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    resetTerminalInputRecording();
+                    return;
+                }
+                completeGuiSend();
             }
-            completeGuiSend();
         }, "pty-send-prompt");
         t.setDaemon(true);
         t.start();

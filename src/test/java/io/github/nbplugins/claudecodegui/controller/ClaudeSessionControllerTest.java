@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import io.github.nbplugins.claudecodegui.model.ChoiceMenuModel;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -4240,6 +4241,65 @@ class ClaudeSessionControllerTest {
         assertNull(failure.get(), "the panel text write must not fail");
         assertEquals(0L, enterDone.getCount(),
                 "terminal input must be processed after the write");
+    }
+
+    /**
+     * The prompt panel accepts a second send while the previous one is still
+     * in its pause. Writing the second text before the first Enter would put
+     * both prompts on one TUI line, which neither pending record describes, so
+     * the evidence would name only the second text. The second send must wait
+     * until the first line is submitted.
+     */
+    @Test
+    void aSecondGuiSendWaitsForTheFirstSendToBeSubmitted() throws Exception {
+        List<String> writes = Collections.synchronizedList(new ArrayList<>());
+        controller.simulatePtyWrite(bytes -> writes.add(
+                new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch firstPaused = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        Thread first = new Thread(() -> {
+            try {
+                controller.simulateSendPrompt("hello", () -> START_MS,
+                        () -> START_MS + 200L, () -> {
+                            firstPaused.countDown();
+                            try {
+                                releaseFirst.await(5, TimeUnit.SECONDS);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        });
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        }, "first-gui-send");
+        first.start();
+        assertTrue(firstPaused.await(5, TimeUnit.SECONDS),
+                "the first text must be written");
+
+        CountDownLatch secondAtPause = new CountDownLatch(1);
+        Thread second = new Thread(() -> {
+            try {
+                controller.simulateSendPrompt("world", () -> START_MS + 50L,
+                        () -> START_MS + 250L, secondAtPause::countDown);
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        }, "second-gui-send");
+        second.start();
+        assertFalse(secondAtPause.await(400, TimeUnit.MILLISECONDS),
+                "the second send must wait until the first line is submitted");
+
+        releaseFirst.countDown();
+        first.join(5_000L);
+        second.join(5_000L);
+
+        assertNull(failure.get(), "the sends must not fail");
+        assertEquals(List.of("hello", "\r", "world", "\r"), writes,
+                "each text is written separately and followed by its own Enter");
+        assertEquals("world", controller.simulateLastPromptText(),
+                "the last submission is the second prompt");
     }
 
     /**
