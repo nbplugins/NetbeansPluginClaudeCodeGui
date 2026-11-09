@@ -3963,6 +3963,48 @@ class ClaudeSessionControllerTest {
                 "the submission time must be captured before the Enter is forwarded");
     }
 
+    /**
+     * If the user submits the line from the terminal during the GUI send's
+     * pause, the panel's Enter only submits an empty line afterwards. That
+     * later, no-op Enter must not re-time the submission: the cutoff would
+     * then be later than the user record the child wrote for the terminal
+     * Enter.
+     */
+    @Test
+    void aTerminalEnterDuringTheGuiSendKeepsTheFirstSubmissionTime() {
+        controller.simulateGuiSend("hello", START_MS);
+
+        // The terminal submits the line the panel text was written to.
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 100L);
+        controller.completeGuiSend();
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the terminal Enter submitted exactly the panel text");
+        assertEquals(START_MS, controller.simulatePromptSubmittedAtValue(),
+                "the panel's later Enter must not re-time the submission");
+    }
+
+    /**
+     * Text typed during the pause and then submitted by the terminal Enter is
+     * only a part of the line (the panel text is not in the recorder), so the
+     * text becomes unknown while the first submission's time is kept.
+     */
+    @Test
+    void terminalTextSubmittedByTheGapEnterKeepsItsOwnTime() {
+        controller.simulateGuiSend("hello", START_MS);
+
+        controller.simulateTerminalInput(
+                " world".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 50L);
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 100L);
+        controller.completeGuiSend();
+
+        assertNull(controller.simulateLastPromptText(),
+                "the recorded text is only a part of the submitted line");
+        assertEquals(START_MS + 100L, controller.simulatePromptSubmittedAtValue(),
+                "the terminal Enter's time is the submission time");
+    }
+
     /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
     @Test
     void clearingARecalledPromptMakesTheNextSubmissionKnown() {
@@ -4296,6 +4338,55 @@ class ClaudeSessionControllerTest {
                     "the borrowed file must not outrank this tab's own prompt");
             assertEquals("a", controller.resolveActiveSessionId(),
                     "later scans must keep the launched conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The same borrowed file, claimed by the sibling <em>after</em> this tab
+     * provisionally adopted it: the claim registry never marks this tab as a
+     * borrower then, but the file is still the sibling's guess, so it must not
+     * outrank the launch conversation holding this tab's prompt.
+     */
+    @Test
+    void aFileTheSiblingClaimsLaterDoesNotOutrankTheLaunchConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, false);
+        tabB.simulateLiveSession(config, null, Set.of("a", "b"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // Only the sibling's file holds the text yet, and nobody has
+            // claimed it: this tab adopts it provisionally.
+            controller.simulateSentPrompt("continue", START_MS + 10_000L);
+            appendUserPrompt(dir, "b", "continue", START_MS + 10_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_500L);
+            assertEquals("b", controller.resolveActiveSessionId());
+
+            // The sibling publishes its claim on b afterwards.
+            tabB.simulateClaimSession(config, "b");
+
+            appendUserPrompt(dir, "a", "continue", START_MS + 10_600L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_700L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "a file another live tab holds is not this tab's own evidence");
         } finally {
             tabB.stopProcess();
         }

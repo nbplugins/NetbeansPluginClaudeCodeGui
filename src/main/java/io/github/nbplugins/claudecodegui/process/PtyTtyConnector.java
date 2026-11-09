@@ -50,6 +50,24 @@ public final class PtyTtyConnector implements TtyConnector {
     private volatile java.util.function.BiConsumer<byte[], Long> inputListener;
 
     /**
+     * Lock held while bytes are forwarded to the child and the input listener
+     * is notified; {@code null} means no serialization. The controller passes
+     * the lock it also holds while it writes the GUI prompt's Enter, so
+     * terminal input cannot reach the child on one side of that Enter while
+     * being recorded on the other.
+     */
+    private volatile Object inputLock;
+
+    /**
+     * Sets the lock that serializes forwarding with the plugin's own writes.
+     *
+     * @param lock the lock, or {@code null} for none
+     */
+    public void setInputLock(Object lock) {
+        this.inputLock = lock;
+    }
+
+    /**
      * Creates a connector for the given PTY process.
      *
      * @param process a running PTY process
@@ -135,6 +153,23 @@ public final class PtyTtyConnector implements TtyConnector {
 
     @Override
     public void write(byte[] bytes) throws IOException {
+        // Terminal input and the plugin's own writes (in particular the GUI
+        // prompt's Enter) must reach the child in the same order in which they
+        // are recorded: forwarding bytes before the GUI Enter while notifying
+        // the listener only after the plugin reset its recorder would leave
+        // those bytes behind as the draft of the next line. The controller
+        // takes the same lock for the GUI Enter.
+        Object lock = inputLock;
+        if (lock == null) {
+            forward(bytes);
+            return;
+        }
+        synchronized (lock) {
+            forward(bytes);
+        }
+    }
+
+    private void forward(byte[] bytes) throws IOException {
         // Sampled before the bytes are forwarded: the child can append the
         // submitted prompt to its session file as soon as it reads them, so a
         // timestamp taken after the write/listener could be later than the

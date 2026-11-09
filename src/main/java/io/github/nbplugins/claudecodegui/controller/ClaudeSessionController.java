@@ -388,14 +388,23 @@ public class ClaudeSessionController {
     private boolean terminalRecalledSubmission;
 
     /**
-     * True when the terminal received any input since the recorder was last
-     * reset, including edits the recorder cannot see in the buffer: Backspace
-     * on an empty recording, cursor keys, Ctrl+U or a Tab completion. Keys typed
-     * during the pause between the GUI prompt's text and its Enter are part of
-     * the line the TUI submits, so they invalidate the composed evidence even
-     * when they leave the recorded line empty.
+     * True when the terminal received input other than Enter since the
+     * recorder was last reset, including edits the recorder cannot see in the
+     * buffer: Backspace on an empty recording, cursor keys, Ctrl+U or a Tab
+     * completion. Keys typed during the pause between the GUI prompt's text
+     * and its Enter are part of the line the TUI submits, so they invalidate
+     * the composed evidence even when they leave the recorded line empty.
      */
     private boolean terminalInputSinceGuiSend;
+
+    /**
+     * True when Enter was pressed in the terminal since the recorder was last
+     * reset, i.e. while the GUI prompt was still waiting for its own Enter.
+     * The TUI then submits the line at that Enter, and the panel's later Enter
+     * only submits an empty line: its evidence belongs to the first
+     * submission and must not be re-timed.
+     */
+    private boolean terminalEnterSinceGuiSend;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -550,6 +559,16 @@ public class ClaudeSessionController {
         workingDir = model.getWorkingDirectory();
         LIVE_SESSIONS.add(this);
         claimSession(workingDir, configDir, sessionId);
+    }
+
+    /**
+     * Package-private for tests: adds a claim on {@code sessionId} to a live
+     * session that has already been started, i.e. the bookkeeping a scan
+     * publishes after it resolved the conversation.
+     */
+    void simulateClaimSession(java.nio.file.Path configDir, String sessionId) {
+        claimSession(workingDir != null ? workingDir : model.getWorkingDirectory(),
+                configDir, sessionId);
     }
 
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
@@ -766,6 +785,11 @@ public class ClaudeSessionController {
 
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
+        // Terminal input is forwarded and recorded under the same lock the
+        // plugin holds while it writes the GUI prompt's Enter, so a write
+        // cannot reach the child before that Enter while being recorded after
+        // the recorder was reset for it.
+        connector.setInputLock(terminalInputLine);
         connector.setInputListener((bytes, sentAt) -> {
             if (Boolean.TRUE.equals(pluginPtyWrite.get())) return;
             onTerminalInput(bytes, sentAt);
@@ -1162,11 +1186,13 @@ public class ClaudeSessionController {
                 // keep the file one of them owns provisionally, but a
                 // launch-known tab has its own conversation to prefer over a
                 // provisional file it merely borrows.
-                boolean isActiveYielding = launchIdentityKnown && launchSessionId != null
-                        && activeId != null && !activeId.equals(launchSessionId)
-                        && isBorrowedByThisTab(dir, configDir, activeId);
+                boolean isActiveYielding = isSharedGuess(activeId, otherLiveClaims)
+                        || (launchIdentityKnown && launchSessionId != null
+                                && activeId != null && !activeId.equals(launchSessionId)
+                                && isBorrowedByThisTab(dir, configDir, activeId));
                 String ownPreferred = null;
                 if (ownSessionId != null && !otherOwned.contains(ownSessionId)
+                        && !isSharedGuess(ownSessionId, otherLiveClaims)
                         && !isBorrowedByThisTab(dir, configDir, ownSessionId)) {
                     ownPreferred = ownSessionId;
                 } else if (activeId != null && !isActiveYielding
@@ -1192,6 +1218,7 @@ public class ClaudeSessionController {
                 // this run created it: it is another live tab's conversation,
                 // matched because both tabs submitted the same text.
                 boolean ownFileMatch = newest != null
+                        && !isSharedGuess(newest, otherLiveClaims)
                         && !isBorrowedByThisTab(dir, configDir, newest);
                 if (newest != null && (externalAt > 0 || switchAt > 0)
                         && otherLiveClaims.contains(newest)) {
@@ -1682,6 +1709,7 @@ public class ClaudeSessionController {
             terminalCompletionEdited = false;
             terminalRecalledSubmission = false;
             terminalInputSinceGuiSend = false;
+            terminalEnterSinceGuiSend = false;
         }
     }
 
@@ -1712,6 +1740,21 @@ public class ClaudeSessionController {
         SessionKey key = keyFor(dir, configDir, sessionId);
         SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
         return claims != null && claims.borrowed.contains(this);
+    }
+
+    /**
+     * Returns whether {@code sessionId} is a conversation this launch-known tab
+     * can only be following: a file other than the launch identity that another
+     * live tab holds as well. The claim registry marks a tab as a borrower only
+     * if the other tab had already claimed the file when this tab adopted it,
+     * so two tabs submitting the same text at once can both end up as
+     * provisional holders; whichever claimed the file first must not let it
+     * outrank the launch conversation that actually holds the prompt.
+     */
+    private boolean isSharedGuess(String sessionId, Set<String> otherLiveClaims) {
+        return sessionId != null && launchIdentityKnown && launchSessionId != null
+                && !sessionId.equals(launchSessionId)
+                && otherLiveClaims.contains(sessionId);
     }
 
     private static SessionKey keyFor(java.io.File dir, java.nio.file.Path configDir,
@@ -2085,9 +2128,16 @@ public class ClaudeSessionController {
      * (Backspace, cursor keys, Tab), makes the submitted text unknown: the
      * composed evidence recorded by {@link #reconcileGuiSend} no longer
      * describes that line.
+     *
+     * <p>A terminal Enter pressed during that pause submits the line first, and
+     * this Enter then submits an empty one. The evidence of the first
+     * submission is kept as it is — its time is never later than the record
+     * the child wrote for it, and the panel text is still exact when the line
+     * was not edited.
      */
     void completeGuiSend() {
         boolean edited;
+        boolean alreadySubmitted;
         long submittedAt;
         synchronized (terminalInputLine) {
             // Sampled before the Enter is forwarded: the child may append the
@@ -2103,7 +2153,23 @@ public class ClaudeSessionController {
                 return;
             }
             edited = terminalInputSinceGuiSend;
+            alreadySubmitted = terminalEnterSinceGuiSend;
             resetTerminalInputRecording();
+        }
+        if (alreadySubmitted) {
+            // The terminal's own Enter submitted the line before the panel's
+            // Enter reached the TUI. That submission's time — recorded by the
+            // terminal path, or the panel's send time when the Enter hit the
+            // freshly reset recorder — is kept: re-timing it at the no-op
+            // Enter would put the cutoff after the user record the child
+            // already wrote. Text typed before that Enter is only a part of
+            // the submitted line (the panel text is not recorded), so it
+            // cannot serve as evidence.
+            if (edited) {
+                lastPromptText = null;
+            }
+            scheduleIdentityRefresh();
+            return;
         }
         if (edited) {
             // Keys arrived while the panel text was being submitted: their
@@ -3638,11 +3704,6 @@ public class ClaudeSessionController {
         boolean recalled;
         boolean menuSelection;
         synchronized (terminalInputLine) {
-            // Any input changes the line the TUI holds — including edits that
-            // leave the recorded buffer unchanged or empty (Backspace, cursor
-            // keys, Ctrl+U, Tab) — so a GUI submission still waiting for its
-            // Enter can no longer rely on the text it composed.
-            terminalInputSinceGuiSend = true;
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
             submitted = appendTerminalInput(bytes);
@@ -3711,6 +3772,20 @@ public class ClaudeSessionController {
         boolean carriedEscape = terminalInputEscape == 1;
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
+            // Any input changes the line the TUI holds — including edits that
+            // leave the recorded buffer unchanged or empty (Backspace, cursor
+            // keys, Ctrl+U, Tab) — so a GUI submission still waiting for its
+            // Enter can no longer rely on the text it composed. Enter is
+            // tracked separately: it submits the line instead of editing it.
+            if (c == '\r' || c == '\n') {
+                if (terminalInputPaste) {
+                    // A line break inside a paste is prompt text, not a
+                    // submission, but it still changes the line.
+                    terminalInputSinceGuiSend = true;
+                }
+            } else {
+                terminalInputSinceGuiSend = true;
+            }
             if (c == 0x1b) {
                 if (carriedEscape && terminalEscapeOnMenu) {
                     // The Esc carried from the previous write was a standalone
@@ -3811,6 +3886,7 @@ public class ClaudeSessionController {
                 String line = terminalInputLine.toString().trim();
                 boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
                 boolean onMenu = model.getActiveChoiceMenu() != null;
+                terminalEnterSinceGuiSend = true;
                 terminalHistoryRecall = false;
                 terminalCompletionEdited = false;
                 terminalInputLine.setLength(0);

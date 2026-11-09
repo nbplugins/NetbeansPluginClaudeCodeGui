@@ -130,6 +130,53 @@ class PtyTtyConnectorTest {
     }
 
     /**
+     * The controller writes the GUI prompt's Enter under the lock it also uses
+     * for the terminal recorder. A concurrent terminal write must therefore be
+     * forwarded and recorded as one step: it may not reach the child on one
+     * side of that Enter while its listener runs on the other, because the
+     * listener would then record bytes for a line the plugin already reset.
+     */
+    @Test
+    void testWriteIsSerializedWithTheSharedInputLock() throws Exception {
+        RecordingPtyProcess p = new RecordingPtyProcess();
+        PtyTtyConnector c = new PtyTtyConnector(p);
+        List<String> received =
+                java.util.Collections.synchronizedList(new ArrayList<>());
+        c.setInputListener((bytes, sentAt) ->
+                received.add(new String(bytes, StandardCharsets.UTF_8)));
+        Object lock = new Object();
+        c.setInputLock(lock);
+
+        java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread writer;
+        synchronized (lock) {
+            writer = new Thread(() -> {
+                try {
+                    c.write("typed");
+                } catch (java.io.IOException e) {
+                    throw new RuntimeException(e);
+                } finally {
+                    done.countDown();
+                }
+            }, "connector-write-test");
+            writer.start();
+
+            assertFalse(done.await(200, java.util.concurrent.TimeUnit.MILLISECONDS),
+                    "the write must wait while the shared lock is held");
+            assertEquals("", p.writtenText(),
+                    "no bytes may reach the child while the lock is held");
+            assertTrue(received.isEmpty(),
+                    "the listener must not run while the lock is held");
+        }
+
+        assertTrue(done.await(2, java.util.concurrent.TimeUnit.SECONDS),
+                "the write must proceed once the lock is released");
+        assertEquals("typed", p.writtenText());
+        assertEquals(List.of("typed"), received);
+    }
+
+    /**
      * A PTY double that records the order of the two events this test cares
      * about: the pending input reaching the child and the connector sampling
      * the submission time.
