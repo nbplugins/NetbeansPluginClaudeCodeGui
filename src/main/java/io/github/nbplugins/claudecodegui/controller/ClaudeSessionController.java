@@ -1456,7 +1456,12 @@ public class ClaudeSessionController {
                                             Set<String> candidates, String preferred,
                                             long promptAt, String promptText) {
         if (candidates.isEmpty() || promptText == null || promptText.isBlank()) return null;
-        if (preferred != null && containsPrompt(dir, configDir, preferred, promptAt, promptText)) {
+        // The preferred session may have been excluded from the candidates
+        // (e.g. it is claimed by another live tab): it is checked first only
+        // while it is still eligible. Returning it otherwise would rename that
+        // tab's conversation instead of the one this run actually holds.
+        if (preferred != null && candidates.contains(preferred)
+                && containsPrompt(dir, configDir, preferred, promptAt, promptText)) {
             return preferred;
         }
         for (String sessionId : candidates) {
@@ -1992,12 +1997,16 @@ public class ClaudeSessionController {
                 // duplicate it.
                 writePty(text);
                 Thread.sleep(200);
-                writePty("\r");
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                resetTerminalInputRecording();
+                return;
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
+                resetTerminalInputRecording();
+                return;
             }
+            completeGuiSend();
         }, "pty-send-prompt");
         t.setDaemon(true);
         t.start();
@@ -2051,6 +2060,40 @@ public class ClaudeSessionController {
         }
         rememberSentPrompt(submitted, sentAt, isTextExact);
         return submitted;
+    }
+
+    /**
+     * Writes the Enter that submits a prompt sent from the panel and closes the
+     * terminal recording for it. The second half of {@link #sendPrompt(String)}.
+     *
+     * <p>The Enter and the reset of the recorder run under the recorder's lock,
+     * so keys typed between the prompt write and this Enter — which are part of
+     * the line the TUI submits — cannot stay behind as the draft of the next
+     * line. They also make the submitted text unknown: the composed evidence
+     * recorded by {@link #reconcileGuiSend} no longer describes that line.
+     */
+    void completeGuiSend() {
+        boolean extra;
+        synchronized (terminalInputLine) {
+            try {
+                writePty("\r");
+            } catch (IOException ex) {
+                LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                resetTerminalInputRecording();
+                return;
+            }
+            extra = terminalInputLine.length() > 0;
+            resetTerminalInputRecording();
+        }
+        if (extra) {
+            // Keys arrived while the panel text was being submitted and are
+            // recorded here, but their position relative to the panel text is
+            // not known: only the file times and user records can identify the
+            // conversation the line went to.
+            lastPromptText = null;
+            promptSubmittedAt = System.currentTimeMillis();
+            scheduleIdentityRefresh();
+        }
     }
 
     /**

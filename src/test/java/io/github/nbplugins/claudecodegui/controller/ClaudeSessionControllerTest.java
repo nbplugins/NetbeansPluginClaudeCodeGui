@@ -3831,6 +3831,91 @@ class ClaudeSessionControllerTest {
         }
     }
 
+    /**
+     * Stopping releases this tab's claims, which also erases the fact that a
+     * conversation was only borrowed. The final post-stop lookup must still
+     * not return that borrowed conversation: another live tab holds it, so the
+     * launch conversation flushed strictly later during the stop is the one
+     * being renamed.
+     */
+    @Test
+    void aBorrowedConversationReleasedAtStopDoesNotWinTheFinalLookup() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+
+        // A NEW sibling resolves the conversation it created and holds it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, null, Set.of("a"));
+
+        try {
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "continue", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+            assertEquals("b", tabB.resolveActiveSessionId(),
+                    "the sibling resolves the conversation it created");
+
+            // Both tabs submit the same prompt: this tab can only borrow the
+            // sibling's file, which already holds the text.
+            controller.simulateGuiSend("continue", START_MS + 10_000L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the identical prompt makes this tab follow the sibling");
+
+            Set<String> held = controller.claimedSessionIds(work.toFile(), config);
+            assertFalse(held.contains("b"),
+                    "the sibling's conversation is only borrowed and is not carried over");
+
+            // The writer exits, releasing the borrowed classification, and the
+            // launch conversation is flushed strictly later: the rename must
+            // target it, not the borrowed file another tab still holds.
+            controller.simulateProcessExit();
+            appendUserPrompt(dir, "a", "continue", START_MS + 12_000L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 13_000L);
+
+            assertEquals("a", controller.resolveIdentityWithPreservedClaims(held),
+                    "the launch conversation flushed during the stop must be renamed");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The GUI submits a prompt with two writes separated by a pause. Keys typed
+     * within that pause are part of the line the Enter submits, but the TUI
+     * Enter itself never reaches the parser (the plugin marks its own writes).
+     * They must not stay recorded as the draft of the next prompt, and the
+     * panel text must not pass as the exact submitted text.
+     */
+    @Test
+    void keysTypedWhileTheGuiPromptIsBeingSubmittedDoNotBecomeTheNextPrompt() {
+        controller.simulateGuiSend("panel text", START_MS);
+
+        // Keys typed while the panel text is being submitted.
+        controller.simulateTerminalInput(
+                " and typed".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 100L);
+        controller.completeGuiSend();
+
+        assertNull(controller.simulateLastPromptText(),
+                "the line the Enter submitted is not the panel text alone");
+        assertEquals("next",
+                controller.simulateTerminalInput(
+                        "next\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 300L),
+                "keys from the previous submission must not stay in the draft");
+    }
+
     /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
     @Test
     void clearingARecalledPromptMakesTheNextSubmissionKnown() {
