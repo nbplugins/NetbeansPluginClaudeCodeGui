@@ -4455,6 +4455,118 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Once a switch recovery has resolved the unheld conversation the run
+     * resumed into, a later unknown-text submission keeps it: without the
+     * resolved own ID the own-candidate pass is skipped, and a live sibling's
+     * newer human record would make Save &amp; Switch rename the sibling's
+     * conversation.
+     */
+    @Test
+    void theSwitchRecoveryKeepsItsOwnFileForLaterUnknownPrompts() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b", "c"));
+
+        // A sibling tab runs its own conversation c.
+        ClaudeSessionModel modelC = new ClaudeSessionModel();
+        modelC.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabC =
+                new ClaudeSessionController(modelC, Collections::emptyList);
+        tabC.simulateProcessStart(START_MS + 1_000L, true);
+        tabC.simulateLiveSession(config, "c", Set.of("a", "b", "c"));
+
+        try {
+            // The run switches to the unheld conversation b and submits a
+            // recalled prompt there: its text is unknown.
+            controller.simulateTerminalInput(
+                    "/res".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 9_000L);
+            assertEquals("/resume",
+                    controller.simulateGuiSend("ume", START_MS + 9_100L));
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 10_000L);
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 11_000L);
+            appendUserPrompt(dir, "b", "first", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the switch must resolve the unheld destination");
+
+            // A second recalled prompt goes to b, while the sibling appends a
+            // newer human record to its own live conversation c.
+            controller.simulateTerminalInput(
+                    new byte[]{0x1b, '[', 'A'}, START_MS + 13_000L);
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 14_000L);
+            appendUserPrompt(dir, "b", "second", START_MS + 14_400L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 14_500L);
+            appendUserPrompt(dir, "c", "sibling", START_MS + 14_600L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 14_700L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the resolved switch destination must stay this tab's own");
+        } finally {
+            tabC.stopProcess();
+        }
+    }
+
+    /**
+     * A terminal Enter during the GUI send's pause submits the panel text
+     * together with the keys typed there. The text the terminal parser
+     * recorded is only a part of that prompt, so an identity scan in the
+     * window before the panel's Enter must not adopt another conversation's
+     * file matched by the part alone.
+     */
+    @Test
+    void aTerminalEnterDuringTheGuiSendPublishesNoPartialPrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "b", "b");
+        writeSession(dir, "w", "w");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("w.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "b", Set.of("b", "w"));
+
+        // The panel text is written, and during the pause before its Enter the
+        // user types in the terminal and presses Enter: the TUI submits the
+        // composed line "hello world".
+        controller.simulateGuiSend("hello", START_MS + 10_000L);
+        controller.simulateTerminalInput(
+                " world".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_050L);
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 10_100L);
+
+        // An unrelated conversation holds the partial text; the launched one
+        // holds the composed prompt, slightly later.
+        appendUserPrompt(dir, "w", "world", START_MS + 10_200L);
+        setMtime(dir.resolve("w.jsonl"), START_MS + 10_300L);
+        appendUserPrompt(dir, "b", "hello world", START_MS + 10_400L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 10_500L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the partial terminal text must not identify a conversation");
+
+        controller.completeGuiSend();
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the composed prompt must keep the launched conversation");
+    }
+
+    /**
      * An Enter on the still-empty terminal line does nothing on the TUI, so it
      * must not invalidate the prompt evidence: the submitted prompt would stop
      * matching, and the resumed conversation's live claim stays excluded from
@@ -4519,6 +4631,7 @@ class ClaudeSessionControllerTest {
                 "draft".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
         assertEquals("drafthello", controller.simulateGuiSend("hello", START_MS + 1_000L),
                 "the GUI submission takes the terminal draft with it");
+        controller.completeGuiSend();
         assertEquals("next", controller.simulateTerminalInput(
                         "next\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                         START_MS + 2_000L),

@@ -406,6 +406,15 @@ public class ClaudeSessionController {
      */
     private boolean terminalEnterSinceGuiSend;
 
+    /**
+     * True between a GUI send's prompt write and the Enter that submits it:
+     * the panel text is already on the TUI's input line. A terminal Enter in
+     * that window submits the panel text together with what was typed there,
+     * so the text recorded by the terminal parser is only a part of the
+     * prompt and must not be published as its evidence.
+     */
+    private boolean guiSendAwaitingEnter;
+
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
 
@@ -1423,6 +1432,14 @@ public class ClaudeSessionController {
                                > ClaudeSessionStore.sessionFileModified(dir.toPath(),
                                     configDir, newest))) {
                         newest = switched;
+                        // No other live tab holds the switched-to conversation,
+                        // so the record in it can only have come from this
+                        // process: it is the file this run resumed into. It
+                        // must be remembered as the run's own, or the next
+                        // unknown-text submission skips the own-candidate pass
+                        // (which requires a resolved own ID) and a sibling's
+                        // newer record displaces it.
+                        ownEvidence = true;
                     }
                 }
             }
@@ -1710,6 +1727,7 @@ public class ClaudeSessionController {
             terminalRecalledSubmission = false;
             terminalInputSinceGuiSend = false;
             terminalEnterSinceGuiSend = false;
+            guiSendAwaitingEnter = false;
         }
     }
 
@@ -2102,7 +2120,14 @@ public class ClaudeSessionController {
             // miss the real prompt.
             isTextExact = !terminalHistoryRecall && !terminalCompletionEdited;
         }
-        resetTerminalInputRecording();
+        synchronized (terminalInputLine) {
+            resetTerminalInputRecording();
+            // The panel text stays on the TUI's input line until
+            // completeGuiSend() sends its Enter. Until then a terminal Enter
+            // submits that text together with the keys typed here, so the
+            // terminal parser's line is only a part of the prompt.
+            guiSendAwaitingEnter = true;
+        }
         if (isConversationCommand(isTextExact ? submitted : text)) {
             // A TUI command is not a prompt written to the current
             // conversation: /resume and /clear can switch it, and these
@@ -3910,7 +3935,17 @@ public class ClaudeSessionController {
                     // With a choice menu open Enter selects an item instead of
                     // submitting the line: what was typed there is the picker's
                     // search filter, not a prompt.
-                    submitted = line;
+                    if (guiSendAwaitingEnter) {
+                        // A prompt sent from the panel is already written on
+                        // the TUI's line: this Enter submits it together with
+                        // the recorded text, which is only a part of the
+                        // prompt. Publishing it as the evidence would let an
+                        // identity scan match another conversation's file for
+                        // the partial text before the panel's Enter is sent.
+                        terminalRecalledSubmission = true;
+                    } else {
+                        submitted = line;
+                    }
                 }
             } else if (c == 0x7f || c == 0x08) {
                 deleteTerminalCharBeforeCursor();
