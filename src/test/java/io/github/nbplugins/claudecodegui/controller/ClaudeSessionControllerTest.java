@@ -3277,6 +3277,32 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The panel text reaches the conversation only when the GUI send's Enter is
+     * written. Publishing it as own-session evidence sooner would let an
+     * identity scan running in the pause adopt another conversation that
+     * receives the same prompt before this process has submitted anything.
+     */
+    @Test
+    void aGuiPromptBecomesEvidenceOnlyWhenItsEnterIsWritten() {
+        controller.simulatePromptSubmittedAt(START_MS - 10_000L);
+        controller.simulatePromptText("earlier");
+
+        controller.simulateGuiSend("hello", START_MS);
+
+        assertEquals("earlier", controller.simulateLastPromptText(),
+                "the panel text is not submitted until its Enter");
+        assertEquals(START_MS - 10_000L, controller.simulatePromptSubmittedAtValue(),
+                "the previous submission stays the evidence meanwhile");
+
+        controller.completeGuiSend();
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the Enter makes the panel text the submitted prompt");
+        assertEquals(START_MS, controller.simulatePromptSubmittedAtValue(),
+                "the send time is the submission cutoff");
+    }
+
+    /**
      * A Tab-completed or recalled draft holds only a part of the submitted
      * line, so a GUI submission carrying it is recorded as unknown text
      * instead of an exact prompt the conversation never received.
@@ -3871,6 +3897,7 @@ class ClaudeSessionControllerTest {
             // Both tabs submit the same prompt: this tab can only borrow the
             // sibling's file, which already holds the text.
             controller.simulateGuiSend("continue", START_MS + 10_000L);
+            controller.completeGuiSend();
             assertEquals("b", controller.resolveActiveSessionId(),
                     "the identical prompt makes this tab follow the sibling");
 
