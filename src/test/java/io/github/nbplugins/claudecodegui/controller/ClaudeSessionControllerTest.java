@@ -13,6 +13,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -4009,6 +4011,58 @@ class ClaudeSessionControllerTest {
         controller.completeGuiSend();
         assertNull(controller.simulateLastPromptText(),
                 "the panel's no-op Enter must keep the submission unknown");
+    }
+
+    /**
+     * The panel text must be on the TUI line before terminal input can be
+     * processed against the reconciled recorder. Otherwise an Enter arriving
+     * between the reconciliation and the text write submits only the terminal
+     * draft, while the recorded evidence claims the composed line was
+     * submitted.
+     */
+    @Test
+    void terminalInputWaitsForTheGuiTextWrite() throws Exception {
+        CountDownLatch writeStarted = new CountDownLatch(1);
+        CountDownLatch releaseWrite = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            writeStarted.countDown();
+            try {
+                releaseWrite.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        controller.simulateTerminalInput(
+                "draft".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread sender = new Thread(() -> {
+            try {
+                controller.simulateGuiSendWithText("hello", START_MS + 1L);
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        });
+        sender.start();
+        assertTrue(writeStarted.await(5, TimeUnit.SECONDS),
+                "the panel text must be written");
+
+        CountDownLatch enterDone = new CountDownLatch(1);
+        Thread enter = new Thread(() -> {
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 2L);
+            enterDone.countDown();
+        });
+        enter.start();
+        assertFalse(enterDone.await(400, TimeUnit.MILLISECONDS),
+                "terminal input must wait until the panel text is on the TUI line");
+        releaseWrite.countDown();
+        sender.join(5_000L);
+        enter.join(5_000L);
+
+        assertNull(failure.get(), "the panel text write must not fail");
+        assertEquals(0L, enterDone.getCount(),
+                "terminal input must be processed after the write");
     }
 
     /**

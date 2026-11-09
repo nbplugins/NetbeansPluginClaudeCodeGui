@@ -563,6 +563,15 @@ public class ClaudeSessionController {
         return reconcileGuiSend(text, sentAt);
     }
 
+    /**
+     * Package-private for tests: the reconciliation and the initial text write
+     * of {@link #sendPrompt(String)}, without the pause and Enter that
+     * {@link #completeGuiSend()} adds.
+     */
+    void simulateGuiSendWithText(String text, long sentAt) throws IOException {
+        writeGuiPrompt(text, sentAt);
+    }
+
     /** Package-private for tests: the number of identity scans started. */
     long simulateScanSequence() {
         synchronized (processOwnershipLock) {
@@ -2172,15 +2181,14 @@ public class ClaudeSessionController {
         if (!text.isBlank()) {
             model.addPromptToHistory(text);
         }
-        reconcileGuiSend(text, System.currentTimeMillis());
 
         Thread t = new Thread(() -> {
             try {
-                // Only the panel text is written: the terminal's own draft is
-                // still in the TUI's input line, so it is already part of the
-                // line the Enter submits. Writing the composed line would
-                // duplicate it.
-                writePty(text);
+                // Reconciliation and the text write run as one step under the
+                // recorder's lock: an Enter arriving in between would submit
+                // the terminal draft alone, while the evidence recorded for
+                // the send would claim the composed line was submitted.
+                writeGuiPrompt(text, System.currentTimeMillis());
                 Thread.sleep(200);
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
@@ -2195,6 +2203,22 @@ public class ClaudeSessionController {
         }, "pty-send-prompt");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * Records a prompt sent from the prompt panel and writes its text to the
+     * PTY as one step, atomic with respect to terminal input (see
+     * {@link #reconcileGuiSend(String, long)}).
+     *
+     * <p>Only the panel text is written: the terminal's own draft is still in
+     * the TUI's input line, so it is already part of the line the Enter
+     * submits. Writing the composed line would duplicate it.
+     */
+    private void writeGuiPrompt(String text, long sentAt) throws IOException {
+        synchronized (terminalInputLine) {
+            reconcileGuiSend(text, sentAt);
+            writePty(text);
+        }
     }
 
     /**
