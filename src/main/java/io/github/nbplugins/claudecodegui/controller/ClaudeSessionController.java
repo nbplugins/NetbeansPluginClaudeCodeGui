@@ -1432,6 +1432,43 @@ public class ClaudeSessionController {
                         }
                         ownEvidence = newest != null;
                         ownRecordMatch = newest != null;
+                        if (newest != null && switchAt > 0) {
+                            // The conversation was switched with a resume
+                            // command before this run created a file of its
+                            // own, so the unclaimed record above may be an
+                            // exited tab's own submission rather than this
+                            // run's first file. The switch's destination is
+                            // among the shared conversations; when it holds
+                            // this submission and was written later, it is the
+                            // conversation on screen, and the unclaimed record
+                            // must not be taken as this run's own.
+                            Set<String> shared = new HashSet<>(claimed);
+                            shared.addAll(otherLiveClaims);
+                            if (activeId != null) shared.add(activeId);
+                            if (launchIdentityKnown && launchSessionId != null) {
+                                shared.add(launchSessionId);
+                            }
+                            String switchedTo = newestSharedSessionWrittenSince(dir,
+                                    configDir, since, promptAt, shared, exclude);
+                            if (switchedTo == null
+                                    && since > SESSION_MTIME_GRANULARITY_MS) {
+                                switchedTo = newestSharedSessionWrittenSince(dir,
+                                        configDir, since - SESSION_MTIME_GRANULARITY_MS,
+                                        promptAt, shared, exclude);
+                            }
+                            if (switchedTo != null && !switchedTo.equals(newest)
+                                    && ClaudeSessionStore.sessionFileModified(
+                                            dir.toPath(), configDir, switchedTo)
+                                       > ClaudeSessionStore.sessionFileModified(
+                                            dir.toPath(), configDir, newest)) {
+                                newest = switchedTo;
+                                // A conversation another live tab holds is not
+                                // this run's own file: it was resumed into, so
+                                // adopting it must not establish ownership.
+                                ownEvidence = false;
+                                ownRecordMatch = false;
+                            }
+                        }
                     } else if (!ownCandidates.isEmpty()) {
                         newest = newestSharedSessionWrittenSince(dir, configDir, since,
                                 promptAt, ownCandidates, exclude);
@@ -2420,23 +2457,26 @@ public class ClaudeSessionController {
             boolean pendingExact = pendingGuiPromptExact;
             boolean pendingSet = pendingGuiPromptSet;
             resetTerminalInputRecording();
-            if (alreadySubmitted && draftAfterEnter && !draftLine.isEmpty()) {
-                // The terminal Enter submitted the panel text during the pause,
-                // and the input typed afterwards is a new line that this Enter
-                // submits. The Enter cleared the recorder, so the recorded text
-                // is the whole line, and the submission happened after this
-                // Enter's time was sampled.
+            if (alreadySubmitted && draftAfterEnter
+                    && (!draftLine.isEmpty() || !draftExact)) {
+                // A new line was started after the terminal Enter that
+                // submitted the panel text, and this Enter submits it. The
+                // recorded text is the whole line when anything was typed
+                // after that Enter (it cleared the recorder); a line recalled
+                // from the history or completed by Tab leaves no recorded
+                // text, yet it is submitted all the same, as unknown text.
                 rememberSentPrompt(draftLine, submittedAt, draftExact);
                 schedule = false;
             } else if (alreadySubmitted && draftAfterEnter && pendingSet
-                    && pendingExact && promptSubmittedAt <= pendingAt) {
+                    && promptSubmittedAt <= pendingAt) {
                 // The draft typed after the terminal Enter was deleted again,
-                // so this Enter submits nothing: the panel text submitted by
-                // that Enter is still the exact, latest submission. A newer
+                // so this Enter submits nothing: the line submitted by that
+                // Enter is the pending one — the panel text, or the composed
+                // line when the text was only partially known. A newer
                 // submission recorded meanwhile (a draft submitted from the
                 // terminal) is left in place.
                 rememberSentPrompt(pendingText,
-                        guiSubmitAt != 0L ? guiSubmitAt : pendingAt, true);
+                        guiSubmitAt != 0L ? guiSubmitAt : pendingAt, pendingExact);
                 schedule = false;
             } else if (alreadySubmitted) {
                 // The terminal's own Enter submitted the line before the

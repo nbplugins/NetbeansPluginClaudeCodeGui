@@ -3364,6 +3364,35 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A GUI send extending a recalled draft is unknown-text evidence, and a
+     * terminal Enter during the pause submits that line. Up then recalls a
+     * second prompt: the recorder holds no text for that line either, yet the
+     * delayed Enter submits it. The submission must be recorded as unknown
+     * text at the delayed Enter, not dropped as if the Enter did nothing —
+     * otherwise the previous prompt stays the evidence with its old timestamp.
+     */
+    @Test
+    void aRecalledDraftAfterTheEarlyEnterIsRecordedAsUnknownSubmission() {
+        controller.simulatePromptSubmittedAt(START_MS - 10_000L);
+        controller.simulatePromptText("earlier");
+
+        // Up recalls a prompt on the input line: only part of it is recorded.
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS);
+        controller.simulateGuiSend(" hello", START_MS + 10L);
+        // The terminal Enter submits the composed line; Up recalls another
+        // prompt on the new line, which leaves nothing in the recorder.
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 50L);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 100L);
+
+        controller.completeGuiSend(() -> START_MS + 250L);
+
+        assertNull(controller.simulateLastPromptText(),
+                "a recalled line has no recorded text to match");
+        assertEquals(START_MS + 250L, controller.simulatePromptSubmittedAtValue(),
+                "the delayed Enter submits the recalled line");
+    }
+
+    /**
      * A terminal Enter during the pause submits the panel text; a draft typed
      * after it starts a new line, which the delayed Enter then submits. That
      * draft is fully recorded, so it becomes the evidence with the Enter time
@@ -3763,6 +3792,62 @@ class ClaudeSessionControllerTest {
                     "the shared conversation holding the submission must win");
             assertEquals("b", controller.resolveActiveSessionId(),
                     "later scans must keep the shared conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A NEW tab resumes another live tab's conversation and only then submits
+     * a recalled prompt, before creating a file of its own. An exited tab's
+     * unrelated unclaimed record written after the submission must not be
+     * taken as this run's first file: the resumed conversation holds the
+     * actual submission and was written strictly later.
+     */
+    @Test
+    void aNewTabResumingALiveConversationDoesNotAdoptAnExitedTabsRecord() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "c", "c");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // Another live tab is writing conversation b.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "b", Set.of("b", "c"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS + 1_000L, true);
+        controller.simulateLiveSession(config, null, Set.of("b", "c"));
+
+        try {
+            // The user resumes the live conversation b from the GUI.
+            controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.simulateGuiChoiceAnswer("ARROW:1");
+
+            // A recalled prompt: its text is unknown.
+            controller.simulatePromptSubmittedAt(START_MS + 11_000L);
+            controller.simulatePromptText(null);
+
+            // A third tab submits to c and exits: unclaimed, but unrelated.
+            appendUserPrompt(dir, "c", "other work", START_MS + 11_400L);
+            setMtime(dir.resolve("c.jsonl"), START_MS + 11_500L);
+            // The actual submission lands in the resumed conversation b, which
+            // is strictly newer.
+            appendUserPrompt(dir, "b", "recalled prompt", START_MS + 11_600L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 12_600L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the resumed conversation must win over an exited tab's record");
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "later scans must keep the resumed conversation");
         } finally {
             tabB.stopProcess();
         }
