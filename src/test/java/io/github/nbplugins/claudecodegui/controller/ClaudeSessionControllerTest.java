@@ -3281,6 +3281,8 @@ class ClaudeSessionControllerTest {
      * written. Publishing it as own-session evidence sooner would let an
      * identity scan running in the pause adopt another conversation that
      * receives the same prompt before this process has submitted anything.
+     * The cutoff is that Enter's time, not the text-write time: a record
+     * written in the pause must not count as this submission.
      */
     @Test
     void aGuiPromptBecomesEvidenceOnlyWhenItsEnterIsWritten() {
@@ -3294,12 +3296,12 @@ class ClaudeSessionControllerTest {
         assertEquals(START_MS - 10_000L, controller.simulatePromptSubmittedAtValue(),
                 "the previous submission stays the evidence meanwhile");
 
-        controller.completeGuiSend();
+        controller.completeGuiSend(() -> START_MS + 200L);
 
         assertEquals("hello", controller.simulateLastPromptText(),
                 "the Enter makes the panel text the submitted prompt");
-        assertEquals(START_MS, controller.simulatePromptSubmittedAtValue(),
-                "the send time is the submission cutoff");
+        assertEquals(START_MS + 200L, controller.simulatePromptSubmittedAtValue(),
+                "the Enter time is the submission cutoff, not the send time");
     }
 
     /**
@@ -3333,6 +3335,32 @@ class ClaudeSessionControllerTest {
                 "a completed draft makes the submitted text unknown");
         assertEquals(START_MS + 2_300L, controller.simulatePromptSubmittedAtValue(),
                 "the Enter time is the submission cutoff, not the send time");
+    }
+
+    /**
+     * The reconciliation resets the recall/completion flags, so a terminal
+     * Enter during the pause sees an empty line and is classified as an empty
+     * Enter, although it submits the composed line. The pending unknown-text
+     * submission must then be published at that Enter's time: skipping it
+     * leaves the previous prompt as the evidence and the stop-time lookup
+     * renames the wrong conversation.
+     */
+    @Test
+    void anEarlyEnterPublishesTheUnknownTextOfACompletedDraft() {
+        controller.simulatePromptSubmittedAt(START_MS - 10_000L);
+        controller.simulatePromptText("earlier");
+
+        controller.simulateTerminalInput(
+                "@fi".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{'\t'}, START_MS + 1_000L);
+        controller.simulateGuiSend(" hello", START_MS + 2_000L);
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 2_100L);
+        controller.completeGuiSend(() -> START_MS + 2_400L);
+
+        assertNull(controller.simulateLastPromptText(),
+                "the completed draft makes the submitted text unknown");
+        assertEquals(START_MS + 2_100L, controller.simulatePromptSubmittedAtValue(),
+                "the early Enter's time is the submission cutoff");
     }
 
     /**
@@ -3933,7 +3961,7 @@ class ClaudeSessionControllerTest {
             // Both tabs submit the same prompt: this tab can only borrow the
             // sibling's file, which already holds the text.
             controller.simulateGuiSend("continue", START_MS + 10_000L);
-            controller.completeGuiSend();
+            controller.completeGuiSend(() -> START_MS + 10_200L);
             assertEquals("b", controller.resolveActiveSessionId(),
                     "the identical prompt makes this tab follow the sibling");
 
@@ -4045,8 +4073,9 @@ class ClaudeSessionControllerTest {
 
         assertEquals("hello", controller.simulateLastPromptText(),
                 "the terminal Enter submitted exactly the panel text");
-        assertEquals(START_MS, controller.simulatePromptSubmittedAtValue(),
-                "the panel's later Enter must not re-time the submission");
+        assertEquals(START_MS + 100L, controller.simulatePromptSubmittedAtValue(),
+                "the terminal Enter's time is the cutoff; the panel's later Enter "
+                        + "must not re-time the submission");
     }
 
     /**
