@@ -352,6 +352,18 @@ public class ClaudeSessionController {
     private boolean terminalEscapeOnMenu;
 
     /**
+     * The choice menu the terminal input already completed (a digit selected a
+     * numbered item, Enter or Right submitted, Esc cancelled) while the model
+     * still reports it. The screen is polled only every half second, so the
+     * dismissed menu stays in the model for a while; input arriving in that
+     * window must not be classified against a menu the TUI no longer shows.
+     * Compared by identity: every detected menu is a fresh instance.
+     *
+     * <p>Guarded by {@link #terminalInputLine}.
+     */
+    private ChoiceMenuModel terminalCompletedMenu;
+
+    /**
      * True when the last Enter confirmed a choice menu selection instead
      * of submitting a prompt. The {@code /resume} picker changes the
      * conversation that way, even when the command that opened it was recalled
@@ -1745,6 +1757,7 @@ public class ClaudeSessionController {
             terminalInputSinceGuiSend = false;
             terminalEnterSinceGuiSend = false;
             guiSendAwaitingEnter = false;
+            terminalCompletedMenu = null;
         }
     }
 
@@ -1757,6 +1770,46 @@ public class ClaudeSessionController {
         terminalInputLine.setLength(0);
         terminalInputCursor = 0;
         terminalEscapeOnMenu = false;
+        // The cancelled menu stays in the model until the next poll: retire
+        // it, or input typed right after the cancellation is still treated as
+        // a menu answer.
+        completeTerminalMenu(openChoiceMenu());
+    }
+
+    /**
+     * Returns the choice menu still open on the screen, or {@code null} when
+     * the terminal input already completed the menu the model reports.
+     *
+     * <p>The model is refreshed by the screen poll every half second, so a
+     * menu dismissed by a keystroke remains reported for a while. Classifying
+     * the following input against it would swallow a real prompt: its digits
+     * are dropped and its Enter counts as a menu selection instead of a
+     * submission. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private ChoiceMenuModel openChoiceMenu() {
+        ChoiceMenuModel active = model.getActiveChoiceMenu();
+        return active == terminalCompletedMenu ? null : active;
+    }
+
+    /**
+     * Remembers that the terminal input has dismissed {@code menu}, so the
+     * stale model entry no longer classifies the following keystrokes. Call
+     * while holding the {@link #terminalInputLine} lock.
+     */
+    private void completeTerminalMenu(ChoiceMenuModel menu) {
+        if (menu != null) terminalCompletedMenu = menu;
+    }
+
+    /**
+     * Returns whether {@code menu} is a checkbox menu, which submits on Right
+     * (the answer protocol written by the menu panel) instead of a numbered
+     * picker, where Right only moves the cursor inside the search field.
+     */
+    private static boolean isCheckboxMenu(ChoiceMenuModel menu) {
+        for (ChoiceMenuModel.Option option : menu.options()) {
+            if (option.hasCheckbox()) return true;
+        }
+        return false;
     }
 
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
@@ -2153,8 +2206,10 @@ public class ClaudeSessionController {
             // conversation never received, and the exact-match search would
             // miss the real prompt.
             isTextExact = !terminalHistoryRecall && !terminalCompletionEdited;
-        }
-        synchronized (terminalInputLine) {
+            // Reset under the same lock: a raw terminal write interleaved
+            // between the snapshot and the reset would reach the TUI after
+            // `submitted` was computed, yet its recording would be deleted,
+            // leaving evidence that omits characters the conversation got.
             resetTerminalInputRecording();
             // The panel text stays on the TUI's input line until
             // completeGuiSend() sends its Enter. Until then a terminal Enter
@@ -3859,7 +3914,7 @@ public class ClaudeSessionController {
                 // A standalone Esc cancels a choice menu (the /resume picker):
                 // the recorded line then holds the picker's search text, not a
                 // prompt draft.
-                terminalEscapeOnMenu = model.getActiveChoiceMenu() != null;
+                terminalEscapeOnMenu = openChoiceMenu() != null;
                 // A new Esc belongs to this write, so it is not the carried
                 // standalone one and may start a sequence even right after it.
                 carriedEscape = false;
@@ -3944,7 +3999,8 @@ public class ClaudeSessionController {
             } else if (c == '\r' || c == '\n') {
                 String line = terminalInputLine.toString().trim();
                 boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
-                boolean onMenu = model.getActiveChoiceMenu() != null;
+                ChoiceMenuModel openMenu = openChoiceMenu();
+                boolean onMenu = openMenu != null;
                 terminalEnterSinceGuiSend = true;
                 terminalHistoryRecall = false;
                 terminalCompletionEdited = false;
@@ -3958,6 +4014,13 @@ public class ClaudeSessionController {
                 terminalEnterOnEmptyLine = line.isEmpty() && !unknownText
                         && !onMenu;
                 terminalMenuSelection = onMenu;
+                if (onMenu && !isCheckboxMenu(openMenu)) {
+                    // A numbered menu closes on the selection Enter (a
+                    // checkbox menu only toggles and stays open until Right),
+                    // so the model's stale entry must stop classifying the
+                    // input that follows.
+                    completeTerminalMenu(openMenu);
+                }
                 if (unknownText) {
                     // The line was filled from the TUI history (Up/Down) or
                     // completed by Tab and may have been edited since: the
@@ -3997,7 +4060,7 @@ public class ClaudeSessionController {
                 // choice menu is open Tab belongs to the menu ("Tab to amend")
                 // and Enter selects an item instead of submitting a prompt, so
                 // the menu context is not completion evidence.
-                if (model.getActiveChoiceMenu() == null) {
+                if (openChoiceMenu() == null) {
                     terminalCompletionEdited = true;
                 }
             } else if (c >= 0x20) {
@@ -4005,7 +4068,15 @@ public class ClaudeSessionController {
                 // immediately (see writePtyAnswer) and never becomes part of a
                 // prompt: recording it would prefix the next prompt's evidence
                 // with the selection and make the actual text unmatchable.
-                if (!(model.getActiveChoiceMenu() != null && c >= '0' && c <= '9')) {
+                ChoiceMenuModel openMenu = openChoiceMenu();
+                if (openMenu != null && c >= '0' && c <= '9') {
+                    if (!isCheckboxMenu(openMenu)) {
+                        // The digit selected a numbered item and closed the
+                        // menu; a checkbox menu only toggles on a digit and
+                        // waits for its Right to submit.
+                        completeTerminalMenu(openMenu);
+                    }
+                } else {
                     insertTerminalChar(c);
                 }
             }
@@ -4054,6 +4125,15 @@ public class ClaudeSessionController {
                         at <= 0 ? 0 : terminalInputLine.offsetByCodePoints(at, -1);
             }
             case 'C' -> {
+                ChoiceMenuModel menu = openChoiceMenu();
+                if (menu != null && isCheckboxMenu(menu)) {
+                    // Right submits a checkbox menu (the answer protocol the
+                    // menu panel writes): the menu is dismissed, so the text
+                    // typed into it — an option's free-text answer — must not
+                    // prefix the next prompt.
+                    discardPickerSearchText();
+                    return;
+                }
                 int at = Math.min(terminalInputCursor, terminalInputLine.length());
                 terminalInputCursor = at >= terminalInputLine.length()
                         ? terminalInputLine.length()
@@ -4068,7 +4148,7 @@ public class ClaudeSessionController {
                 // open the same keys move its cursor instead — the line stays
                 // empty too, but Enter selects a menu item rather than a
                 // recalled prompt, so it must not be recorded as a submission.
-                if (terminalInputLine.isEmpty() && model.getActiveChoiceMenu() == null) {
+                if (terminalInputLine.isEmpty() && openChoiceMenu() == null) {
                     terminalHistoryRecall = true;
                 }
             }

@@ -4108,6 +4108,10 @@ class ClaudeSessionControllerTest {
      * immediately and is consumed by the TUI, so it must not become draft text
      * for the prompt typed after the menu is dismissed: the malformed text
      * could no longer match the file the prompt was actually written to.
+     *
+     * <p>The menu is left in the model on purpose: the screen is polled only
+     * every half second, and a prompt submitted before the poll catches up is
+     * still a real submission, not a menu answer.
      */
     @Test
     void aMenuSelectionDigitIsNotRecordedAsPromptDraft() {
@@ -4116,13 +4120,38 @@ class ClaudeSessionControllerTest {
                 new ChoiceMenuModel.Option("No", "2")), 0));
 
         controller.simulateTerminalInput(new byte[]{'1'}, START_MS);
-        // The screen no longer shows the menu.
-        model.clearChoiceMenu();
-
+        // The screen poll has not refreshed yet: the model still reports the
+        // menu the digit dismissed.
         assertEquals("hello", controller.simulateTerminalInput(
                 "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 START_MS + 1L),
                 "the menu selection must not prefix the submitted prompt");
+    }
+
+    /**
+     * A checkbox menu's free-text option is answered with the text, Up, then
+     * Right, which submits the menu. The text belongs to the menu answer, not
+     * to the prompt typed after it, and the Right must retire the menu the
+     * model still reports until the next screen poll.
+     */
+    @Test
+    void aFreeTextCheckboxAnswerDoesNotPrefixTheNextPrompt() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Pick one", List.of(
+                checkbox("1", false),
+                checkbox("2", false),
+                new ChoiceMenuModel.Option("Type something", "3", null,
+                        false, false, true)), 0));
+
+        controller.simulateTerminalInput(
+                "other".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 1L);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'C'}, START_MS + 2L);
+        // The screen poll has not refreshed yet: the model still reports the
+        // menu the Right submitted.
+        assertEquals("hello", controller.simulateTerminalInput(
+                "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 3L),
+                "the checkbox answer must not prefix the submitted prompt");
     }
 
     /**
