@@ -419,6 +419,15 @@ public class ClaudeSessionController {
     private boolean terminalEnterSinceGuiSend;
 
     /**
+     * Set when terminal input arrived after the terminal Enter that submitted
+     * a GUI prompt during its pause. The Enter cleared the recorder, so that
+     * input starts a new line, which the delayed GUI Enter then submits;
+     * unlike the input before the Enter, its text is exactly what the
+     * conversation receives. Cleared with the rest of the recorder state.
+     */
+    private boolean terminalDraftAfterEnter;
+
+    /**
      * True between a GUI send's prompt write and the Enter that submits it:
      * the panel text is already on the TUI's input line. A terminal Enter in
      * that window submits the panel text together with what was typed there,
@@ -1785,6 +1794,7 @@ public class ClaudeSessionController {
             terminalRecalledSubmission = false;
             terminalInputSinceGuiSend = false;
             terminalEnterSinceGuiSend = false;
+            terminalDraftAfterEnter = false;
             guiSendAwaitingEnter = false;
             pendingGuiPromptText = null;
             pendingGuiPromptAt = 0L;
@@ -2357,16 +2367,31 @@ public class ClaudeSessionController {
      * this Enter then submits an empty one. The evidence of the first
      * submission is kept as it is — its time is never later than the record
      * the child wrote for it, and the panel text is still exact when the line
-     * was not edited.
+     * was not edited. A draft typed after that Enter starts a new line, and
+     * this Enter submits it: the draft is recorded — with this Enter's time —
+     * instead of being dropped as a no-op.
+     *
+     * <p>When the submitted text is only partially known, the cutoff is this
+     * Enter's time, not the text-write time: with no text to match, a record
+     * written during the pause would otherwise qualify as this submission
+     * before the real one has been flushed.
      */
     void completeGuiSend() {
+        completeGuiSend(System::currentTimeMillis);
+    }
+
+    /**
+     * {@link #completeGuiSend()} with a controllable clock, used by tests to
+     * pin the submission cutoff.
+     */
+    void completeGuiSend(java.util.function.LongSupplier clock) {
         boolean schedule;
         synchronized (terminalInputLine) {
             // Sampled before the Enter is forwarded: the child may append the
             // submitted prompt to its session file as soon as it reads the
             // bytes, and a record written then must still pass the submission
             // cutoff used by the evidence lookup.
-            long submittedAt = System.currentTimeMillis();
+            long submittedAt = clock.getAsLong();
             try {
                 writePty("\r");
             } catch (IOException ex) {
@@ -2376,26 +2401,44 @@ public class ClaudeSessionController {
             }
             boolean edited = terminalInputSinceGuiSend;
             boolean alreadySubmitted = terminalEnterSinceGuiSend;
+            boolean draftAfterEnter = terminalDraftAfterEnter;
+            String draftLine = terminalInputLine.toString().trim();
+            boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
             String pendingText = pendingGuiPromptText;
             long pendingAt = pendingGuiPromptAt;
             boolean pendingExact = pendingGuiPromptExact;
             boolean pendingSet = pendingGuiPromptSet;
             resetTerminalInputRecording();
-            if (alreadySubmitted) {
+            if (alreadySubmitted && draftAfterEnter && !draftLine.isEmpty()) {
+                // The terminal Enter submitted the panel text during the pause,
+                // and the input typed afterwards is a new line that this Enter
+                // submits. The Enter cleared the recorder, so the recorded text
+                // is the whole line, and the submission happened after this
+                // Enter's time was sampled.
+                rememberSentPrompt(draftLine, submittedAt, draftExact);
+                schedule = false;
+            } else if (alreadySubmitted && draftAfterEnter && pendingSet
+                    && pendingExact) {
+                // The draft typed after the terminal Enter was deleted again,
+                // so this Enter submits nothing: the panel text submitted by
+                // that Enter is still the exact, latest submission.
+                rememberSentPrompt(pendingText, pendingAt, true);
+                schedule = false;
+            } else if (alreadySubmitted) {
                 // The terminal's own Enter submitted the line before the
-                // panel's Enter reached the TUI. That submission's time —
-                // recorded by the terminal path, or the panel's send time when
-                // the Enter hit the freshly reset recorder — is kept:
-                // re-timing it at the no-op Enter would put the cutoff after
-                // the user record the child already wrote. Text typed before
-                // that Enter is only a part of the submitted line (the panel
-                // text is not recorded), so it cannot serve as evidence.
+                // panel's Enter reached the TUI, and no new line was started
+                // since. That submission's time is kept — re-timing it at the
+                // no-op Enter would put the cutoff after the user record the
+                // child already wrote. Text typed before that Enter is only a
+                // part of the submitted line (the panel text is not recorded),
+                // so the terminal path recorded the submission as unknown-text
+                // and this Enter must not replace it with a wider one.
                 if (edited) {
                     lastPromptText = null;
-                } else if (pendingSet) {
+                } else if (pendingSet && pendingExact) {
                     // The line was not edited, so the terminal Enter submitted
                     // exactly the line the reconciliation prepared.
-                    rememberSentPrompt(pendingText, pendingAt, pendingExact);
+                    rememberSentPrompt(pendingText, pendingAt, true);
                 }
                 schedule = true;
             } else if (edited) {
@@ -2408,9 +2451,13 @@ public class ClaudeSessionController {
                 schedule = true;
             } else if (pendingSet) {
                 // The Enter has now submitted the line the reconciliation
-                // composed: it can finally become own-session evidence, with
-                // the send time as the cutoff.
-                rememberSentPrompt(pendingText, pendingAt, pendingExact);
+                // composed. Exact text keeps the send time: the text itself
+                // identifies the record, so the wider cutoff is harmless. A
+                // partially known line cannot be matched by text, and its
+                // cutoff must not reach back into the pause, where an
+                // unrelated conversation may have received a human record.
+                long cutoff = pendingExact ? pendingAt : submittedAt;
+                rememberSentPrompt(pendingText, cutoff, pendingExact);
                 schedule = false;
             } else {
                 schedule = false;
@@ -4011,6 +4058,12 @@ public class ClaudeSessionController {
         boolean carriedEscape = terminalInputEscape == 1;
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
+            if (terminalEnterSinceGuiSend) {
+                // The terminal Enter already submitted the panel text during
+                // the GUI send's pause; everything after it starts a new line,
+                // so it is not a part of the line that Enter submitted.
+                terminalDraftAfterEnter = true;
+            }
             // Any input changes the line the TUI holds — including edits that
             // leave the recorded buffer unchanged or empty (Backspace, cursor
             // keys, Ctrl+U, Tab) — so a GUI submission still waiting for its

@@ -3308,7 +3308,9 @@ class ClaudeSessionControllerTest {
      * instead of an exact prompt the conversation never received. Like exact
      * text, it is not published before the Enter is written: an identity scan
      * running in the pause could otherwise adopt an unrelated conversation by
-     * time alone.
+     * time alone. Its cutoff is the Enter time, not the send time: with no
+     * text to match, a record written during the pause would otherwise count
+     * as this submission.
      */
     @Test
     void aGuiSendWithACompletedDraftRecordsUnknownText() {
@@ -3326,11 +3328,36 @@ class ClaudeSessionControllerTest {
         assertEquals(START_MS - 10_000L, controller.simulatePromptSubmittedAtValue(),
                 "the previous evidence is kept until the actual submission");
 
-        controller.completeGuiSend();
+        controller.completeGuiSend(() -> START_MS + 2_300L);
         assertNull(controller.simulateLastPromptText(),
                 "a completed draft makes the submitted text unknown");
-        assertEquals(START_MS + 2_000L, controller.simulatePromptSubmittedAtValue(),
-                "the submission time is still recorded");
+        assertEquals(START_MS + 2_300L, controller.simulatePromptSubmittedAtValue(),
+                "the Enter time is the submission cutoff, not the send time");
+    }
+
+    /**
+     * A terminal Enter during the pause submits the panel text; a draft typed
+     * after it starts a new line, which the delayed Enter then submits. That
+     * draft is fully recorded, so it becomes the evidence with the Enter time
+     * instead of the delayed Enter being treated as a no-op and the second
+     * submission going unrecorded.
+     */
+    @Test
+    void aDraftTypedAfterTheEarlyEnterIsSubmittedByTheDelayedEnter() {
+        controller.simulatePromptSubmittedAt(START_MS - 10_000L);
+        controller.simulatePromptText("earlier");
+
+        controller.simulateGuiSend("hello", START_MS);
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 50L);
+        controller.simulateTerminalInput(
+                "next".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 100L);
+
+        controller.completeGuiSend(() -> START_MS + 250L);
+
+        assertEquals("next", controller.simulateLastPromptText(),
+                "the delayed Enter submits the draft typed after the early Enter");
+        assertEquals(START_MS + 250L, controller.simulatePromptSubmittedAtValue(),
+                "the delayed Enter's time is the submission cutoff");
     }
 
     /**
