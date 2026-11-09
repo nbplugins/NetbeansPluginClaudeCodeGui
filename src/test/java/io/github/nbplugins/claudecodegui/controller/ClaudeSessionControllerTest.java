@@ -3305,7 +3305,10 @@ class ClaudeSessionControllerTest {
     /**
      * A Tab-completed or recalled draft holds only a part of the submitted
      * line, so a GUI submission carrying it is recorded as unknown text
-     * instead of an exact prompt the conversation never received.
+     * instead of an exact prompt the conversation never received. Like exact
+     * text, it is not published before the Enter is written: an identity scan
+     * running in the pause could otherwise adopt an unrelated conversation by
+     * time alone.
      */
     @Test
     void aGuiSendWithACompletedDraftRecordsUnknownText() {
@@ -3318,6 +3321,12 @@ class ClaudeSessionControllerTest {
 
         assertEquals("@fi hello", controller.simulateGuiSend(" hello", START_MS + 2_000L),
                 "the composed line is still what the conversation receives");
+        assertEquals("earlier", controller.simulateLastPromptText(),
+                "nothing is published before the Enter is written");
+        assertEquals(START_MS - 10_000L, controller.simulatePromptSubmittedAtValue(),
+                "the previous evidence is kept until the actual submission");
+
+        controller.completeGuiSend();
         assertNull(controller.simulateLastPromptText(),
                 "a completed draft makes the submitted text unknown");
         assertEquals(START_MS + 2_000L, controller.simulatePromptSubmittedAtValue(),
