@@ -3093,6 +3093,86 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A terminal Enter during the pause submits the panel line for real. When a
+     * stop then cancels the sender, the completion that would normally publish
+     * that submission never runs: the lookup sees only unknown-text evidence
+     * and, after an in-process resume into a live conversation, falls back to
+     * the newer user record in the launch file instead of following the
+     * conversation that actually received the prompt.
+     */
+    @Test
+    void aTerminalSubmissionDuringThePauseSurvivesTheCancelledSend() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        CountDownLatch paused = new CountDownLatch(1);
+        AtomicReference<java.util.concurrent.Future<?>> send = new AtomicReference<>();
+        long terminalEnterAt = START_MS + 11_100L;
+        ClaudeSessionController tab =
+                new ClaudeSessionController(model, Collections::emptyList) {
+                    @Override
+                    void pauseGuiSend() throws InterruptedException {
+                        // The user presses Enter in the terminal: the line the
+                        // panel text was written to is submitted for real.
+                        simulateTerminalInput(new byte[]{'\r'}, terminalEnterAt);
+                        paused.countDown();
+                        // Only the stop's interruption releases this sender.
+                        new CountDownLatch(1).await();
+                    }
+                };
+        tab.simulateProcessStart(START_MS, true);
+        // This tab launched the saved conversation a; a sibling tab holds b.
+        tab.simulateLiveSession(config, "a", Set.of("a", "b"));
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            // The user resumes b from the prompt panel: the conversation is on
+            // b, but this tab's identity has not been re-resolved yet.
+            tab.simulateGuiSend("/resume", START_MS + 10_000L);
+            tab.completeGuiSend(() -> START_MS + 10_050L);
+            tab.simulateGuiChoiceAnswer("ARROW:1");
+
+            // The next panel send is written and pauses before its Enter.
+            send.set(tab.simulateQueueGuiSend("delayed words",
+                    () -> START_MS + 11_000L, () -> START_MS + 20_000L));
+            assertTrue(paused.await(5, TimeUnit.SECONDS), "the second send must pause");
+
+            // The terminal Enter submitted the panel text into b. The launch
+            // file receives a later user record, so unknown-text time matching
+            // would pick it instead of b, which holds the submitted prompt.
+            appendUserPrompt(dir, "b", "delayed words", START_MS + 11_150L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_200L);
+            appendUserPrompt(dir, "a", "later work", START_MS + 11_300L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_400L);
+
+            tab.stopAndRename("Closed Name");
+        } finally {
+            tab.stopProcess();
+            tabB.stopProcess();
+        }
+
+        assertEquals("Closed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the conversation the terminal Enter submitted into is renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation must keep its name");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as
@@ -4682,10 +4762,10 @@ class ClaudeSessionControllerTest {
 
     /**
      * A sender can pass its generation check and then wait for the recorder's
-     * lock while a restart replaces the connector. The text must still be
-     * bound to the process the send was accepted for: writing it through the
-     * current connector would leave the stale prompt on the replacement TUI's
-     * input line for its next submission.
+     * lock while a restart replaces the connector. The text must not be written
+     * at all: through the current connector it would leave the stale prompt on
+     * the replacement TUI's input line for its next submission, and the
+     * recorder it would reconcile belongs to the replacement too.
      */
     @Test
     void aSendAcceptedBeforeTheRestartDoesNotReachTheReplacementConnector()
@@ -4709,9 +4789,8 @@ class ClaudeSessionControllerTest {
 
             controller.simulateGuiSendWithText("stale text", START_MS, accepted);
 
-            assertEquals(1, targets.size(), "the text must be written once");
-            assertNull(targets.get(0),
-                    "the text must not be bound to the replacement connector");
+            assertTrue(targets.isEmpty(),
+                    "the text of a replaced run must not be written");
         } finally {
             p.destroyForcibly();
         }
@@ -4746,6 +4825,43 @@ class ClaudeSessionControllerTest {
 
             assertTrue(targets.isEmpty(),
                     "no Enter may be written after the accepted process was replaced");
+        } finally {
+            p.destroyForcibly();
+        }
+    }
+
+    /**
+     * A sender that blocked on the recorder's lock while a restart replaced the
+     * process must not reconcile its recorder either: the pending state and
+     * the cleared line would belong to the old send, and the replacement's own
+     * draft would be lost — a later panel send would then compose only its own
+     * text and the identity lookup could follow an unrelated file.
+     */
+    @Test
+    void aStaleSendDoesNotRewriteTheReplacementRecordersDraft() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+        com.pty4j.PtyProcess p = startEchoPty();
+        try {
+            io.github.nbplugins.claudecodegui.process.PtyTtyConnector replacement =
+                    new io.github.nbplugins.claudecodegui.process.PtyTtyConnector(p);
+            long accepted = controller.simulateProcessGeneration();
+            controller.simulatePtyWrite(bytes -> { });
+            controller.simulatePtyWriteTargets(t -> { });
+
+            // The tab is restarted and the replacement's user types a draft.
+            controller.stopProcess();
+            controller.simulateConnector(replacement);
+            controller.simulateTerminalInput(
+                    "fresh".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS);
+
+            // The old sender only now runs its reconciliation.
+            controller.simulateGuiSendWithText("stale text", START_MS + 100L, accepted);
+
+            assertEquals("fresh suffix",
+                    controller.simulateGuiSend(" suffix", START_MS + 200L),
+                    "the replacement's draft must survive the stale send");
         } finally {
             p.destroyForcibly();
         }
@@ -4963,6 +5079,29 @@ class ClaudeSessionControllerTest {
                 "an ordinary choice closes the menu, so the next Enter submits a prompt");
         assertEquals("hello", controller.simulateLastPromptText(),
                 "the terminal prompt becomes the evidence");
+    }
+
+    /**
+     * A digit typed while the menu's text-input option already has the focus is
+     * text for that editor, not the selection of the ordinary option it
+     * numbers — the answer protocol navigates with arrows in that case (see
+     * {@code writePtyAnswer}). The menu stays open, so the rest of the answer
+     * must not be recorded as a submitted prompt.
+     */
+    @Test
+    void aDigitTypedIntoTheFocusedTextOptionDoesNotDismissTheMenu() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 2));
+
+        controller.simulateTerminalInput(new byte[]{'1'}, START_MS);
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the answer to a text menu is not a submitted prompt");
+        assertNull(controller.simulateLastPromptText(),
+                "the digit went into the focused editor, so the answer is not prompt evidence");
     }
 
     /**

@@ -189,9 +189,14 @@ public class ClaudeSessionController {
      * Guards {@link #claudeProcess} replacement against a late exit callback:
      * every started process gets a new {@link #processGeneration}, and the
      * callback only releases ownership when its generation is still current.
+     *
+     * <p>{@link #processGeneration} is volatile for the senders that check it
+     * while holding {@link #terminalInputLine}: the stop path resets the
+     * recorder under the ownership lock, so that lock cannot be taken there
+     * (see {@link #recorderBelongsTo(long)}).
      */
     private final Object processOwnershipLock = new Object();
-    private long processGeneration;
+    private volatile long processGeneration;
 
     /**
      * Monotonic scan counter. Scans of the same process run can overlap (the
@@ -2131,9 +2136,22 @@ public class ClaudeSessionController {
      * the menu must be retired only when the selected option is not text input.
      * A digit that names no option selects nothing at all — the TUI keeps the
      * menu open — so it must not retire the menu either.
+     *
+     * <p>The focused option decides as well: while a text-input option already
+     * holds the cursor, a printed digit is text for its editor, not the number
+     * of another item (the answer protocol navigates such a menu with arrows,
+     * see {@code writePtyAnswer}). Retiring the menu then would record the rest
+     * of the answer as a submitted prompt.
      */
     private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
         if (menu.options().isEmpty()) return false;
+        int focused = menu.defaultOptionIndex();
+        if (focused >= 0 && focused < menu.options().size()
+                && isTextInputOption(menu.options().get(focused))) {
+            // The cursor sits in a text editor: the digit is input for it, so
+            // the menu stays open.
+            return false;
+        }
         boolean matched = false;
         for (ChoiceMenuModel.Option option : menu.options()) {
             String response = option.response();
@@ -2516,6 +2534,28 @@ public class ClaudeSessionController {
         }
     }
 
+    /**
+     * Whether the terminal recorder still belongs to {@code generation}, for a
+     * sender that already holds {@link #terminalInputLine}.
+     *
+     * <p>The ownership lock cannot be taken there: the stop path resets the
+     * recorder while holding it, so ownership → recorder is the fixed order
+     * and this check would reverse it. The generation is volatile instead. A
+     * bump that lands after this read is still followed by the stop's own
+     * recorder reset, and the sender's connector is bound to its process, so
+     * neither its text nor its Enter reaches the replacement.
+     *
+     * <p>A sender that finds its generation stale must leave the recorder
+     * untouched: reconciling would clear the replacement's draft and install
+     * pending evidence describing a line the replacement never received, and
+     * the next panel send would compose only its own text.
+     *
+     * @param generation process generation the sender was accepted for
+     */
+    private boolean recorderBelongsTo(long generation) {
+        return generation == processGeneration;
+    }
+
     /** Package-private for tests: replays the exit callback of an older run. */
     void simulateProcessExitAt(long generation) {
         onProcessExited(generation);
@@ -2662,7 +2702,11 @@ public class ClaudeSessionController {
                 // not restored: the worker is about to stop, and a stale flag
                 // would make the next queued pause fail immediately.
                 if (isProcessGenerationCurrent(sendGeneration)) {
-                    resetTerminalInputRecording(true);
+                    // A terminal Enter may have submitted the panel line
+                    // during the pause. That submission is real and the
+                    // completion below will not run for it, so it must become
+                    // evidence before the recorder is cleared.
+                    discardCancelledGuiSend();
                 }
                 return;
             }
@@ -2715,6 +2759,14 @@ public class ClaudeSessionController {
                                 long sendGeneration) throws IOException {
         PtyTtyConnector target = ptyConnectorFor(sendGeneration);
         synchronized (terminalInputLine) {
+            if (!recorderBelongsTo(sendGeneration)) {
+                // The restart happened while this sender waited for the lock:
+                // the recorder now describes the replacement's line, and
+                // reconciling here would clear its draft for a prompt it never
+                // received. The bound connector keeps the text out of it too.
+                LOG.fine("sendPrompt write dropped: the recorder was replaced");
+                return;
+            }
             reconcileGuiSend(text, clock.getAsLong());
             retireMenuAnsweredByGuiText(text);
             writePty(text, target);
@@ -2820,6 +2872,45 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Publishes the pending prompt evidence of a send whose line a terminal
+     * Enter already submitted, then clears the recorder of the cancelled send.
+     *
+     * <p>{@link #completeGuiSend()} normally publishes that evidence, but a stop
+     * cancels the sender during its pause and that completion never runs. The
+     * conversation did receive the prompt, and the stop's identity lookup needs
+     * its text to follow it: without this evidence the submission is known only
+     * as unknown text, and a newer user record in another conversation wins the
+     * time match.
+     *
+     * <p>Only a submission recorded by the terminal Enter counts
+     * ({@link #terminalGuiSubmitAt}): an Enter that selected a choice menu never
+     * submits the panel line, and its text is the menu's answer, not a prompt.
+     *
+     * <p>Publication and the reset share one critical section: input arriving
+     * in between would be cleared as if it belonged to the cancelled send.
+     */
+    private void discardCancelledGuiSend() {
+        synchronized (terminalInputLine) {
+            long submittedAt = terminalGuiSubmitAt;
+            if (submittedAt != 0L && !terminalDraftAfterEnter
+                    && !terminalInputSinceGuiSend && pendingGuiPromptSet
+                    && promptSubmittedAt <= submittedAt) {
+                // The line the panel text was written to was submitted by that
+                // Enter and nothing edited it: the text is exact evidence. Keys
+                // typed before it (terminalInputSinceGuiSend) or a draft
+                // submitted after it already recorded the submission as unknown
+                // text, which is left in place.
+                rememberSentPrompt(pendingGuiPromptText, submittedAt, pendingGuiPromptExact);
+                if (pendingGuiPromptSwitch && !terminalGuiLineEdited) {
+                    // The command's line was submitted untouched, so it switched.
+                    conversationSwitchAt = submittedAt;
+                }
+            }
+            resetTerminalInputRecording(true);
+        }
+    }
+
+    /**
      * Writes the Enter that submits a prompt sent from the panel and closes the
      * terminal recording for it. The second half of {@link #sendPrompt(String)}.
      *
@@ -2899,6 +2990,14 @@ public class ClaudeSessionController {
         }
         boolean schedule;
         synchronized (terminalInputLine) {
+            if (!recorderBelongsTo(generation)) {
+                // The restart happened while this sender waited for the lock:
+                // the recorder belongs to the replacement run, so this Enter
+                // and the recorder reset would describe a line it never
+                // submitted. The bound connector keeps the Enter away as well.
+                LOG.fine("completeGuiSend dropped: the recorder was replaced");
+                return;
+            }
             // Sampled before the Enter is forwarded: the child may append the
             // submitted prompt to its session file as soon as it reads the
             // bytes, and a record written then must still pass the submission
