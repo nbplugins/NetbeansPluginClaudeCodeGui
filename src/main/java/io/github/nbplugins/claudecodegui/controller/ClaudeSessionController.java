@@ -485,6 +485,17 @@ public class ClaudeSessionController {
     private boolean terminalMenuConsumedGuiSend;
 
     /**
+     * Set when the panel text itself answered the choice menu it was written
+     * into: a bare digit selects a numbered menu's item on arrival (see
+     * {@link #writePtyAnswer(String)}), so the menu is gone before the delayed
+     * Enter and the TUI's input line is empty again. A terminal Enter during
+     * the pause then submits a line the recorder holds in full, and a draft
+     * typed there is submitted by the delayed Enter. Cleared with the rest of
+     * the recorder state.
+     */
+    private boolean terminalGuiTextAnsweredMenu;
+
+    /**
      * Prompt of a GUI send whose Enter has not been written yet. It must not
      * become own-session evidence before the actual submission: until then the
      * process has written nothing, and an identity scan running in the pause
@@ -1981,6 +1992,7 @@ public class ClaudeSessionController {
             terminalGuiSubmitAt = 0L;
             guiSendAwaitingEnter = false;
             terminalMenuConsumedGuiSend = false;
+            terminalGuiTextAnsweredMenu = false;
             pendingGuiPromptText = null;
             pendingGuiPromptAt = 0L;
             pendingGuiPromptExact = false;
@@ -2583,7 +2595,35 @@ public class ClaudeSessionController {
             throws IOException {
         synchronized (terminalInputLine) {
             reconcileGuiSend(text, clock.getAsLong());
+            retireMenuAnsweredByGuiText(text);
             writePty(text);
+        }
+    }
+
+    /**
+     * Retires a numbered menu the panel text answers on its own: a single
+     * digit written into an ordinary numbered menu selects that item at once —
+     * the answer protocol sends such digits without Enter (see
+     * {@link #writePtyAnswer(String)}) — so the menu is gone before the delayed
+     * Enter. Leaving the stale model entry in place would make it swallow a
+     * prompt typed during the pause as one more menu answer, and the search
+     * text of a menu that is no longer open is not prompt evidence. Call while
+     * holding the {@link #terminalInputLine} lock.
+     *
+     * @param text panel text just written to the PTY
+     */
+    private void retireMenuAnsweredByGuiText(String text) {
+        if (text == null || text.length() != 1) return;
+        char digit = text.charAt(0);
+        if (digit < '0' || digit > '9') return;
+        ChoiceMenuModel menu = openChoiceMenu();
+        if (menu == null || !digitSelectionDismissesMenu(menu, digit)) return;
+        completeTerminalMenu(menu);
+        terminalGuiTextAnsweredMenu = true;
+        if (isConversationPicker(menu)) {
+            // Picking an entry changes the conversation, and the digit says
+            // nothing about which one was picked.
+            conversationSwitchAt = System.currentTimeMillis();
         }
     }
 
@@ -2758,16 +2798,17 @@ public class ClaudeSessionController {
                 resetTerminalInputRecording(true);
                 return;
             }
-            if (terminalMenuConsumedGuiSend || cancelledPicker) {
+            if (terminalMenuConsumedGuiSend || terminalGuiTextAnsweredMenu
+                    || cancelledPicker) {
                 // A terminal Enter already answered the choice menu this
-                // panel text was typed into, or a terminal Esc cancelled it,
-                // so this Enter submits whatever the user typed on the fresh
-                // line afterwards. The panel text itself was the menu's
-                // search filter or answer and must not become evidence; the
-                // switch of a picker was recorded by that Enter.
+                // panel text was typed into, the panel text answered it on its
+                // own, or a terminal Esc cancelled it, so the menu is gone and
+                // this Enter submits whatever the user typed on the fresh line
+                // afterwards. The panel text itself was the menu's search
+                // filter or answer and must not become evidence; the switch of
+                // a picker was recorded by that Enter or by the write.
                 String draftLine = terminalInputLine.toString().trim();
                 boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
-                boolean draftAfterSelection = terminalDraftAfterEnter;
                 try {
                     writePty("\r");
                 } catch (IOException ex) {
@@ -2776,7 +2817,10 @@ public class ClaudeSessionController {
                     return;
                 }
                 resetTerminalInputRecording(true);
-                if (draftAfterSelection && (!draftLine.isEmpty() || !draftExact)) {
+                if (!draftLine.isEmpty() || !draftExact) {
+                    // The menu is gone, so this Enter submits the draft on the
+                    // fresh line — whether it was typed after a terminal Enter
+                    // that answered the menu or after a digit the panel sent.
                     rememberSentPrompt(draftLine, submittedAt, draftExact);
                 }
                 return;
@@ -4681,13 +4725,15 @@ public class ClaudeSessionController {
                     // With a choice menu open Enter selects an item instead of
                     // submitting the line: what was typed there is the picker's
                     // search filter, not a prompt.
-                    if (firstSubmissionAfterGuiSend) {
+                    if (firstSubmissionAfterGuiSend && !terminalGuiTextAnsweredMenu) {
                         // A prompt sent from the panel is already written on
                         // the TUI's line: this Enter submits it together with
                         // the recorded text, which is only a part of the
                         // prompt. Publishing it as the evidence would let an
                         // identity scan match another conversation's file for
                         // the partial text before the panel's Enter is sent.
+                        // When that text answered the menu on arrival, the
+                        // line was cleared and the recorder holds it in full.
                         terminalRecalledSubmission = true;
                     } else {
                         // Anything typed after that submission starts a new

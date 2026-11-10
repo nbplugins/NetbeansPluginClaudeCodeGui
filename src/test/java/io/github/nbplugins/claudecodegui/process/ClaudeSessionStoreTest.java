@@ -516,6 +516,25 @@ class ClaudeSessionStoreTest {
     }
 
     /**
+     * Claude writes system-injected messages with {@code isMeta}: they are
+     * {@code type: "user"} records carrying text this tab never typed, so one
+     * containing the same text must not be taken for this tab's prompt.
+     */
+    @Test
+    void containsUserPromptSince_ignoresMetaRecordsWithTheSameText() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeJsonl(sessionDir.resolve("s1.jsonl"),
+                "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\","
+                        + "\"content\":\"this tabs prompt\"},\"timestamp\":\""
+                        + OLD_TS.plusSeconds(60) + "\"}");
+
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "this tabs prompt"),
+                "a system-injected record is not evidence of a submitted prompt");
+    }
+
+    /**
      * Claude stores tool results as {@code type: "user"} records while it
      * works. A sibling tab finishing a tool must not look like a human prompt
      * submitted in this tab.

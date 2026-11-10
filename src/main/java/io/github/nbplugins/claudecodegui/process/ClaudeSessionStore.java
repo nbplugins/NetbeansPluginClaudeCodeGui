@@ -494,6 +494,10 @@ public final class ClaudeSessionStore {
         try {
             JsonNode node = MAPPER.readTree(line);
             if (!"user".equals(node.path("type").asText())) return false;
+            // A system-injected message can carry the same text as a prompt:
+            // it is not something this tab typed, so matching it would make an
+            // unrelated conversation look like the destination.
+            if (!isHumanUserMessage(node)) return false;
             JsonNode tsNode = node.get("timestamp");
             if (tsNode == null || !tsNode.isTextual()) return false;
             if (Instant.parse(tsNode.asText()).toEpochMilli() < sinceMillis) return false;

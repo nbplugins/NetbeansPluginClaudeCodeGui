@@ -5264,6 +5264,60 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A panel send of a bare digit answers a numbered menu at the initial text
+     * write — the answer protocol sends such digits without Enter — so the menu
+     * is gone for the pause. The prompt typed then starts on the empty input
+     * line and must be published as exact evidence instead of being swallowed
+     * as one more menu answer.
+     */
+    @Test
+    void aDigitSentFromThePanelRetiresTheMenuBeforeThePause() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Do you want to proceed?", List.of(
+                new ChoiceMenuModel.Option("Yes", "1"),
+                new ChoiceMenuModel.Option("No", "2")), 0));
+
+        controller.simulateGuiSendWithText("1", START_MS);
+        // The screen poll has not refreshed yet: the model still reports the
+        // menu the panel digit answered.
+        assertEquals("hello", controller.simulateTerminalInput(
+                        "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 50L),
+                "the menu was answered at the write, so this Enter submits a prompt");
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the prompt typed during the pause is exact evidence");
+
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the delayed Enter acts on the empty line and keeps the evidence");
+        assertEquals(START_MS + 50L, controller.simulatePromptSubmittedAtValue(),
+                "the prompt keeps its own submission time");
+    }
+
+    /**
+     * A draft typed after the panel's digit answered a numbered menu sits on
+     * the empty input line, and the delayed Enter submits it as a prompt: it
+     * must be recorded, not discarded with the menu answer.
+     */
+    @Test
+    void aDraftTypedAfterThePanelAnsweredTheMenuIsRecorded() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Do you want to proceed?", List.of(
+                new ChoiceMenuModel.Option("Yes", "1"),
+                new ChoiceMenuModel.Option("No", "2")), 0));
+
+        controller.simulateGuiSendWithText("1", START_MS);
+        controller.simulateTerminalInput(
+                "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 50L);
+
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the delayed Enter submits the draft typed after the menu answer");
+        assertEquals(START_MS + 200L, controller.simulatePromptSubmittedAtValue(),
+                "the draft keeps the submission time of the Enter that sent it");
+    }
+
+    /**
      * Once a NEW run has resolved its own conversation, newer unrelated files
      * must not push it out of the bounded prompt-evidence list: a file that
      * merely carries the same common prompt text would then take over the
