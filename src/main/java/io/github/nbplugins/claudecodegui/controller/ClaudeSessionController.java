@@ -1336,6 +1336,23 @@ public class ClaudeSessionController {
                 }
                 newest = findPromptBearingSession(dir, configDir, since, ownExclude,
                         ownPreferred, promptAt, promptText);
+                if (ownPreferred != null && !ownPreferred.equals(newest)
+                        && since > SESSION_MTIME_GRANULARITY_MS) {
+                    // Coarse file times can round this tab's own file below the
+                    // cutoff even though it already holds the prompt, while an
+                    // unrelated conversation records the same common text in
+                    // the next timestamp bucket. The own file is stronger
+                    // evidence, so the slack is applied to it before the
+                    // lookalike match is accepted: otherwise the lookalike is
+                    // published as this run's own file and later scans keep
+                    // preferring it.
+                    String relaxedOwn = promptBearingPreferred(dir, configDir,
+                            since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
+                            ownPreferred, promptAt, promptText);
+                    if (relaxedOwn != null) {
+                        newest = relaxedOwn;
+                    }
+                }
                 if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                     // Coarse file times can round this tab's own file below the
                     // cutoff even though it already holds the prompt. Its record
@@ -1656,6 +1673,29 @@ public class ClaudeSessionController {
      *
      * @param preferred session ID to check first; may be {@code null}
      */
+    /**
+     * Returns {@code preferred} when it is eligible and already holds the
+     * submitted prompt, or {@code null}.
+     *
+     * <p>The known own conversation is checked with the same eligibility as
+     * the discovery candidates — not excluded and written at or after the
+     * cutoff — but independently of their limited list and of any lookalike
+     * match found there, so a file merely carrying the same common text
+     * cannot take over its identity.
+     */
+    private String promptBearingPreferred(java.io.File dir, java.nio.file.Path configDir,
+                                          long mtimeCutoff, Set<String> exclude,
+                                          String preferred, long promptAt, String promptText) {
+        if (preferred == null || promptText == null || promptText.isBlank()) return null;
+        if (exclude != null && exclude.contains(preferred)) return null;
+        if (ClaudeSessionStore.sessionFileModified(dir.toPath(), configDir, preferred)
+                < mtimeCutoff) {
+            return null;
+        }
+        return containsPrompt(dir, configDir, preferred, promptAt, promptText)
+                ? preferred : null;
+    }
+
     private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
                                             long mtimeCutoff, Set<String> exclude,
                                             String preferred, long promptAt, String promptText) {
@@ -2565,7 +2605,7 @@ public class ClaudeSessionController {
             // cutoff used by the evidence lookup.
             long submittedAt = clock.getAsLong();
             ChoiceMenuModel openMenu = openChoiceMenu();
-            if (openMenu != null || terminalMenuConsumedGuiSend) {
+            if (openMenu != null) {
                 // A choice menu is open on the screen (with the menu hidden,
                 // the prompt panel stays usable): the panel text went into
                 // its search field or answered it, and this Enter selects an
@@ -2581,20 +2621,41 @@ public class ClaudeSessionController {
                     resetTerminalInputRecording(true);
                     return;
                 }
-                if (openMenu != null && !isCheckboxMenu(openMenu)) {
+                if (!isCheckboxMenu(openMenu)) {
                     // A numbered picker closes on its selection Enter (a
                     // checkbox menu only toggles and stays open until Right).
                     completeTerminalMenu(openMenu);
                 }
-                if (openMenu != null && isConversationPicker(openMenu)) {
+                if (isConversationPicker(openMenu)) {
                     // Picking an entry changes the conversation, and the
                     // search filter says nothing about which one was picked:
-                    // the next submission has to follow the switch. When a
-                    // terminal Enter answered the picker during the pause,
-                    // it already recorded the switch.
+                    // the next submission has to follow the switch.
                     conversationSwitchAt = submittedAt;
                 }
                 resetTerminalInputRecording(true);
+                return;
+            }
+            if (terminalMenuConsumedGuiSend) {
+                // A terminal Enter already answered the choice menu this
+                // panel text was typed into, so this Enter submits whatever
+                // the user typed on the fresh line afterwards. The panel text
+                // itself was the menu's search filter or answer and must not
+                // become evidence; the switch of a picker was recorded by
+                // that Enter.
+                String draftLine = terminalInputLine.toString().trim();
+                boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
+                boolean draftAfterSelection = terminalDraftAfterEnter;
+                try {
+                    writePty("\r");
+                } catch (IOException ex) {
+                    LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                    resetTerminalInputRecording(true);
+                    return;
+                }
+                resetTerminalInputRecording(true);
+                if (draftAfterSelection && (!draftLine.isEmpty() || !draftExact)) {
+                    rememberSentPrompt(draftLine, submittedAt, draftExact);
+                }
                 return;
             }
             try {

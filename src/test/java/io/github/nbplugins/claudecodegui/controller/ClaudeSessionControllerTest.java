@@ -4985,6 +4985,33 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A terminal Enter can answer the open picker during the panel send's
+     * pause, and the user then starts the next prompt before the delayed GUI
+     * Enter. That Enter submits the new draft: it must be recorded as the
+     * prompt, not discarded with the search filter the menu consumed.
+     */
+    @Test
+    void aDraftTypedAfterThePickerSelectionIsRecorded() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+
+        controller.simulateGuiSend("work", START_MS);
+        // The terminal Enter selects the picker entry during the pause.
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 50L);
+        // The user starts the next prompt on the fresh line.
+        controller.simulateTerminalInput(
+                "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 100L);
+
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the delayed Enter submits the draft typed after the selection");
+        assertEquals(START_MS + 200L, controller.simulatePromptSubmittedAtValue(),
+                "the draft keeps its own submission time");
+    }
+
+    /**
      * Once a NEW run has resolved its own conversation, newer unrelated files
      * must not push it out of the bounded prompt-evidence list: a file that
      * merely carries the same common prompt text would then take over the
@@ -5032,6 +5059,50 @@ class ClaudeSessionControllerTest {
                 "the known own conversation must not be dropped by the candidate cap");
         assertEquals("own", controller.resolveActiveSessionId(),
                 "later scans must keep the known own conversation");
+    }
+
+    /**
+     * Rounded file times can put the resolved own file just below the
+     * submission cutoff while an unrelated conversation records the same
+     * common text in the next timestamp bucket. The own file is stronger
+     * evidence: the mtime slack must be applied to it before the lookalike
+     * match is accepted and replaces its identity.
+     */
+    @Test
+    void theKnownOwnSessionIsFoundThroughTheMtimeSlack() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("own"));
+
+        controller.simulatePromptSubmittedAt(START_MS + 1_000L);
+        controller.simulatePromptText("first");
+        appendUserPrompt(dir, "own", "first", START_MS + 1_100L);
+        setMtime(dir.resolve("own.jsonl"), START_MS + 1_200L);
+        assertEquals("own", controller.resolveActiveSessionId());
+
+        // The own file holds the second prompt, but its rounded mtime lands
+        // just below the cutoff; an unrelated file with the same text is
+        // written in the next timestamp bucket.
+        long since = START_MS + 5_000L;
+        controller.simulatePromptSubmittedAt(since);
+        controller.simulatePromptText("continue");
+        appendUserPrompt(dir, "own", "continue", since + 100L);
+        setMtime(dir.resolve("own.jsonl"), since - 500L);
+        writeSession(dir, "lookalike", "lookalike");
+        appendUserPrompt(dir, "lookalike", "continue", since + 200L);
+        setMtime(dir.resolve("lookalike.jsonl"), since + 300L);
+
+        assertEquals("own", controller.resolveActiveSessionId(),
+                "the own conversation is found through the mtime slack");
+        assertEquals("own", controller.resolveActiveSessionId(),
+                "later scans must keep the own conversation");
     }
     @Test
     void aBorrowedActiveConversationIsNotPreferred() throws Exception {
