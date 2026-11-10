@@ -374,12 +374,21 @@ public class ClaudeSessionController {
 
     /**
      * True when the last Enter confirmed a choice menu selection instead
-     * of submitting a prompt. The {@code /resume} picker changes the
-     * conversation that way, even when the command that opened it was recalled
-     * from the history or completed by Tab and is therefore not recognised as
-     * a command.
+     * of submitting a prompt. Only the {@code /resume} picker changes the
+     * conversation that way: other menus (permission prompts, the trust-folder
+     * confirmation, model pickers) answer a question in the current
+     * conversation.
+     *
+     * <p>Guarded by {@link #terminalInputLine}.
      */
     private boolean terminalMenuSelection;
+
+    /**
+     * The menu the last Enter selected an item from, or {@code null}. Kept so
+     * the caller can tell a conversation switch (the {@code /resume} picker)
+     * from an ordinary menu answer. Guarded by {@link #terminalInputLine}.
+     */
+    private ChoiceMenuModel terminalSelectedMenu;
 
     /**
      * True while a bracketed paste ({@code ESC [ 200 ~} … {@code ESC [ 201 ~})
@@ -1847,6 +1856,23 @@ public class ClaudeSessionController {
      * or when a run ends, so stale text never becomes prompt evidence.
      */
     private void resetTerminalInputRecording() {
+        resetTerminalInputRecording(false);
+    }
+
+    /**
+     * {@link #resetTerminalInputRecording()} that can keep the marker retiring
+     * a choice menu the terminal input already dismissed.
+     *
+     * <p>A GUI send rewrites the recorder, but it does not bring the picker
+     * back: cancelling it with Esc the moment before the send must keep it
+     * retired, or the stale model entry classifies the next prompt typed
+     * before the screen poll as another menu answer and swallows it.
+     *
+     * @param keepCompletedMenu {@code true} to preserve the dismissed-menu
+     *                          marker; process resets and GUI menu answers
+     *                          clear it
+     */
+    private void resetTerminalInputRecording(boolean keepCompletedMenu) {
         synchronized (terminalInputLine) {
             terminalInputLine.setLength(0);
             terminalInputCursor = 0;
@@ -1856,6 +1882,7 @@ public class ClaudeSessionController {
             terminalPasteAfterCR = false;
             terminalEscapeOnMenu = false;
             terminalMenuSelection = false;
+            terminalSelectedMenu = null;
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
             terminalHistoryRecall = false;
@@ -1870,7 +1897,9 @@ public class ClaudeSessionController {
             pendingGuiPromptAt = 0L;
             pendingGuiPromptExact = false;
             pendingGuiPromptSet = false;
-            terminalCompletedMenu = null;
+            if (!keepCompletedMenu) {
+                terminalCompletedMenu = null;
+            }
         }
     }
 
@@ -2302,11 +2331,11 @@ public class ClaudeSessionController {
                     Thread.sleep(200);
                 } catch (IOException ex) {
                     LOG.warning("sendPrompt write failed: " + ex.getMessage());
-                    resetTerminalInputRecording();
+                    resetTerminalInputRecording(true);
                     return;
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    resetTerminalInputRecording();
+                    resetTerminalInputRecording(true);
                     return;
                 }
                 completeGuiSend();
@@ -2382,7 +2411,9 @@ public class ClaudeSessionController {
             // between the snapshot and the reset would reach the TUI after
             // `submitted` was computed, yet its recording would be deleted,
             // leaving evidence that omits characters the conversation got.
-            resetTerminalInputRecording();
+            // The dismissed-menu marker survives: a picker cancelled right
+            // before the send must not come back through the stale model entry.
+            resetTerminalInputRecording(true);
             // The panel text stays on the TUI's input line until
             // completeGuiSend() sends its Enter. Until then a terminal Enter
             // submits that text together with the keys typed here, so the
@@ -2474,7 +2505,7 @@ public class ClaudeSessionController {
                 writePty("\r");
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
-                resetTerminalInputRecording();
+                resetTerminalInputRecording(true);
                 return;
             }
             boolean edited = terminalInputSinceGuiSend;
@@ -2487,7 +2518,7 @@ public class ClaudeSessionController {
             long pendingAt = pendingGuiPromptAt;
             boolean pendingExact = pendingGuiPromptExact;
             boolean pendingSet = pendingGuiPromptSet;
-            resetTerminalInputRecording();
+            resetTerminalInputRecording(true);
             if (alreadySubmitted && draftAfterEnter
                     && (!draftLine.isEmpty() || !draftExact)) {
                 // A new line was started after the terminal Enter that
@@ -2606,15 +2637,35 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Returns {@code true} when {@code menu} is the session picker opened by
+     * {@code /resume}. Selecting an item there changes the conversation the
+     * process writes; other menus (permission prompts, the trust-folder
+     * confirmation, model pickers) only answer a question in the current
+     * conversation and must not lift its prompt evidence.
+     *
+     * @param menu menu the input is answering, or {@code null}
+     */
+    static boolean isConversationPicker(ChoiceMenuModel menu) {
+        if (menu == null) return false;
+        String text = menu.text();
+        if (text == null) return false;
+        return text.stripLeading().toLowerCase(java.util.Locale.ROOT)
+                .startsWith("resume session");
+    }
+
+    /**
      * Records that the GUI answered a choice menu. An {@code ARROW:n} answer
-     * selects an entry in an unnumbered picker (e.g. the {@code /resume}
-     * session list), which changes the conversation the process writes; the
-     * write is made by the plugin, so it leaves the terminal-input time alone.
+     * selects an entry in an unnumbered picker; only the {@code /resume}
+     * session picker changes the conversation the process writes, so the
+     * switch is recorded only for that menu — the answer to the trust-folder
+     * confirmation or to the history picker is not a resume. The write is made
+     * by the plugin, so it leaves the terminal-input time alone.
      *
      * @param answer answer passed to {@link #writePtyAnswer(String)}
      */
     void rememberChoiceMenuAnswer(String answer) {
-        if (answer != null && answer.startsWith("ARROW:")) {
+        if (answer != null && answer.startsWith("ARROW:")
+                && isConversationPicker(model.getActiveChoiceMenu())) {
             conversationSwitchAt = System.currentTimeMillis();
         }
     }
@@ -4075,6 +4126,7 @@ public class ClaudeSessionController {
         boolean emptyEnter;
         boolean recalled;
         boolean menuSelection;
+        ChoiceMenuModel selectedMenu;
         synchronized (terminalInputLine) {
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
@@ -4087,6 +4139,8 @@ public class ClaudeSessionController {
             terminalRecalledSubmission = false;
             menuSelection = terminalMenuSelection;
             terminalMenuSelection = false;
+            selectedMenu = terminalSelectedMenu;
+            terminalSelectedMenu = null;
             if (entered && !menuSelection && guiSendAwaitingEnter
                     && terminalGuiSubmitAt == 0L) {
                 // An Enter during the GUI send's pause submits the line the
@@ -4102,10 +4156,13 @@ public class ClaudeSessionController {
         if (entered && !emptyEnter) {
             externalInputAt = now;
         }
-        if (menuSelection) {
-            // Enter with a choice menu open selected an item. The /resume
-            // picker changes the conversation that way, and nothing else in the
-            // input tells which conversation was picked.
+        if (menuSelection && isConversationPicker(selectedMenu)) {
+            // Enter with the /resume picker open selected a session. That
+            // changes the conversation that way, and nothing else in the input
+            // tells which conversation was picked. An ordinary menu answer (a
+            // permission prompt, the trust-folder confirmation) only answers a
+            // question in the current conversation, so it must not lift the
+            // prompt evidence and let the scan adopt an unrelated file.
             conversationSwitchAt = now;
         }
         if (submitted != null) {
@@ -4295,6 +4352,7 @@ public class ClaudeSessionController {
                 terminalEnterOnEmptyLine = line.isEmpty() && !unknownText
                         && !onMenu && !gapEdited;
                 terminalMenuSelection = onMenu;
+                terminalSelectedMenu = openMenu;
                 if (onMenu && !isCheckboxMenu(openMenu)) {
                     // A numbered menu closes on the selection Enter (a
                     // checkbox menu only toggles and stays open until Right),

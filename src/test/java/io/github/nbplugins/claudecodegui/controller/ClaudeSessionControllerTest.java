@@ -4690,7 +4690,7 @@ class ClaudeSessionControllerTest {
         try {
             // Up recalls /resume from the history, Enter submits an unknown
             // command, and the picker it opened is answered with an Enter.
-            model.setActiveChoiceMenu(new ChoiceMenuModel("Resume", List.of(
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
                     new ChoiceMenuModel.Option("One", "1")), 0));
             controller.simulateTerminalInput(
                     new byte[]{0x1b, '[', 'A'}, START_MS + 9_000L);
@@ -4724,10 +4724,125 @@ class ClaudeSessionControllerTest {
     }
 
     /**
-     * A provisional conversation borrowed from a NEW sibling is not this tab's
-     * own: preferring it would hide the launch file that actually holds the
-     * prompt, even though that file is strictly newer.
+     * Confirming an ordinary menu (permission prompt, trust-folder check)
+     * answers a question in the current conversation; it does not switch the
+     * conversation. Treating it as a resume would let the switch recovery
+     * adopt an unrelated unheld record written by another tab that has just
+     * exited, instead of the launch conversation that holds the submission.
      */
+    @Test
+    void anOrdinaryMenuAnsweredInTheTerminalDoesNotEnableSwitchRecovery() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "c"));
+
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Security guide", List.of(
+                new ChoiceMenuModel.Option("No, exit", "ARROW:0"),
+                new ChoiceMenuModel.Option("Yes, I trust this folder", "ARROW:1")), 0));
+        // The trust-folder confirmation is answered with Enter.
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 8_000L);
+        model.clearChoiceMenu();
+
+        // A first prompt recalled from the history: its text is unknown.
+        controller.simulateTerminalInput(
+                new byte[]{0x1b, '[', 'A'}, START_MS + 9_000L);
+        assertNull(controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 9_100L));
+
+        // This tab's submission lands in the launch conversation...
+        appendUserPrompt(dir, "a", "recalled", START_MS + 9_700L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 9_800L);
+        // ...while another tab submits to c and exits, leaving a newer
+        // unheld record.
+        appendUserPrompt(dir, "c", "other work", START_MS + 9_900L);
+        setMtime(dir.resolve("c.jsonl"), START_MS + 10_000L);
+
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "a menu answer is not a conversation switch");
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "later scans must keep the launch conversation");
+    }
+
+    /**
+     * The same distinction for a menu answered from the plugin's choice panel:
+     * an {@code ARROW:} answer is a resume only when the menu open is the
+     * {@code /resume} session picker, not the trust-folder confirmation.
+     */
+    @Test
+    void anOrdinaryMenuAnsweredInThePanelDoesNotEnableSwitchRecovery() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "c"));
+
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Security guide", List.of(
+                new ChoiceMenuModel.Option("No, exit", "ARROW:0"),
+                new ChoiceMenuModel.Option("Yes, I trust this folder", "ARROW:1")), 0));
+        controller.simulateGuiChoiceAnswer("ARROW:1");
+        model.clearChoiceMenu();
+
+        controller.simulatePromptSubmittedAt(START_MS + 9_100L);
+        controller.simulatePromptText(null);
+
+        appendUserPrompt(dir, "a", "recalled", START_MS + 9_700L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 9_800L);
+        appendUserPrompt(dir, "c", "other work", START_MS + 9_900L);
+        setMtime(dir.resolve("c.jsonl"), START_MS + 10_000L);
+
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "an ARROW answer to an ordinary menu is not a resume");
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "later scans must keep the launch conversation");
+    }
+
+    /**
+     * A picker cancelled with a standalone Esc immediately before a GUI send
+     * stays dismissed: the send rewrites the recorder, but the screen poll has
+     * not removed the model's stale entry yet. Without the dismissed-menu
+     * marker surviving those resets, the next prompt typed in the terminal is
+     * swallowed as another menu answer and never becomes prompt evidence.
+     */
+    @Test
+    void aPickerCancelledBeforeAGuiSendStaysDismissed() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+
+        controller.simulateTerminalInput(
+                "work".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // A standalone Esc cancels the picker; the model still reports it
+        // until the next screen poll.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 1L);
+
+        controller.simulateGuiSend("hello", START_MS + 2L);
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the panel send is the submitted prompt");
+        assertEquals("next", controller.simulateTerminalInput(
+                "next\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 300L),
+                "the cancelled picker must stay dismissed after a GUI send");
+        assertEquals("next", controller.simulateLastPromptText(),
+                "the terminal prompt must become the evidence");
+    }
     @Test
     void aBorrowedActiveConversationIsNotPreferred() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
