@@ -4428,6 +4428,56 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Three sends accepted in quick succession must reach the TUI in that
+     * order. Giving each send its own thread that competes for the send lock
+     * offers no FIFO guarantee — a monitor may hand the lock to either waiter
+     * — so the prompts could be written swapped, and a slash command and the
+     * instruction it was meant to precede could run in the wrong order.
+     */
+    @Test
+    void queuedGuiSendsAreDeliveredInAcceptanceOrder() throws Exception {
+        List<String> writes = Collections.synchronizedList(new ArrayList<>());
+        java.util.Set<Thread> sendThreads = java.util.Collections.synchronizedSet(
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<Thread, Boolean>()));
+
+        CountDownLatch firstPaused = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean first =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        controller = new ClaudeSessionController(model, Collections::emptyList) {
+            @Override
+            void pauseGuiSend() throws InterruptedException {
+                if (first.compareAndSet(true, false)) {
+                    firstPaused.countDown();
+                    releaseFirst.await(5, TimeUnit.SECONDS);
+                }
+            }
+        };
+        controller.simulatePtyWrite(bytes -> {
+            writes.add(new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+            sendThreads.add(Thread.currentThread());
+        });
+
+        java.util.concurrent.Future<?> firstSend = controller.simulateQueueGuiSend("first");
+        java.util.concurrent.Future<?> secondSend = controller.simulateQueueGuiSend("second");
+        java.util.concurrent.Future<?> thirdSend = controller.simulateQueueGuiSend("third");
+
+        assertTrue(firstPaused.await(5, TimeUnit.SECONDS),
+                "the first text must be written");
+        releaseFirst.countDown();
+        firstSend.get(5, TimeUnit.SECONDS);
+        secondSend.get(5, TimeUnit.SECONDS);
+        thirdSend.get(5, TimeUnit.SECONDS);
+
+        assertEquals(List.of("first", "\r", "second", "\r", "third", "\r"),
+                new ArrayList<>(writes),
+                "the prompts must be submitted in the order they were accepted");
+        assertEquals(1, sendThreads.size(),
+                "the sends must be delivered by one ordered worker, not competing threads");
+    }
+
+    /**
      * Text typed during the pause and then submitted by the terminal Enter is
      * only a part of the line (the panel text is not in the recorder), so the
      * text becomes unknown while the first submission's time is kept.
@@ -4617,6 +4667,28 @@ class ClaudeSessionControllerTest {
                 "the answer to a text menu is not a submitted prompt");
         assertNull(controller.simulateLastPromptText(),
                 "the menu's answer must not become prompt evidence");
+    }
+
+    /**
+     * The digit's own option decides whether the menu closes: an ordinary
+     * choice in a menu that also offers a text-input option still selects and
+     * closes the TUI menu, so the prompt typed next must be recorded as a
+     * prompt rather than swallowed as another menu answer.
+     */
+    @Test
+    void anOrdinaryChoiceInAMixedMenuStillClosesItOnItsDigit() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        controller.simulateTerminalInput(new byte[]{'1'}, START_MS);
+        assertEquals("hello", controller.simulateTerminalInput(
+                        "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "an ordinary choice closes the menu, so the next Enter submits a prompt");
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the terminal prompt becomes the evidence");
     }
 
     /**

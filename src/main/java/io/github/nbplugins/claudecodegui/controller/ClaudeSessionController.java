@@ -325,6 +325,20 @@ public class ClaudeSessionController {
     private final Object guiSendLock = new Object();
 
     /**
+     * Delivers panel sends one at a time, in the order they were accepted.
+     *
+     * <p>Serializing the sends on a monitor is not enough: a monitor has no
+     * first-come-first-served order, so with two sends already waiting the JVM
+     * may hand it to either of them, and the TUI then receives the prompts in
+     * an order the user never typed them in — a slash command and the
+     * instruction it was meant to precede can run swapped.
+     */
+    private java.util.concurrent.ExecutorService guiSendQueue;
+
+    /** Guards the creation and the shutdown of {@link #guiSendQueue}. */
+    private final Object guiSendQueueLock = new Object();
+
+    /**
      * Line being typed in the terminal, assembled from the raw PTY input so
      * that a prompt submitted from the keyboard is recognised as evidence for
      * the conversation on screen (see {@link #onTerminalInput(byte[], long)}).
@@ -655,6 +669,14 @@ public class ClaudeSessionController {
             }
             completeGuiSend(enterClock);
         }
+    }
+
+    /**
+     * Package-private for tests: submits a send through the ordered queue, as
+     * {@link #sendPrompt(String)} does, and returns the queued task.
+     */
+    java.util.concurrent.Future<?> simulateQueueGuiSend(String text) {
+        return queueGuiSend(text, currentProcessGeneration());
     }
 
     /** Package-private for tests: the number of identity scans started. */
@@ -1022,6 +1044,7 @@ public class ClaudeSessionController {
     }
 
     public void stopProcess() {
+        shutdownGuiSendQueue();
         stopWriter();
         ClaudeProcess processToStop = claudeProcess;
         if (processToStop != null) {
@@ -2021,19 +2044,23 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Returns whether a digit typed while {@code menu} is open selects an item
-     * and dismisses the menu.
+     * Returns whether the digit {@code digit} typed while {@code menu} is open
+     * selects an item and dismisses the menu.
      *
      * <p>Only menus whose answers are the item numbers behave that way. An
      * unnumbered picker (the {@code ARROW:} answers of the {@code /resume}
      * list) uses digits as search text and stays open, and a checkbox or
-     * text-input menu only moves to an option on a digit, waiting for its
-     * submit key — retiring those on the first digit would turn the search
+     * text-input option only moves to that option on a digit, waiting for its
+     * submit key — retiring the menu on such a digit would turn the search
      * text into prompt evidence. A text-input option is recognised by its flag
      * or by its label ({@code "Type something."}), like everywhere else in the
      * answer protocol: the digit only activates its editor.
+     *
+     * <p>The digit's own option decides. A menu can mix ordinary items with a
+     * text-input one: selecting an ordinary item still closes the TUI menu, so
+     * the menu must be retired only when the selected option is not text input.
      */
-    private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu) {
+    private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
         if (menu.options().isEmpty()) return false;
         for (ChoiceMenuModel.Option option : menu.options()) {
             String response = option.response();
@@ -2042,7 +2069,11 @@ public class ClaudeSessionController {
                 char c = response.charAt(i);
                 if (c < '0' || c > '9') return false;
             }
-            if (option.hasCheckbox() || isTextInputOption(option)) return false;
+            if (response.length() == 1 && response.charAt(0) == digit
+                    && (option.hasCheckbox() || isTextInputOption(option))) {
+                // The digit only activates this option's editor or toggles it.
+                return false;
+            }
         }
         return true;
     }
@@ -2420,52 +2451,109 @@ public class ClaudeSessionController {
         // this send waits for its turn (or during its pause) must not deliver
         // it to the replacement process, where it would execute in a
         // conversation the user never typed it for.
-        long sendGeneration = currentProcessGeneration();
-        Thread t = new Thread(() -> {
-            // One send at a time: the panel accepts another send while the
-            // previous one is still waiting for its Enter, and its
-            // reconciliation would replace the pending evidence of a line
-            // that is still open in the TUI.
-            synchronized (guiSendLock) {
-                if (!isProcessGenerationCurrent(sendGeneration)) {
-                    LOG.fine("sendPrompt dropped: the session was restarted");
-                    return;
-                }
-                try {
-                    // Reconciliation and the text write run as one step under
-                    // the recorder's lock: an Enter arriving in between would
-                    // submit the terminal draft alone, while the evidence
-                    // recorded for the send would claim the composed line was
-                    // submitted.
-                    writeGuiPrompt(text);
-                    Thread.sleep(200);
-                } catch (IOException ex) {
-                    LOG.warning("sendPrompt write failed: " + ex.getMessage());
-                    if (isProcessGenerationCurrent(sendGeneration)) {
-                        resetTerminalInputRecording(true);
-                    }
-                    return;
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    if (isProcessGenerationCurrent(sendGeneration)) {
-                        resetTerminalInputRecording(true);
-                    }
-                    return;
-                }
-                if (!isProcessGenerationCurrent(sendGeneration)) {
-                    // The tab was restarted after the text had already been
-                    // written: this Enter would submit it to the replacement
-                    // process's line instead of closing the old one. The
-                    // recorder now belongs to the new run, so it is not reset
-                    // here either.
-                    LOG.fine("sendPrompt Enter dropped: the session was restarted");
-                    return;
-                }
-                completeGuiSend();
+        queueGuiSend(text, currentProcessGeneration());
+    }
+
+    /**
+     * Submits a panel send to the ordered send queue (see {@link #guiSendQueue}).
+     *
+     * @param text           prompt text
+     * @param sendGeneration process generation the send was accepted for
+     * @return the queued task
+     */
+    private java.util.concurrent.Future<?> queueGuiSend(String text, long sendGeneration) {
+        java.util.concurrent.ExecutorService queue;
+        synchronized (guiSendQueueLock) {
+            if (guiSendQueue == null || guiSendQueue.isShutdown()) {
+                guiSendQueue = java.util.concurrent.Executors.newSingleThreadExecutor(
+                        runnable -> {
+                            Thread t = new Thread(runnable, "pty-send-prompt");
+                            t.setDaemon(true);
+                            return t;
+                        });
             }
-        }, "pty-send-prompt");
-        t.setDaemon(true);
-        t.start();
+            queue = guiSendQueue;
+        }
+        try {
+            return queue.submit(() -> runGuiSend(text, sendGeneration));
+        } catch (java.util.concurrent.RejectedExecutionException ex) {
+            // The session was stopped between the lookup and the submission:
+            // the queue is gone, so the send is dropped with it.
+            LOG.fine("sendPrompt dropped: the send queue was shut down");
+            return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+    }
+
+    /**
+     * Drops the queued panel sends and interrupts the one in progress. The
+     * next send starts a new queue; a send interrupted while it pauses cannot
+     * deliver its Enter because the generation it was accepted for is gone.
+     */
+    private void shutdownGuiSendQueue() {
+        java.util.concurrent.ExecutorService queue;
+        synchronized (guiSendQueueLock) {
+            queue = guiSendQueue;
+            guiSendQueue = null;
+        }
+        if (queue != null) queue.shutdownNow();
+    }
+
+    /**
+     * Body of a queued panel send: writes the text, pauses and writes the
+     * Enter that submits it.
+     *
+     * <p>The worker is the only production caller, so its sends run in
+     * acceptance order; the monitor also keeps them from interleaving with a
+     * send driven by {@link #simulateSendPrompt}.
+     */
+    private void runGuiSend(String text, long sendGeneration) {
+        synchronized (guiSendLock) {
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                LOG.fine("sendPrompt dropped: the session was restarted");
+                return;
+            }
+            try {
+                // Reconciliation and the text write run as one step under the
+                // recorder's lock: an Enter arriving in between would
+                // submit the terminal draft alone, while the evidence
+                // recorded for the send would claim the composed line was
+                // submitted.
+                writeGuiPrompt(text);
+                pauseGuiSend();
+            } catch (IOException ex) {
+                LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                if (isProcessGenerationCurrent(sendGeneration)) {
+                    resetTerminalInputRecording(true);
+                }
+                return;
+            } catch (InterruptedException ie) {
+                // shutdownGuiSendQueue() interrupts the worker. The flag is
+                // not restored: the worker is about to stop, and a stale flag
+                // would make the next queued pause fail immediately.
+                if (isProcessGenerationCurrent(sendGeneration)) {
+                    resetTerminalInputRecording(true);
+                }
+                return;
+            }
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                // The tab was restarted after the text had already been
+                // written: this Enter would submit it to the replacement
+                // process's line instead of closing the old one. The
+                // recorder now belongs to the new run, so it is not reset
+                // here either.
+                LOG.fine("sendPrompt Enter dropped: the session was restarted");
+                return;
+            }
+            completeGuiSend();
+        }
+    }
+
+    /**
+     * Pauses between a panel send's text and its Enter. Overridable in tests
+     * to hold a send open.
+     */
+    void pauseGuiSend() throws InterruptedException {
+        Thread.sleep(200);
     }
 
     /** {@link #writeGuiPrompt(String, LongSupplier)} with the wall clock. */
@@ -4629,7 +4717,7 @@ public class ClaudeSessionController {
                 // with the selection and make the actual text unmatchable.
                 ChoiceMenuModel openMenu = openChoiceMenu();
                 if (openMenu != null && c >= '0' && c <= '9') {
-                    if (digitSelectionDismissesMenu(openMenu)) {
+                    if (digitSelectionDismissesMenu(openMenu, c)) {
                         // The digit answers the menu and closes it, so nothing
                         // typed into it is part of the next prompt: the search
                         // text accumulated while it was open must not prefix
