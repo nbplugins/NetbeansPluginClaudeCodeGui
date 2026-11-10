@@ -103,6 +103,7 @@ public class ClaudeSessionController {
     private volatile ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
     private volatile java.util.function.Consumer<byte[]> ptyWriteHook;
+    private volatile java.util.function.Consumer<PtyTtyConnector> ptyTargetHook;
     private java.io.File workingDir;
     private volatile JediTermWidget terminalWidget;
 
@@ -471,6 +472,15 @@ public class ClaudeSessionController {
     private long terminalGuiSubmitAt;
 
     /**
+     * Whether keys edited the GUI prompt's line before the terminal Enter that
+     * submitted it during the pause. {@link #terminalInputSinceGuiSend} cannot
+     * answer that afterwards: a draft typed after that Enter starts a new line
+     * and also sets it. Captured when the Enter's time is recorded and cleared
+     * with the rest of the recorder state.
+     */
+    private boolean terminalGuiLineEdited;
+
+    /**
      * True between a GUI send's prompt write and the Enter that submits it:
      * the panel text is already on the TUI's input line. A terminal Enter in
      * that window submits the panel text together with what was typed there,
@@ -517,6 +527,17 @@ public class ClaudeSessionController {
 
     /** Whether a GUI send is waiting for its Enter to establish evidence. */
     private boolean pendingGuiPromptSet;
+
+    /**
+     * Whether {@link #pendingGuiPromptText} is a TUI command that switches the
+     * conversation ({@code /resume}, {@code /clear}). The switch is evidence
+     * only once the command is actually submitted: the line can still be edited
+     * away during the pause (Ctrl+U and a new prompt), and a switch timestamp
+     * left behind would let the identity scan adopt the newer conversation the
+     * command never switched to.
+     * Guarded by {@link #terminalInputLine}.
+     */
+    private boolean pendingGuiPromptSwitch;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -660,7 +681,16 @@ public class ClaudeSessionController {
      * {@link #completeGuiSend()} adds.
      */
     void simulateGuiSendWithText(String text, long sentAt) throws IOException {
-        writeGuiPrompt(text, () -> sentAt);
+        writeGuiPrompt(text, () -> sentAt, currentProcessGeneration());
+    }
+
+    /**
+     * {@link #simulateGuiSendWithText(String, long)} for a send accepted for
+     * {@code generation}, so a test can deliver it after a restart replaced the
+     * connector.
+     */
+    void simulateGuiSendWithText(String text, long sentAt, long generation) throws IOException {
+        writeGuiPrompt(text, () -> sentAt, generation);
     }
 
     /**
@@ -676,12 +706,12 @@ public class ClaudeSessionController {
             if (!isProcessGenerationCurrent(sendGeneration)) {
                 return;
             }
-            writeGuiPrompt(text, writeClock);
+            writeGuiPrompt(text, writeClock, sendGeneration);
             pause.run();
             if (!isProcessGenerationCurrent(sendGeneration)) {
                 return;
             }
-            completeGuiSend(enterClock);
+            completeGuiSend(enterClock, sendGeneration);
         }
     }
 
@@ -691,6 +721,17 @@ public class ClaudeSessionController {
      */
     java.util.concurrent.Future<?> simulateQueueGuiSend(String text) {
         return queueGuiSend(text, currentProcessGeneration());
+    }
+
+    /**
+     * Package-private for tests: submits a send through the ordered queue with
+     * controllable text-write and submission times, so a test can release it
+     * during a stop and check what its late Enter would have recorded.
+     */
+    java.util.concurrent.Future<?> simulateQueueGuiSend(String text,
+                            java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock) {
+        return queueGuiSend(text, currentProcessGeneration(), writeClock, enterClock);
     }
 
     /** Package-private for tests: the number of identity scans started. */
@@ -1124,21 +1165,30 @@ public class ClaudeSessionController {
         // attempted, so that work is skipped before the PTY is stopped.
         String sessionId = null;
         if (rename) {
-            sessionId = resolveActiveSessionId();
-            // The writer may still be finishing a turn, and the user may have
-            // switched the conversation in the TUI with the new file not yet
-            // written. Stop it first, then resolve once more with the same
-            // evidence rules: whatever it wrote last is on disk now. The exit
-            // callback releases this tab's claims, so the conversations it
-            // established or guessed as its own are carried over explicitly.
-            // A borrowed conversation is another live tab's file and stays
-            // eligible to that tab instead. A process that quit on its own
-            // before this call already released the claims and left the
-            // conversations it held in preservedClaims: they count the same.
-            Set<String> held = new HashSet<>(preservedClaims);
-            held.addAll(claimedSessionIds(dir, configDir));
-            stopWriter();
-            sessionId = resolveIdentityWithPreservedClaims(held);
+            // A panel send still queued, or paused between its text and its
+            // Enter, would complete after the writer is stopped: its Enter is
+            // dropped, yet it could replace the prompt evidence the lookup
+            // below matches. Cancel the queue first and wait for a send that is
+            // already completing, so the snapshot is taken after it — or after
+            // its cancellation — instead of racing with it.
+            shutdownGuiSendQueue();
+            synchronized (guiSendLock) {
+                sessionId = resolveActiveSessionId();
+                // The writer may still be finishing a turn, and the user may have
+                // switched the conversation in the TUI with the new file not yet
+                // written. Stop it first, then resolve once more with the same
+                // evidence rules: whatever it wrote last is on disk now. The exit
+                // callback releases this tab's claims, so the conversations it
+                // established or guessed as its own are carried over explicitly.
+                // A borrowed conversation is another live tab's file and stays
+                // eligible to that tab instead. A process that quit on its own
+                // before this call already released the claims and left the
+                // conversations it held in preservedClaims: they count the same.
+                Set<String> held = new HashSet<>(preservedClaims);
+                held.addAll(claimedSessionIds(dir, configDir));
+                stopWriter();
+                sessionId = resolveIdentityWithPreservedClaims(held);
+            }
         }
         stopProcess();
 
@@ -1996,6 +2046,7 @@ public class ClaudeSessionController {
             terminalEnterSinceGuiSend = false;
             terminalDraftAfterEnter = false;
             terminalGuiSubmitAt = 0L;
+            terminalGuiLineEdited = false;
             guiSendAwaitingEnter = false;
             terminalMenuConsumedGuiSend = false;
             terminalGuiTextAnsweredMenu = false;
@@ -2003,6 +2054,7 @@ public class ClaudeSessionController {
             pendingGuiPromptAt = 0L;
             pendingGuiPromptExact = false;
             pendingGuiPromptSet = false;
+            pendingGuiPromptSwitch = false;
             if (!keepCompletedMenu) {
                 terminalCompletedMenu = null;
             }
@@ -2446,6 +2498,24 @@ public class ClaudeSessionController {
         }
     }
 
+    /**
+     * Returns the PTY connector of {@code generation}, or {@code null} when
+     * that run is gone or its PTY is not open anymore.
+     *
+     * <p>Binding the connector to the generation the send was accepted for
+     * makes a write "atomic" with the process it targets: once a restart has
+     * replaced the connector, a send that was already past its generation
+     * check keeps writing to the process it was accepted for (whose connector
+     * then rejects or drops the bytes) and never to the replacement's TUI.
+     *
+     * @param generation process generation the writer was accepted for
+     */
+    private PtyTtyConnector ptyConnectorFor(long generation) {
+        synchronized (processOwnershipLock) {
+            return generation == processGeneration ? connector : null;
+        }
+    }
+
     /** Package-private for tests: replays the exit callback of an older run. */
     void simulateProcessExitAt(long generation) {
         onProcessExited(generation);
@@ -2496,6 +2566,17 @@ public class ClaudeSessionController {
      * @return the queued task
      */
     private java.util.concurrent.Future<?> queueGuiSend(String text, long sendGeneration) {
+        return queueGuiSend(text, sendGeneration,
+                System::currentTimeMillis, System::currentTimeMillis);
+    }
+
+    /**
+     * {@link #queueGuiSend(String, long)} with controllable clocks, so a test
+     * can pin the text-write and submission times of a queued send.
+     */
+    private java.util.concurrent.Future<?> queueGuiSend(String text, long sendGeneration,
+                            java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock) {
         java.util.concurrent.ExecutorService queue;
         synchronized (guiSendQueueLock) {
             if (guiSendQueue == null || guiSendQueue.isShutdown()) {
@@ -2509,7 +2590,8 @@ public class ClaudeSessionController {
             queue = guiSendQueue;
         }
         try {
-            return queue.submit(() -> runGuiSend(text, sendGeneration));
+            return queue.submit(() -> runGuiSend(text, sendGeneration,
+                    writeClock, enterClock));
         } catch (java.util.concurrent.RejectedExecutionException ex) {
             // The session was stopped between the lookup and the submission:
             // the queue is gone, so the send is dropped with it.
@@ -2539,9 +2621,24 @@ public class ClaudeSessionController {
      * <p>The worker is the only production caller, so its sends run in
      * acceptance order; the monitor also keeps them from interleaving with a
      * send driven by {@link #simulateSendPrompt}.
+     *
+     * @param text           prompt text
+     * @param sendGeneration process generation the send was accepted for
+     * @param writeClock     time source for the text write
+     * @param enterClock     time source for the submission
      */
-    private void runGuiSend(String text, long sendGeneration) {
+    private void runGuiSend(String text, long sendGeneration,
+                            java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock) {
         synchronized (guiSendLock) {
+            if (Thread.currentThread().isInterrupted()) {
+                // Another thread cancelled the queue (a stop that must take its
+                // identity snapshot): a task that already started and waited
+                // here for the monitor is cancelled the same way as one still
+                // queued, so it writes nothing.
+                LOG.fine("sendPrompt dropped: the send queue was cancelled");
+                return;
+            }
             if (!isProcessGenerationCurrent(sendGeneration)) {
                 LOG.fine("sendPrompt dropped: the session was restarted");
                 return;
@@ -2552,7 +2649,7 @@ public class ClaudeSessionController {
                 // submit the terminal draft alone, while the evidence
                 // recorded for the send would claim the composed line was
                 // submitted.
-                writeGuiPrompt(text);
+                writeGuiPrompt(text, writeClock, sendGeneration);
                 pauseGuiSend();
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
@@ -2578,7 +2675,7 @@ public class ClaudeSessionController {
                 LOG.fine("sendPrompt Enter dropped: the session was restarted");
                 return;
             }
-            completeGuiSend();
+            completeGuiSend(enterClock, sendGeneration);
         }
     }
 
@@ -2588,11 +2685,6 @@ public class ClaudeSessionController {
      */
     void pauseGuiSend() throws InterruptedException {
         Thread.sleep(200);
-    }
-
-    /** {@link #writeGuiPrompt(String, LongSupplier)} with the wall clock. */
-    private void writeGuiPrompt(String text) throws IOException {
-        writeGuiPrompt(text, System::currentTimeMillis);
     }
 
     /**
@@ -2608,13 +2700,24 @@ public class ClaudeSessionController {
      * <p>Only the panel text is written: the terminal's own draft is still in
      * the TUI's input line, so it is already part of the line the Enter
      * submits. Writing the composed line would duplicate it.
+     *
+     * <p>The connector is bound to {@code sendGeneration} before the recorder
+     * lock is taken: a restart that replaces the PTY while this write waits
+     * for the lock must not deliver the text to the replacement process's
+     * line. The bound connector may be the old one or {@code null}; either way
+     * the accepted process — not the current one — is the target.
+     *
+     * @param text       prompt sent from the prompt panel
+     * @param clock      submission-time source
+     * @param sendGeneration process generation the send was accepted for
      */
-    private void writeGuiPrompt(String text, java.util.function.LongSupplier clock)
-            throws IOException {
+    private void writeGuiPrompt(String text, java.util.function.LongSupplier clock,
+                                long sendGeneration) throws IOException {
+        PtyTtyConnector target = ptyConnectorFor(sendGeneration);
         synchronized (terminalInputLine) {
             reconcileGuiSend(text, clock.getAsLong());
             retireMenuAnsweredByGuiText(text);
-            writePty(text);
+            writePty(text, target);
         }
     }
 
@@ -2702,16 +2805,16 @@ public class ClaudeSessionController {
             pendingGuiPromptAt = sentAt;
             pendingGuiPromptExact = isTextExact;
             pendingGuiPromptSet = true;
-        }
-        if (isConversationCommand(isTextExact ? submitted : text)) {
             // A TUI command is not a prompt written to the current
             // conversation: /resume and /clear can switch it, and these
             // writes are made by the plugin, so no terminal input marks
             // the switch. The line the process submits is the composed one,
             // so a command split across a terminal draft and the panel text
             // counts; a recalled draft makes the composition inexact, and
-            // then only the panel text is trusted.
-            conversationSwitchAt = sentAt;
+            // then only the panel text is trusted. The switch itself stays
+            // pending until the Enter is written: the line can still be
+            // edited away during the pause.
+            pendingGuiPromptSwitch = isConversationCommand(isTextExact ? submitted : text);
         }
         return submitted;
     }
@@ -2759,7 +2862,7 @@ public class ClaudeSessionController {
      * one has been flushed.
      */
     void completeGuiSend() {
-        completeGuiSend(System::currentTimeMillis);
+        completeGuiSend(System::currentTimeMillis, currentProcessGeneration());
     }
 
     /**
@@ -2767,6 +2870,33 @@ public class ClaudeSessionController {
      * pin the submission cutoff.
      */
     void completeGuiSend(java.util.function.LongSupplier clock) {
+        completeGuiSend(clock, currentProcessGeneration());
+    }
+
+    /**
+     * {@link #completeGuiSend(java.util.function.LongSupplier)} bound to the
+     * process the send was accepted for.
+     *
+     * <p>The connector is captured before the recorder's lock is taken: a
+     * restart can replace the process while this sender waits for that lock,
+     * and the Enter must then go to the accepted process or nowhere — writing
+     * through whatever connector is current would submit the replacement
+     * TUI's line. The captured connector either accepts the bytes or fails
+     * once closed, and the interrupted pause of the cancelled queue keeps a
+     * stale sender from getting here at all.
+     *
+     * @param clock      submission-time clock
+     * @param generation the process generation the send was accepted for
+     */
+    void completeGuiSend(java.util.function.LongSupplier clock, long generation) {
+        PtyTtyConnector target = ptyConnectorFor(generation);
+        if (!isProcessGenerationCurrent(generation)) {
+            // The accepted process is stopped or replaced: its TUI is gone and
+            // the recorder already belongs to its successor, so neither an
+            // Enter nor an evidence reset made here would describe anything.
+            LOG.fine("completeGuiSend dropped: the process was replaced");
+            return;
+        }
         boolean schedule;
         synchronized (terminalInputLine) {
             // Sampled before the Enter is forwarded: the child may append the
@@ -2796,7 +2926,7 @@ public class ClaudeSessionController {
                 // not classify the input that follows as another menu
                 // answer, or the next real prompt is swallowed.
                 try {
-                    writePty("\r");
+                    writePty("\r", target);
                 } catch (IOException ex) {
                     LOG.warning("sendPrompt write failed: " + ex.getMessage());
                     resetTerminalInputRecording(true);
@@ -2828,7 +2958,7 @@ public class ClaudeSessionController {
                 String draftLine = terminalInputLine.toString().trim();
                 boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
                 try {
-                    writePty("\r");
+                    writePty("\r", target);
                 } catch (IOException ex) {
                     LOG.warning("sendPrompt write failed: " + ex.getMessage());
                     resetTerminalInputRecording(true);
@@ -2844,7 +2974,7 @@ public class ClaudeSessionController {
                 return;
             }
             try {
-                writePty("\r");
+                writePty("\r", target);
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
                 resetTerminalInputRecording(true);
@@ -2854,12 +2984,15 @@ public class ClaudeSessionController {
             boolean alreadySubmitted = terminalEnterSinceGuiSend;
             boolean draftAfterEnter = terminalDraftAfterEnter;
             long guiSubmitAt = terminalGuiSubmitAt;
+            boolean guiLineEdited = terminalGuiLineEdited;
             String draftLine = terminalInputLine.toString().trim();
             boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
             String pendingText = pendingGuiPromptText;
             long pendingAt = pendingGuiPromptAt;
             boolean pendingExact = pendingGuiPromptExact;
             boolean pendingSet = pendingGuiPromptSet;
+            boolean pendingSwitch = pendingGuiPromptSwitch;
+            boolean switched = false;
             resetTerminalInputRecording(true);
             if (alreadySubmitted && draftAfterEnter
                     && (!draftLine.isEmpty() || !draftExact)) {
@@ -2878,9 +3011,12 @@ public class ClaudeSessionController {
                 // Enter is the pending one — the panel text, or the composed
                 // line when the text was only partially known. A newer
                 // submission recorded meanwhile (a draft submitted from the
-                // terminal) is left in place.
+                // terminal) is left in place. The panel line itself was not
+                // edited before that Enter, so a switch command it carried
+                // did switch.
                 rememberSentPrompt(pendingText,
                         guiSubmitAt != 0L ? guiSubmitAt : pendingAt, pendingExact);
+                switched = pendingSwitch && !guiLineEdited;
                 schedule = false;
             } else if (alreadySubmitted) {
                 // The terminal's own Enter submitted the line before the
@@ -2911,6 +3047,9 @@ public class ClaudeSessionController {
                     rememberSentPrompt(pendingText,
                             guiSubmitAt != 0L ? guiSubmitAt : pendingAt, pendingExact);
                 }
+                // The switch command was submitted only if nothing edited the
+                // line before that Enter and no later submission replaced it.
+                switched = pendingSwitch && !guiLineEdited && !edited && !laterSubmission;
                 schedule = true;
             } else if (edited) {
                 // Keys arrived while the panel text was being submitted: their
@@ -2927,9 +3066,17 @@ public class ClaudeSessionController {
                 // conversation may have received a human record — the text
                 // match for exact evidence is not enough to tell them apart.
                 rememberSentPrompt(pendingText, submittedAt, pendingExact);
+                switched = pendingSwitch;
                 schedule = false;
             } else {
                 schedule = false;
+            }
+            if (switched) {
+                // The command was submitted, so the conversation did switch:
+                // the next submission has to follow it rather than the launch
+                // conversation. The switch time is the submitting Enter's, not
+                // the text-write time, which would reach back into the pause.
+                conversationSwitchAt = guiSubmitAt != 0L ? guiSubmitAt : submittedAt;
             }
         }
         if (schedule) {
@@ -4427,21 +4574,41 @@ public class ClaudeSessionController {
      * captured by {@link #sendPrompt(String)}.
      */
     private void writePty(byte[] bytes) throws IOException {
+        writePty(bytes, connector);
+    }
+
+    /**
+     * Writes bytes to {@code target} — the PTY connector bound to the process
+     * a send was accepted for, or {@code null} — on behalf of the plugin.
+     *
+     * <p>Writing through the bound connector instead of the current field
+     * keeps a delayed write out of a replacement process's input line: the old
+     * connector either accepts the bytes (its process is the one the send was
+     * meant for) or fails with an {@link IOException} once it is closed.
+     *
+     * @param bytes  bytes to write
+     * @param target connector to write to, or {@code null} to drop the write
+     */
+    private void writePty(byte[] bytes, PtyTtyConnector target) throws IOException {
+        java.util.function.Consumer<PtyTtyConnector> targetHook = ptyTargetHook;
+        if (targetHook != null) {
+            targetHook.accept(target);
+        }
         java.util.function.Consumer<byte[]> hook = ptyWriteHook;
         if (hook != null) {
             hook.accept(bytes);
             return;
         }
-        if (connector == null) {
-            // No PTY yet (the launch is still being prepared): drop the write,
-            // as sendPrompt() does.
+        if (target == null) {
+            // No PTY for this send (it is still being prepared, or it was
+            // stopped or replaced): drop the write, as sendPrompt() does.
             LOG.fine("[PTY write] dropped, no connector");
             return;
         }
         boolean previous = pluginPtyWrite.get();
         pluginPtyWrite.set(true);
         try {
-            connector.write(bytes);
+            target.write(bytes);
         } finally {
             pluginPtyWrite.set(previous);
         }
@@ -4456,9 +4623,37 @@ public class ClaudeSessionController {
         ptyWriteHook = hook;
     }
 
+    /**
+     * Package-private for tests: receives the PTY connector each plugin write
+     * was bound to, or {@code null} when the write was dropped. Written to
+     * before the bytes, so a test can tell the accepted process from the
+     * connector installed by a restart.
+     */
+    void simulatePtyWriteTargets(java.util.function.Consumer<PtyTtyConnector> hook) {
+        ptyTargetHook = hook;
+    }
+
+    /**
+     * Package-private for tests: attaches {@code replacement} as the current
+     * PTY connector, as a restart does once the new process is launched. The
+     * process generation is not changed: it is up to the test to simulate the
+     * restart itself.
+     */
+    void simulateConnector(PtyTtyConnector replacement) {
+        connector = replacement;
+    }
+
     /** Writes text to the PTY on behalf of the plugin. See {@link #writePty(byte[])}. */
     private void writePty(String text) throws IOException {
         writePty(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Writes text to the given connector. See
+     * {@link #writePty(byte[], PtyTtyConnector)}.
+     */
+    private void writePty(String text, PtyTtyConnector target) throws IOException {
+        writePty(text.getBytes(java.nio.charset.StandardCharsets.UTF_8), target);
     }
 
     /**
@@ -4514,8 +4709,11 @@ public class ClaudeSessionController {
                 // recall or a Tab completion no longer shows there. That
                 // Enter is the actual submission, and its time is the evidence
                 // cutoff — the panel's delayed Enter only submits an empty
-                // line afterwards.
+                // line afterwards. Whether keys edited the panel line before
+                // this Enter is captured now: input after it starts a new
+                // line and also sets terminalInputSinceGuiSend.
                 terminalGuiSubmitAt = now;
+                terminalGuiLineEdited = terminalInputSinceGuiSend;
             }
         }
         if (entered && !emptyEnter) {

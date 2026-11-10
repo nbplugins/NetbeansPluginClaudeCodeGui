@@ -3012,6 +3012,87 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A panel send can still be paused between its text and its Enter when the
+     * user closes the tab. Its Enter never reaches the PTY, but if it completes
+     * after the writer was stopped, its evidence replaces the last submitted
+     * prompt before the final identity lookup runs: an unrelated conversation
+     * that received the same text after that bogus cutoff then takes the
+     * rename instead of the launch conversation.
+     */
+    @Test
+    void aPausedSendDoesNotReplaceTheEvidenceOfTheFinalLookup() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "noise", "noise");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        CountDownLatch paused = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<java.util.concurrent.Future<?>> send = new AtomicReference<>();
+        ClaudeSessionController tab =
+                new ClaudeSessionController(model, Collections::emptyList) {
+                    @Override
+                    void pauseGuiSend() throws InterruptedException {
+                        paused.countDown();
+                        // A stop cancels the queue by interrupting this sender.
+                        release.await();
+                    }
+
+                    @Override
+                    void stopWriter() {
+                        // Let the paused send finish right here: the identity
+                        // snapshot is taken after this method returns.
+                        release.countDown();
+                        java.util.concurrent.Future<?> queued = send.get();
+                        if (queued != null) {
+                            try {
+                                queued.get(2, TimeUnit.SECONDS);
+                            } catch (Exception ignored) {
+                                // Cancelled by the stop: the expected outcome.
+                            }
+                        }
+                        super.stopWriter();
+                    }
+                };
+        tab.simulateProcessStart(START_MS, true);
+        tab.simulateLiveSession(config, "a", Set.of("a", "noise"));
+        // The launch conversation holds the last prompt this tab submitted.
+        tab.simulateGuiSend("hello", START_MS + 2_000L);
+        tab.completeGuiSend(() -> START_MS + 2_000L);
+        appendUserPrompt(dir, "a", "hello", START_MS + 2_100L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 2_200L);
+
+        // A second panel send is written and pauses before its Enter.
+        send.set(tab.simulateQueueGuiSend("delayed words",
+                () -> START_MS + 3_000L, () -> START_MS + 20_000L));
+        assertTrue(paused.await(5, TimeUnit.SECONDS), "the second send must pause");
+
+        // An unrelated conversation receives the same text after the send's
+        // would-be submission and is newer than the launch conversation.
+        appendUserPrompt(dir, "noise", "delayed words", START_MS + 20_100L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS + 20_200L);
+
+        try {
+            tab.stopAndRename("Closed Name");
+        } finally {
+            tab.stopProcess();
+        }
+
+        assertEquals("Closed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation is renamed, not the lookalike file");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "noise").customTitle(),
+                "the unrelated conversation must keep its name");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as
@@ -3306,6 +3387,7 @@ class ClaudeSessionControllerTest {
             // The user switches the conversation from the GUI: /resume from
             // the prompt panel, then the session picked from the menu.
             controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.completeGuiSend(() -> START_MS + 10_050L);
             controller.simulateGuiChoiceAnswer("ARROW:1");
 
             // The new conversation is not followed by the identity poll yet
@@ -3365,6 +3447,7 @@ class ClaudeSessionControllerTest {
             // The user switches the conversation from the GUI: /resume from
             // the prompt panel, then the session picked from the menu.
             controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.completeGuiSend(() -> START_MS + 10_050L);
             controller.simulateGuiChoiceAnswer("ARROW:1");
 
             // A recalled prompt: its text is unknown.
@@ -3383,6 +3466,60 @@ class ClaudeSessionControllerTest {
                     "the shared launch record must not hide the unclaimed destination");
             assertEquals("b", controller.resolveActiveSessionId(),
                     "later scans must keep the resumed conversation");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The panel writes /resume, then the user replaces the line during the
+     * pause: Ctrl+U clears it and hello is typed and submitted instead. The
+     * Enter does not switch the conversation, so the discarded command must
+     * not stay as switch evidence — otherwise the resolver's switch recovery
+     * adopts an unrelated newer unheld record instead of the launch
+     * conversation that received hello.
+     */
+    @Test
+    void aSwitchCommandEditedAwayDoesNotSwitchTheConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "noise", "noise");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS - 5_000L);
+
+        // This tab and a second one launched the same saved conversation, so
+        // only one of them owns it.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+        try {
+            controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.simulateTerminalInput(new byte[]{0x15}, START_MS + 10_050L);
+            controller.simulateTerminalInput(
+                    "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 10_060L);
+            controller.completeGuiSend(() -> START_MS + 10_100L);
+
+            // hello landed in the launch conversation.
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_150L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_250L);
+            // An unrelated conversation received hello later and is newer.
+            appendUserPrompt(dir, "noise", "hello", START_MS + 10_160L);
+            setMtime(dir.resolve("noise.jsonl"), START_MS + 10_600L);
+
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "an edited-away switch must leave the launch conversation");
         } finally {
             tabB.stopProcess();
         }
@@ -3620,6 +3757,7 @@ class ClaudeSessionControllerTest {
         try {
             // The user switches to the live conversation b from the GUI.
             controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.completeGuiSend(() -> START_MS + 10_050L);
             controller.simulateGuiChoiceAnswer("ARROW:1");
 
             // A recalled prompt: its text is unknown.
@@ -3679,6 +3817,7 @@ class ClaudeSessionControllerTest {
         try {
             // The user switches the conversation from the GUI.
             controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.completeGuiSend(() -> START_MS + 10_050L);
             controller.simulateGuiChoiceAnswer("ARROW:1");
 
             // A literal prompt resolves the unclaimed destination b as this
@@ -3942,6 +4081,7 @@ class ClaudeSessionControllerTest {
         try {
             // The user resumes the live conversation b from the GUI.
             controller.simulateGuiSend("/resume", START_MS + 10_000L);
+            controller.completeGuiSend(() -> START_MS + 10_050L);
             controller.simulateGuiChoiceAnswer("ARROW:1");
 
             // A recalled prompt: its text is unknown.
@@ -4528,6 +4668,87 @@ class ClaudeSessionControllerTest {
                 "the prompts must be submitted in the order they were accepted");
         assertEquals(1, sendThreads.size(),
                 "the sends must be delivered by one ordered worker, not competing threads");
+    }
+
+    /** Starts {@code /bin/cat} in a PTY for a test that needs a real connector. */
+    private static com.pty4j.PtyProcess startEchoPty() throws Exception {
+        return new com.pty4j.PtyProcessBuilder(new String[]{"/bin/cat"})
+                .setEnvironment(java.util.Map.of("TERM", "xterm"))
+                .setDirectory(System.getProperty("java.io.tmpdir"))
+                .setConsole(false)
+                .setRedirectErrorStream(true)
+                .start();
+    }
+
+    /**
+     * A sender can pass its generation check and then wait for the recorder's
+     * lock while a restart replaces the connector. The text must still be
+     * bound to the process the send was accepted for: writing it through the
+     * current connector would leave the stale prompt on the replacement TUI's
+     * input line for its next submission.
+     */
+    @Test
+    void aSendAcceptedBeforeTheRestartDoesNotReachTheReplacementConnector()
+            throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+        com.pty4j.PtyProcess p = startEchoPty();
+        try {
+            io.github.nbplugins.claudecodegui.process.PtyTtyConnector replacement =
+                    new io.github.nbplugins.claudecodegui.process.PtyTtyConnector(p);
+            long accepted = controller.simulateProcessGeneration();
+            List<io.github.nbplugins.claudecodegui.process.PtyTtyConnector> targets =
+                    new ArrayList<>();
+            controller.simulatePtyWrite(bytes -> { });
+            controller.simulatePtyWriteTargets(targets::add);
+
+            // The tab is restarted: the accepted process is gone and a new PTY
+            // is already attached.
+            controller.stopProcess();
+            controller.simulateConnector(replacement);
+
+            controller.simulateGuiSendWithText("stale text", START_MS, accepted);
+
+            assertEquals(1, targets.size(), "the text must be written once");
+            assertNull(targets.get(0),
+                    "the text must not be bound to the replacement connector");
+        } finally {
+            p.destroyForcibly();
+        }
+    }
+
+    /**
+     * The Enter of a send whose process was replaced must not be written to
+     * the replacement TUI: it would submit whatever line that process has on
+     * its input line, and the evidence would describe a submission the
+     * accepted conversation never received.
+     */
+    @Test
+    void aStaleEnterIsDroppedInsteadOfSubmittingTheReplacementProcess()
+            throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+        com.pty4j.PtyProcess p = startEchoPty();
+        try {
+            io.github.nbplugins.claudecodegui.process.PtyTtyConnector replacement =
+                    new io.github.nbplugins.claudecodegui.process.PtyTtyConnector(p);
+            long accepted = controller.simulateProcessGeneration();
+            List<io.github.nbplugins.claudecodegui.process.PtyTtyConnector> targets =
+                    new ArrayList<>();
+            controller.simulatePtyWrite(bytes -> { });
+            controller.simulatePtyWriteTargets(targets::add);
+
+            controller.simulateGuiSend("hello", START_MS);
+            controller.stopProcess();
+            controller.simulateConnector(replacement);
+
+            controller.completeGuiSend(() -> START_MS + 100L, accepted);
+
+            assertTrue(targets.isEmpty(),
+                    "no Enter may be written after the accepted process was replaced");
+        } finally {
+            p.destroyForcibly();
+        }
     }
 
     /**
@@ -5599,6 +5820,7 @@ class ClaudeSessionControllerTest {
                     START_MS + 9_000L);
             assertEquals("/resume",
                     controller.simulateGuiSend("ume", START_MS + 9_100L));
+            controller.completeGuiSend(() -> START_MS + 9_200L);
 
             // A recalled prompt: its text is unknown.
             controller.simulateTerminalInput(
@@ -5664,6 +5886,7 @@ class ClaudeSessionControllerTest {
                     START_MS + 9_000L);
             assertEquals("/resume",
                     controller.simulateGuiSend("ume", START_MS + 9_100L));
+            controller.completeGuiSend(() -> START_MS + 9_200L);
             controller.simulateTerminalInput(
                     new byte[]{0x1b, '[', 'A'}, START_MS + 10_000L);
             controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 11_000L);
