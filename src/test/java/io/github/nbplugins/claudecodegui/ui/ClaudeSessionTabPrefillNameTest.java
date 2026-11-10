@@ -52,4 +52,25 @@ class ClaudeSessionTabPrefillNameTest {
     void nullSessionGivesEmptyString() {
         assertEquals("", ClaudeSessionTab.prefillSessionName(null));
     }
+
+    @Test
+    void runningSessionExcludedOnlyFromItsOwnStore() {
+        java.nio.file.Path running = java.nio.file.Path.of("/home/u/.claude");
+        java.nio.file.Path profiles = java.nio.file.Path.of("/home/u/.claude-profiles/Work");
+        assertEquals("id-1",
+                ClaudeSessionTab.excludedSessionId("id-1", running, running),
+                "the listed store is the running one: hide the running conversation");
+        org.junit.jupiter.api.Assertions.assertNull(
+                ClaudeSessionTab.excludedSessionId("id-1", profiles, running),
+                "another store may hold a copy under the same ID, which must stay listed");
+        org.junit.jupiter.api.Assertions.assertNull(
+                ClaudeSessionTab.excludedSessionId(null, running, running));
+    }
+
+    @Test
+    void storeComparisonNormalizesThePath() {
+        assertEquals("id-1", ClaudeSessionTab.excludedSessionId("id-1",
+                java.nio.file.Path.of("/home/u/./.claude"),
+                java.nio.file.Path.of("/home/u/.claude")));
+    }
 }

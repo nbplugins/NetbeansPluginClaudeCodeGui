@@ -6810,6 +6810,106 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The same two unresolved tabs stopped with a name: neither file can be
+     * proven to be this tab's, so the name would land in the sibling's
+     * conversation. The rename must be skipped rather than guessed.
+     */
+    @Test
+    void aStopDoesNotRenameEitherOfTwoSharedUnresolvedFiles() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_600L);
+            assertEquals("b", controller.resolveActiveSessionId());
+            assertEquals("b", tabB.resolveActiveSessionId());
+
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_200L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the shared conversation is still the one this tab tracks");
+
+            controller.stopAndRename("A-title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the sibling's conversation must not be renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the ambiguous candidate must not be renamed either");
+    }
+
+    /**
+     * A NEW tab that created its conversation and is merely followed by a
+     * sibling has nothing ambiguous about its file: the rename must still
+     * happen there.
+     */
+    @Test
+    void aStopRenamesTheFileAFollowerOnlyFollows() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            // Only this tab's conversation holds the prompt; the sibling
+            // follows it because it has no file of its own.
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_600L);
+            assertEquals("a", controller.resolveActiveSessionId());
+            assertEquals("a", tabB.resolveActiveSessionId());
+
+            controller.stopAndRename("Shared Title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertEquals("Shared Title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the creator's conversation is renamed although a sibling follows it");
+    }
+
+    /**
      * The same two unresolved tabs with the scan order reversed: the tab that
      * resolved the shared file first keeps it, and the tab that joined later
      * must not cost it that conversation. A borrowed claim is not ownership.

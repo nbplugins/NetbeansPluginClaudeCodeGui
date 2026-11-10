@@ -1300,7 +1300,12 @@ public class ClaudeSessionTab extends TopComponent
         SaveAndSwitchDialog dialog = new SaveAndSwitchDialog(
                 mainFrame,
                 currentName,
-                currentId,
+                // The exclusion removes the running conversation from the list by
+                // ID alone. Only a list of the same store holds that exact
+                // conversation: another store (the profile's storage directory
+                // may have been changed in Options) can contain a copy under the
+                // same ID, and hiding it would leave the list without it.
+                excludedSessionId(currentId, configDir, runningConfigDir),
                 workingDir.toPath(),
                 configDir,
                 initialMode,
@@ -1309,6 +1314,29 @@ public class ClaudeSessionTab extends TopComponent
         );
         dialog.setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setVisible(true);
+    }
+
+    /**
+     * Returns the session ID the switch dialog must hide from its list: the
+     * running conversation, but only when the listed store is the store the
+     * running process writes to. Session IDs are only unique within a store,
+     * so a different store's file with the same ID is an unrelated (possibly
+     * copied) conversation and has to stay selectable.
+     *
+     * @param currentId     the running session's ID, or {@code null}
+     * @param listedStore   store the dialog lists sessions from
+     * @param runningStore  store the running session writes to
+     * @return the ID to exclude, or {@code null}
+     */
+    static String excludedSessionId(String currentId, Path listedStore, Path runningStore) {
+        if (currentId == null) return null;
+        return sameStore(listedStore, runningStore) ? currentId : null;
+    }
+
+    private static boolean sameStore(Path first, Path second) {
+        if (first == null || second == null) return first == null && second == null;
+        return first.toAbsolutePath().normalize()
+                .equals(second.toAbsolutePath().normalize());
     }
 
     /**

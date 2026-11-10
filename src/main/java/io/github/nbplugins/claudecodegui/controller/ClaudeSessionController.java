@@ -1237,9 +1237,21 @@ public class ClaudeSessionController {
                 sessionId = resolveIdentityWithPreservedClaims(held);
             }
         }
+        // Two NEW tabs that submitted identical text leave the identity
+        // unresolved: each tracks the file whose prompt matched first, and the
+        // other tab writes a file holding the same text. The name entered in the
+        // dialog must not be written into the sibling's conversation.
+        boolean ambiguous = rename
+                && identityRemainsAmbiguous(dir, configDir, sessionId);
         stopProcess();
 
         if (!rename) return;
+        if (ambiguous) {
+            LOG.warning("Skipped renaming session " + sessionId + " in " + configDir
+                    + ": another live tab writes the same conversation and another file"
+                    + " holds this prompt; the identity cannot be told apart");
+            return;
+        }
         if (dir == null || configDir == null || sessionId == null) {
             LOG.warning("Could not rename session: no active session file found in "
                     + ClaudeSessionStore.sessionDirForLog(
@@ -1259,6 +1271,39 @@ public class ClaudeSessionController {
         } catch (Exception e) {
             LOG.warning("Could not rename session " + sessionId + " in " + configDir + ": " + e.getMessage());
         }
+    }
+
+    /**
+     * Returns whether {@code sessionId} is a conversation this tab cannot prove
+     * it is the writer of: another live tab holds it as well, this tab has not
+     * established it at launch, and the store also holds a file with this run's
+     * prompt that no other live tab claims.
+     *
+     * <p>Two NEW tabs that submitted identical text leave exactly this state:
+     * the prompt matched in the sibling's file first, so this tab tracks it
+     * provisionally, and this tab's own file — the same text, another ID —
+     * appears later without displacing it. A matching prompt does not establish
+     * ownership here, so neither file may be renamed as this tab's.
+     *
+     * <p>Called before {@link #stopProcess()}, while this run's prompt evidence
+     * and the claim registry still describe the running session.
+     */
+    private boolean identityRemainsAmbiguous(java.io.File dir, java.nio.file.Path configDir,
+                                             String sessionId) {
+        if (sessionId == null || isLaunchIdentity(sessionId)) return false;
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
+        if (claims == null || !heldByAnotherLiveTab(claims)) return false;
+        if (claims.owners.contains(this)) return false;
+        String promptText = lastPromptText;
+        long promptAt = promptSubmittedAt;
+        if (promptText == null || promptText.isBlank() || promptAt <= 0) return false;
+        // A file holding the same prompt that no other live tab claims could
+        // equally be the one this run wrote: the evidence cannot tell them apart.
+        Set<String> shared = claimedByOthers(dir, configDir);
+        shared.add(sessionId);
+        return findPromptBearingSession(dir, configDir, 0L, shared, null,
+                promptAt, promptText) != null;
     }
 
     /**
