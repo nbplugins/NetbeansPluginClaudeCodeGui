@@ -3173,6 +3173,79 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A draft typed after the terminal Enter that submitted the panel line is
+     * a new, unsubmitted line: it must not hide the submission when a stop
+     * cancels the sender. Otherwise the exact panel text is lost as evidence
+     * and the lookup falls back to the launch conversation's newer record
+     * instead of following the resumed live conversation that received it.
+     */
+    @Test
+    void aDraftAfterTheSubmittingEnterDoesNotHideTheSubmission() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        CountDownLatch paused = new CountDownLatch(1);
+        long terminalEnterAt = START_MS + 11_100L;
+        ClaudeSessionController tab =
+                new ClaudeSessionController(model, Collections::emptyList) {
+                    @Override
+                    void pauseGuiSend() throws InterruptedException {
+                        simulateTerminalInput(new byte[]{'\r'}, terminalEnterAt);
+                        // The user starts another line without submitting it.
+                        simulateTerminalInput(
+                                "next".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                                terminalEnterAt + 100L);
+                        paused.countDown();
+                        // Only the stop's interruption releases this sender.
+                        new CountDownLatch(1).await();
+                    }
+                };
+        tab.simulateProcessStart(START_MS, true);
+        tab.simulateLiveSession(config, "a", Set.of("a", "b"));
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            tab.simulateGuiSend("/resume", START_MS + 10_000L);
+            tab.completeGuiSend(() -> START_MS + 10_050L);
+            tab.simulateGuiChoiceAnswer("ARROW:1");
+
+            tab.simulateQueueGuiSend("delayed words",
+                    () -> START_MS + 11_000L, () -> START_MS + 20_000L);
+            assertTrue(paused.await(5, TimeUnit.SECONDS), "the second send must pause");
+
+            appendUserPrompt(dir, "b", "delayed words", START_MS + 11_150L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_200L);
+            appendUserPrompt(dir, "a", "later work", START_MS + 11_300L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_400L);
+
+            tab.stopAndRename("Closed Name");
+        } finally {
+            tab.stopProcess();
+            tabB.stopProcess();
+        }
+
+        assertEquals("Closed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the conversation that received the panel prompt is renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation must keep its name");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as
@@ -5102,6 +5175,30 @@ class ClaudeSessionControllerTest {
                 "the answer to a text menu is not a submitted prompt");
         assertNull(controller.simulateLastPromptText(),
                 "the digit went into the focused editor, so the answer is not prompt evidence");
+    }
+
+    /**
+     * A digit that activates a menu's text editor moves the cursor only in the
+     * TUI: the model still reports the previous focus until the next screen
+     * poll. Digits typed in that window are text for the editor, so they must
+     * not retire the menu even when they name an ordinary option.
+     */
+    @Test
+    void aDigitTypedAfterActivatingTheEditorDoesNotDismissTheMenu() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        // The digit activates the editor; the poll has not moved the focus.
+        controller.simulateTerminalInput(new byte[]{'3'}, START_MS);
+        controller.simulateTerminalInput(new byte[]{'1'}, START_MS + 50L);
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the digits went into the activated editor; the answer is not a prompt");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
     }
 
     /**

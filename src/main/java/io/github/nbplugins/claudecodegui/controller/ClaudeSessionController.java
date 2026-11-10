@@ -486,6 +486,17 @@ public class ClaudeSessionController {
     private boolean terminalGuiLineEdited;
 
     /**
+     * The menu whose text-input option a typed or sent digit activated, while
+     * the screen poll has not yet reported the cursor on that editor. Until it
+     * does, {@link ChoiceMenuModel#defaultOptionIndex()} still names the
+     * previous option, and a digit naming an ordinary option would otherwise
+     * retire the menu although it is text for the editor. Compared by identity,
+     * so a menu instance published by a newer poll no longer matches; cleared
+     * when the menu is completed. Guarded by {@link #terminalInputLine}.
+     */
+    private ChoiceMenuModel terminalMenuTextEditor;
+
+    /**
      * True between a GUI send's prompt write and the Enter that submits it:
      * the panel text is already on the TUI's input line. A terminal Enter in
      * that window submits the panel text together with what was typed there,
@@ -2103,7 +2114,10 @@ public class ClaudeSessionController {
      * while holding the {@link #terminalInputLine} lock.
      */
     private void completeTerminalMenu(ChoiceMenuModel menu) {
-        if (menu != null) terminalCompletedMenu = menu;
+        if (menu != null) {
+            terminalCompletedMenu = menu;
+            if (terminalMenuTextEditor == menu) terminalMenuTextEditor = null;
+        }
     }
 
     /**
@@ -2142,9 +2156,22 @@ public class ClaudeSessionController {
      * of another item (the answer protocol navigates such a menu with arrows,
      * see {@code writePtyAnswer}). Retiring the menu then would record the rest
      * of the answer as a submitted prompt.
+     *
+     * <p>The activation a digit performs is tracked separately
+     * ({@link #terminalMenuTextEditor}): the screen poll is what moves the
+     * cursor onto the editor, so the menu still reports the previous focus for
+     * every digit typed before it, and those digits are text for the editor all
+     * the same.
+     *
+     * <p>Call while holding the {@link #terminalInputLine} lock.
      */
-    private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
+    private boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
         if (menu.options().isEmpty()) return false;
+        if (menu == terminalMenuTextEditor) {
+            // A digit typed earlier activated this menu's editor and the poll
+            // has not confirmed the focus yet: printed digits are its text.
+            return false;
+        }
         int focused = menu.defaultOptionIndex();
         if (focused >= 0 && focused < menu.options().size()
                 && isTextInputOption(menu.options().get(focused))) {
@@ -2168,6 +2195,23 @@ public class ClaudeSessionController {
             matched = true;
         }
         return matched;
+    }
+
+    /**
+     * Returns whether the digit {@code digit} activates the text editor of
+     * {@code menu} instead of selecting an item: that is what a digit naming a
+     * text-input option does. Call while holding the
+     * {@link #terminalInputLine} lock.
+     */
+    private static boolean digitActivatesTextEditor(ChoiceMenuModel menu, char digit) {
+        for (ChoiceMenuModel.Option option : menu.options()) {
+            String response = option.response();
+            if (response == null || response.length() != 1 || response.charAt(0) != digit) {
+                continue;
+            }
+            if (isTextInputOption(option)) return true;
+        }
+        return false;
     }
 
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
@@ -2790,7 +2834,14 @@ public class ClaudeSessionController {
         char digit = text.charAt(0);
         if (digit < '0' || digit > '9') return;
         ChoiceMenuModel menu = openChoiceMenu();
-        if (menu == null || !digitSelectionDismissesMenu(menu, digit)) return;
+        if (menu == null || !digitSelectionDismissesMenu(menu, digit)) {
+            if (menu != null && digitActivatesTextEditor(menu, digit)) {
+                // The sent digit activated the menu's text editor: the digits
+                // that follow are its text until the poll confirms the focus.
+                terminalMenuTextEditor = menu;
+            }
+            return;
+        }
         completeTerminalMenu(menu);
         terminalGuiTextAnsweredMenu = true;
         if (isConversationPicker(menu)) {
@@ -2885,6 +2936,9 @@ public class ClaudeSessionController {
      * <p>Only a submission recorded by the terminal Enter counts
      * ({@link #terminalGuiSubmitAt}): an Enter that selected a choice menu never
      * submits the panel line, and its text is the menu's answer, not a prompt.
+     * Whether keys typed after that Enter are a new, unsubmitted draft does not
+     * matter: they start a new line, so the text submitted remains exact
+     * ({@link #terminalGuiLineEdited} only captures edits made before it).
      *
      * <p>Publication and the reset share one critical section: input arriving
      * in between would be cleared as if it belonged to the cancelled send.
@@ -2892,16 +2946,15 @@ public class ClaudeSessionController {
     private void discardCancelledGuiSend() {
         synchronized (terminalInputLine) {
             long submittedAt = terminalGuiSubmitAt;
-            if (submittedAt != 0L && !terminalDraftAfterEnter
-                    && !terminalInputSinceGuiSend && pendingGuiPromptSet
+            if (submittedAt != 0L && !terminalGuiLineEdited && pendingGuiPromptSet
                     && promptSubmittedAt <= submittedAt) {
                 // The line the panel text was written to was submitted by that
                 // Enter and nothing edited it: the text is exact evidence. Keys
-                // typed before it (terminalInputSinceGuiSend) or a draft
-                // submitted after it already recorded the submission as unknown
-                // text, which is left in place.
+                // typed before it made the line unknown, and a later terminal
+                // submission already recorded its own evidence; both are left
+                // in place.
                 rememberSentPrompt(pendingGuiPromptText, submittedAt, pendingGuiPromptExact);
-                if (pendingGuiPromptSwitch && !terminalGuiLineEdited) {
+                if (pendingGuiPromptSwitch) {
                     // The command's line was submitted untouched, so it switched.
                     conversationSwitchAt = submittedAt;
                 }
@@ -5088,6 +5141,12 @@ public class ClaudeSessionController {
                         // text accumulated while it was open must not prefix
                         // that prompt's evidence (see the Right-submit path).
                         discardPickerSearchText();
+                    } else if (digitActivatesTextEditor(openMenu, c)) {
+                        // The digit moved the cursor into the menu's text
+                        // editor; the poll reports it only later, so the digits
+                        // typed meanwhile are text for that editor, not
+                        // selections.
+                        terminalMenuTextEditor = openMenu;
                     }
                 } else {
                     insertTerminalChar(c);
