@@ -3173,6 +3173,32 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * An Up/Down arrow moves the half-second-stale menu cursor off the text
+     * editor a digit had activated, and the poll does not report it yet: the
+     * tracked activation must end with the arrow, so the digit naming the
+     * item the user moved to selects it instead of being typed into an editor
+     * that no longer has the focus.
+     */
+    @Test
+    void anArrowLeavingTheActivatedEditorRestoresDigitSelections() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        // The digit activates the editor, then Up moves the cursor back to
+        // the ordinary items before the next poll.
+        controller.simulateTerminalInput(new byte[]{'3'}, START_MS);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 10L);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 20L);
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                        "1hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the digit selects the item the cursor moved to and hello is the next prompt");
+    }
+
+    /**
      * A draft typed after the terminal Enter that submitted the panel line is
      * a new, unsubmitted line: it must not hide the submission when a stop
      * cancels the sender. Otherwise the exact panel text is lost as evidence
@@ -3243,6 +3269,30 @@ class ClaudeSessionControllerTest {
         assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
                         .findSession(work, config, "a").customTitle(),
                 "the launch conversation must keep its name");
+    }
+
+    /**
+     * A sender interrupted by a restart may reach its cleanup only after the
+     * replacement process recorded input. Its generation is stale by then, and
+     * the recorder holds the replacement's state: clearing it would erase the
+     * replacement's draft, so a following panel prompt would be published
+     * without the text the PTY actually submits.
+     */
+    @Test
+    void aCancelledSendDoesNotClearTheReplacementRecordersDraft() {
+        long accepted = controller.simulateProcessGeneration();
+        controller.simulateGuiSend("hello", START_MS);
+
+        controller.stopProcess();
+        controller.simulateTerminalInput(
+                "fresh".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 100L);
+
+        // The interrupted sender's cleanup runs only now.
+        controller.simulateDiscardGuiSend(accepted);
+
+        assertEquals("fresh suffix", controller.simulateGuiSend(" suffix", START_MS + 200L),
+                "the replacement's draft must survive the cancelled send's cleanup");
     }
 
     /**

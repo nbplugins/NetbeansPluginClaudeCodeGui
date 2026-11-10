@@ -2542,6 +2542,14 @@ public class ClaudeSessionController {
         return currentProcessGeneration();
     }
 
+    /**
+     * Package-private for tests: the cleanup a sender of {@code generation}
+     * runs when its send is cancelled or fails, without its thread timing.
+     */
+    void simulateDiscardGuiSend(long generation) {
+        discardGuiSend(generation);
+    }
+
     /** The ownership generation of the run that is live now. */
     private long currentProcessGeneration() {
         synchronized (processOwnershipLock) {
@@ -2737,21 +2745,19 @@ public class ClaudeSessionController {
                 pauseGuiSend();
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
-                if (isProcessGenerationCurrent(sendGeneration)) {
-                    resetTerminalInputRecording(true);
-                }
+                // The partial line is dropped, but only if the recorder still
+                // holds this run's state (see discardGuiSend).
+                discardGuiSend(sendGeneration);
                 return;
             } catch (InterruptedException ie) {
                 // shutdownGuiSendQueue() interrupts the worker. The flag is
                 // not restored: the worker is about to stop, and a stale flag
                 // would make the next queued pause fail immediately.
-                if (isProcessGenerationCurrent(sendGeneration)) {
-                    // A terminal Enter may have submitted the panel line
-                    // during the pause. That submission is real and the
-                    // completion below will not run for it, so it must become
-                    // evidence before the recorder is cleared.
-                    discardCancelledGuiSend();
-                }
+                // A terminal Enter may have submitted the panel line
+                // during the pause. That submission is real and the
+                // completion below will not run for it, so it must become
+                // evidence before the recorder is cleared.
+                discardGuiSend(sendGeneration);
                 return;
             }
             if (!isProcessGenerationCurrent(sendGeneration)) {
@@ -2941,10 +2947,20 @@ public class ClaudeSessionController {
      * ({@link #terminalGuiLineEdited} only captures edits made before it).
      *
      * <p>Publication and the reset share one critical section: input arriving
-     * in between would be cleared as if it belonged to the cancelled send.
+     * in between would be cleared as if it belonged to the cancelled send. The
+     * accepted generation is rechecked inside it for the same reason: a stop
+     * may replace the process while this sender waits for the interrupt to be
+     * delivered, and the recorder then belongs to the replacement, whose draft
+     * must survive.
+     *
+     * @param generation the process generation the cancelled send was accepted for
      */
-    private void discardCancelledGuiSend() {
+    private void discardGuiSend(long generation) {
         synchronized (terminalInputLine) {
+            if (!recorderBelongsTo(generation)) {
+                LOG.fine("sendPrompt cleanup dropped: the recorder was replaced");
+                return;
+            }
             long submittedAt = terminalGuiSubmitAt;
             if (submittedAt != 0L && !terminalGuiLineEdited && pendingGuiPromptSet
                     && promptSubmittedAt <= submittedAt) {
@@ -5220,7 +5236,14 @@ public class ClaudeSessionController {
                 // open the same keys move its cursor instead — the line stays
                 // empty too, but Enter selects a menu item rather than a
                 // recalled prompt, so it must not be recorded as a submission.
-                if (terminalInputLine.isEmpty() && openChoiceMenu() == null) {
+                ChoiceMenuModel menu = openChoiceMenu();
+                if (menu != null) {
+                    // The cursor may have left the text editor a digit had
+                    // activated. The model's index stays stale until the poll,
+                    // so the tracked activation no longer proves the editor is
+                    // active: digits are ordinary selections again.
+                    terminalMenuTextEditor = null;
+                } else if (terminalInputLine.isEmpty()) {
                     terminalHistoryRecall = true;
                 }
             }
