@@ -3296,6 +3296,87 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Arrows can also enter a text editor: two Downs from the first item land
+     * on `Type something.`, and the poll does not report it yet. The digits
+     * typed in that window belong to the editor, so they must not retire the
+     * menu and turn the rest of the answer into prompt evidence.
+     */
+    @Test
+    void arrowsEnteringTheEditorMakeTheFollowingDigitsItsText() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'B'}, START_MS + 10L);
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'B'}, START_MS + 20L);
+
+        assertNull(controller.simulateTerminalInput(
+                        "1feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the cursor is in the editor the arrows reached; the answer is not a prompt");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
+    }
+
+    /**
+     * A sender blocked in a native write to a hung process cannot be released
+     * by interrupting its thread, and Save & Switch waits for it on the EDT.
+     * The PTY child is killed before the wait, so the write returns and the
+     * stop completes instead of freezing the IDE.
+     */
+    @Test
+    void stopAndRenameUnblocksAWriteStuckOnAHungProcess() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateActiveSession(config, "a", Set.of("a"));
+
+        CountDownLatch writing = new CountDownLatch(1);
+        CountDownLatch released = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            writing.countDown();
+            // A hung process never drains the pipe: the interrupt that
+            // cancels the queue does not end this write.
+            while (true) {
+                try {
+                    released.await();
+                    return;
+                } catch (InterruptedException ignored) {
+                    // the native write ignores it too
+                }
+            }
+        });
+        // Only killing the child releases the blocked write.
+        controller.simulatePtyKill(released::countDown);
+        controller.simulateQueueGuiSend("delayed words",
+                () -> START_MS + 10L, () -> START_MS + 20L);
+        assertTrue(writing.await(5, TimeUnit.SECONDS), "the send must reach its write");
+
+        java.util.concurrent.ExecutorService stopper =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<?> stopped = stopper.submit(
+                    () -> controller.stopAndRename("Closed Name"));
+            stopped.get(10, TimeUnit.SECONDS);
+        } finally {
+            released.countDown();
+            stopper.shutdownNow();
+            controller.stopProcess();
+        }
+
+        assertEquals("Closed Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the stop completes and still names the launched session");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as

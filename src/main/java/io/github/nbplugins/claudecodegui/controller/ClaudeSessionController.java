@@ -103,6 +103,9 @@ public class ClaudeSessionController {
     private volatile ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
     private volatile java.util.function.Consumer<byte[]> ptyWriteHook;
+
+    /** Package-private for tests: runs whenever the PTY child is killed. */
+    private volatile Runnable ptyKillHook;
     private volatile java.util.function.Consumer<PtyTtyConnector> ptyTargetHook;
     private java.io.File workingDir;
     private volatile JediTermWidget terminalWidget;
@@ -486,15 +489,23 @@ public class ClaudeSessionController {
     private boolean terminalGuiLineEdited;
 
     /**
-     * The menu whose text-input option a typed or sent digit activated, while
-     * the screen poll has not yet reported the cursor on that editor. Until it
-     * does, {@link ChoiceMenuModel#defaultOptionIndex()} still names the
-     * previous option, and a digit naming an ordinary option would otherwise
-     * retire the menu although it is text for the editor. Compared by identity,
-     * so a menu instance published by a newer poll no longer matches; cleared
-     * when the menu is completed. Guarded by {@link #terminalInputLine}.
+     * The choice menu whose cursor the terminal input has moved since the
+     * screen poll last reported its position, and the option it now sits on.
+     *
+     * <p>The poll is what normally moves {@link ChoiceMenuModel#defaultOptionIndex()},
+     * so between polls it names the previous option. A digit activates a
+     * text-input option and an Up/Down arrow steps through the items, and both
+     * happen without a poll in between: a digit naming an ordinary option must
+     * not retire the menu while the cursor is in an editor, and an arrow that
+     * left one must let the next digit select an item again. Compared by
+     * identity, so a menu instance published by a newer poll takes over;
+     * cleared when the menu is completed. Guarded by
+     * {@link #terminalInputLine}.
      */
-    private ChoiceMenuModel terminalMenuTextEditor;
+    private ChoiceMenuModel terminalMenuFocusOwner;
+
+    /** The tracked cursor position in {@link #terminalMenuFocusOwner}. */
+    private int terminalMenuFocusIndex = -1;
 
     /**
      * True between a GUI send's prompt write and the Enter that submits it:
@@ -1094,6 +1105,23 @@ public class ClaudeSessionController {
     public boolean canSendPrompt() { return connector != null; }
 
     /**
+     * Kills the PTY child process, if one is running.
+     *
+     * <p>Closes the child's end of the PTY, which is the only thing that can
+     * release a writer blocked in the native layer: a hung or non-reading
+     * process never drains the pipe, and interrupting the writing thread does
+     * not interrupt a native {@code OutputStream.write()}.
+     */
+    private void killPtyProcess() {
+        ClaudeProcess processToStop = claudeProcess;
+        if (processToStop != null) {
+            processToStop.killOnly();
+        }
+        Runnable hook = ptyKillHook;
+        if (hook != null) hook.run();
+    }
+
+    /**
      * Kills the PTY process and detaches the terminal, but keeps the identity
      * inputs so the conversation that was on screen can still be resolved
      * after the writer is gone.
@@ -1107,10 +1135,7 @@ public class ClaudeSessionController {
         if (connector != null) {
             connector.setLineListener(null);
         }
-        ClaudeProcess processToStop = claudeProcess;
-        if (processToStop != null) {
-            processToStop.killOnly();
-        }
+        killPtyProcess();
         connector = null;
     }
 
@@ -1187,6 +1212,12 @@ public class ClaudeSessionController {
             // below matches. Cancel the queue first and wait for a send that is
             // already completing, so the snapshot is taken after it — or after
             // its cancellation — instead of racing with it.
+            // A sender may be blocked in a native write to a hung or
+            // non-reading process, and interrupting its thread does not
+            // release that write. Kill the child first, which closes its end
+            // of the PTY and unblocks the write, or the wait below (on the
+            // EDT) could last forever.
+            killPtyProcess();
             shutdownGuiSendQueue();
             synchronized (guiSendLock) {
                 sessionId = resolveActiveSessionId();
@@ -2116,8 +2147,36 @@ public class ClaudeSessionController {
     private void completeTerminalMenu(ChoiceMenuModel menu) {
         if (menu != null) {
             terminalCompletedMenu = menu;
-            if (terminalMenuTextEditor == menu) terminalMenuTextEditor = null;
+            if (terminalMenuFocusOwner == menu) {
+                terminalMenuFocusOwner = null;
+                terminalMenuFocusIndex = -1;
+            }
         }
+    }
+
+    /**
+     * Returns the option a choice menu's cursor sits on: the position the
+     * terminal input moved it to, if it moved since the last screen poll, or
+     * the poll's report otherwise. Call while holding the
+     * {@link #terminalInputLine} lock.
+     */
+    private int focusedMenuOption(ChoiceMenuModel menu) {
+        if (menu == terminalMenuFocusOwner
+                && terminalMenuFocusIndex >= 0
+                && terminalMenuFocusIndex < menu.options().size()) {
+            return terminalMenuFocusIndex;
+        }
+        return menu.defaultOptionIndex();
+    }
+
+    /**
+     * Records that the terminal input moved {@code menu}'s cursor to
+     * {@code index}, which the next screen poll will confirm. Call while
+     * holding the {@link #terminalInputLine} lock.
+     */
+    private void trackMenuFocus(ChoiceMenuModel menu, int index) {
+        terminalMenuFocusOwner = menu;
+        terminalMenuFocusIndex = index;
     }
 
     /**
@@ -2157,22 +2216,16 @@ public class ClaudeSessionController {
      * see {@code writePtyAnswer}). Retiring the menu then would record the rest
      * of the answer as a submitted prompt.
      *
-     * <p>The activation a digit performs is tracked separately
-     * ({@link #terminalMenuTextEditor}): the screen poll is what moves the
-     * cursor onto the editor, so the menu still reports the previous focus for
-     * every digit typed before it, and those digits are text for the editor all
-     * the same.
+     * <p>The cursor the terminal input moved ({@link #focusedMenuOption}) is
+     * what counts: the screen poll is what updates the model's index, so every
+     * digit and arrow typed before it must be classified against the position
+     * they left the cursor at.
      *
      * <p>Call while holding the {@link #terminalInputLine} lock.
      */
     private boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
         if (menu.options().isEmpty()) return false;
-        if (menu == terminalMenuTextEditor) {
-            // A digit typed earlier activated this menu's editor and the poll
-            // has not confirmed the focus yet: printed digits are its text.
-            return false;
-        }
-        int focused = menu.defaultOptionIndex();
+        int focused = focusedMenuOption(menu);
         if (focused >= 0 && focused < menu.options().size()
                 && isTextInputOption(menu.options().get(focused))) {
             // The cursor sits in a text editor: the digit is input for it, so
@@ -2198,20 +2251,20 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Returns whether the digit {@code digit} activates the text editor of
-     * {@code menu} instead of selecting an item: that is what a digit naming a
-     * text-input option does. Call while holding the
-     * {@link #terminalInputLine} lock.
+     * Returns the index of the text-input option that the digit {@code digit}
+     * activates instead of selecting an item, or {@code -1} when the digit
+     * names none. Call while holding the {@link #terminalInputLine} lock.
      */
-    private static boolean digitActivatesTextEditor(ChoiceMenuModel menu, char digit) {
-        for (ChoiceMenuModel.Option option : menu.options()) {
+    private static int activatedTextEditor(ChoiceMenuModel menu, char digit) {
+        for (int i = 0; i < menu.options().size(); i++) {
+            ChoiceMenuModel.Option option = menu.options().get(i);
             String response = option.response();
             if (response == null || response.length() != 1 || response.charAt(0) != digit) {
                 continue;
             }
-            if (isTextInputOption(option)) return true;
+            if (isTextInputOption(option)) return i;
         }
-        return false;
+        return -1;
     }
 
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
@@ -2841,10 +2894,11 @@ public class ClaudeSessionController {
         if (digit < '0' || digit > '9') return;
         ChoiceMenuModel menu = openChoiceMenu();
         if (menu == null || !digitSelectionDismissesMenu(menu, digit)) {
-            if (menu != null && digitActivatesTextEditor(menu, digit)) {
+            int activated = menu != null ? activatedTextEditor(menu, digit) : -1;
+            if (activated >= 0) {
                 // The sent digit activated the menu's text editor: the digits
                 // that follow are its text until the poll confirms the focus.
-                terminalMenuTextEditor = menu;
+                trackMenuFocus(menu, activated);
             }
             return;
         }
@@ -4792,6 +4846,14 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Package-private for tests: runs when the PTY child is killed, so a test
+     * can release a write it made block as a hung process would.
+     */
+    void simulatePtyKill(Runnable hook) {
+        ptyKillHook = hook;
+    }
+
+    /**
      * Package-private for tests: receives the PTY connector each plugin write
      * was bound to, or {@code null} when the write was dropped. Written to
      * before the bytes, so a test can tell the accepted process from the
@@ -5157,12 +5219,15 @@ public class ClaudeSessionController {
                         // text accumulated while it was open must not prefix
                         // that prompt's evidence (see the Right-submit path).
                         discardPickerSearchText();
-                    } else if (digitActivatesTextEditor(openMenu, c)) {
-                        // The digit moved the cursor into the menu's text
-                        // editor; the poll reports it only later, so the digits
-                        // typed meanwhile are text for that editor, not
-                        // selections.
-                        terminalMenuTextEditor = openMenu;
+                    } else {
+                        int activated = activatedTextEditor(openMenu, c);
+                        if (activated >= 0) {
+                            // The digit moved the cursor into the menu's text
+                            // editor; the poll reports it only later, so the
+                            // digits typed meanwhile are text for that editor,
+                            // not selections.
+                            trackMenuFocus(openMenu, activated);
+                        }
                     }
                 } else {
                     insertTerminalChar(c);
@@ -5238,11 +5303,16 @@ public class ClaudeSessionController {
                 // recalled prompt, so it must not be recorded as a submission.
                 ChoiceMenuModel menu = openChoiceMenu();
                 if (menu != null) {
-                    // The cursor may have left the text editor a digit had
-                    // activated. The model's index stays stale until the poll,
-                    // so the tracked activation no longer proves the editor is
-                    // active: digits are ordinary selections again.
-                    terminalMenuTextEditor = null;
+                    // The arrow moves the menu's cursor and the poll reports it
+                    // only later. Track where it lands: leaving a text editor
+                    // lets the next digit select an item again, and entering
+                    // one makes the digits text for it.
+                    int size = menu.options().size();
+                    if (size > 0) {
+                        int focused = focusedMenuOption(menu);
+                        if (focused < 0 || focused >= size) focused = 0;
+                        trackMenuFocus(menu, Math.floorMod(focused + (key == 'A' ? -1 : 1), size));
+                    }
                 } else if (terminalInputLine.isEmpty()) {
                     terminalHistoryRecall = true;
                 }
