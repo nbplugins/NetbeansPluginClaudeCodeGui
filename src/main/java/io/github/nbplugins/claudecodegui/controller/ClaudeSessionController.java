@@ -635,9 +635,16 @@ public class ClaudeSessionController {
     void simulateSendPrompt(String text, java.util.function.LongSupplier writeClock,
                             java.util.function.LongSupplier enterClock, Runnable pause)
             throws IOException {
+        long sendGeneration = currentProcessGeneration();
         synchronized (guiSendLock) {
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                return;
+            }
             writeGuiPrompt(text, writeClock);
             pause.run();
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                return;
+            }
             completeGuiSend(enterClock);
         }
     }
@@ -2275,8 +2282,24 @@ public class ClaudeSessionController {
 
     /** Package-private for tests: the ownership generation of the current run. */
     long simulateProcessGeneration() {
+        return currentProcessGeneration();
+    }
+
+    /** The ownership generation of the run that is live now. */
+    private long currentProcessGeneration() {
         synchronized (processOwnershipLock) {
             return processGeneration;
+        }
+    }
+
+    /**
+     * Whether {@code generation} is still the live run. A panel send carries
+     * the generation it was accepted for, so a restart in the meantime cancels
+     * its remaining writes instead of delivering them to the new process.
+     */
+    private boolean isProcessGenerationCurrent(long generation) {
+        synchronized (processOwnershipLock) {
+            return generation == processGeneration;
         }
     }
 
@@ -2315,12 +2338,21 @@ public class ClaudeSessionController {
             model.addPromptToHistory(text);
         }
 
+        // The prompt is accepted for the run that is live now: a restart while
+        // this send waits for its turn (or during its pause) must not deliver
+        // it to the replacement process, where it would execute in a
+        // conversation the user never typed it for.
+        long sendGeneration = currentProcessGeneration();
         Thread t = new Thread(() -> {
             // One send at a time: the panel accepts another send while the
             // previous one is still waiting for its Enter, and its
             // reconciliation would replace the pending evidence of a line
             // that is still open in the TUI.
             synchronized (guiSendLock) {
+                if (!isProcessGenerationCurrent(sendGeneration)) {
+                    LOG.fine("sendPrompt dropped: the session was restarted");
+                    return;
+                }
                 try {
                     // Reconciliation and the text write run as one step under
                     // the recorder's lock: an Enter arriving in between would
@@ -2331,11 +2363,24 @@ public class ClaudeSessionController {
                     Thread.sleep(200);
                 } catch (IOException ex) {
                     LOG.warning("sendPrompt write failed: " + ex.getMessage());
-                    resetTerminalInputRecording(true);
+                    if (isProcessGenerationCurrent(sendGeneration)) {
+                        resetTerminalInputRecording(true);
+                    }
                     return;
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    resetTerminalInputRecording(true);
+                    if (isProcessGenerationCurrent(sendGeneration)) {
+                        resetTerminalInputRecording(true);
+                    }
+                    return;
+                }
+                if (!isProcessGenerationCurrent(sendGeneration)) {
+                    // The tab was restarted after the text had already been
+                    // written: this Enter would submit it to the replacement
+                    // process's line instead of closing the old one. The
+                    // recorder now belongs to the new run, so it is not reset
+                    // here either.
+                    LOG.fine("sendPrompt Enter dropped: the session was restarted");
                     return;
                 }
                 completeGuiSend();
@@ -2553,7 +2598,17 @@ public class ClaudeSessionController {
                 // reconciliation reset the recall/completion flags, so the
                 // line it saw was empty — the pending submission is published
                 // here instead, unknown-text or not.
-                if (edited) {
+                boolean laterSubmission = guiSubmitAt != 0L
+                        && promptSubmittedAt > guiSubmitAt;
+                if (laterSubmission) {
+                    // A line typed after that Enter was submitted from the
+                    // terminal itself before this Enter arrived: its text is
+                    // fully recorded (the terminal Enter cleared the recorder)
+                    // and it describes the newest submission. This Enter now
+                    // submits an empty line, so that evidence must be kept
+                    // instead of being cleared as an edit of the panel line.
+                    // The scan was scheduled when that submission was seen.
+                } else if (edited) {
                     lastPromptText = null;
                 } else if (pendingSet) {
                     rememberSentPrompt(pendingText,
@@ -4333,12 +4388,19 @@ public class ClaudeSessionController {
                 boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
                 ChoiceMenuModel openMenu = openChoiceMenu();
                 boolean onMenu = openMenu != null;
+                // Enter on a choice menu selects an item instead of
+                // submitting the line, so only the first other Enter is the
+                // one that submits the line the panel text was written to.
+                // Later ones submit fresh lines of their own and are recorded
+                // in full.
+                boolean firstSubmissionAfterGuiSend = guiSendAwaitingEnter
+                        && !onMenu && terminalGuiSubmitAt == 0L;
                 // Keys typed during the GUI send's pause edited the line the
                 // panel text was written to, but the recorder holds none of
                 // that text: what this Enter submits is unknown even when the
                 // recorded line is empty (a Backspace on it deletes a
                 // character of the panel text).
-                boolean gapEdited = guiSendAwaitingEnter && terminalInputSinceGuiSend;
+                boolean gapEdited = firstSubmissionAfterGuiSend && terminalInputSinceGuiSend;
                 terminalEnterSinceGuiSend = true;
                 terminalHistoryRecall = false;
                 terminalCompletionEdited = false;
@@ -4371,7 +4433,7 @@ public class ClaudeSessionController {
                     // With a choice menu open Enter selects an item instead of
                     // submitting the line: what was typed there is the picker's
                     // search filter, not a prompt.
-                    if (guiSendAwaitingEnter) {
+                    if (firstSubmissionAfterGuiSend) {
                         // A prompt sent from the panel is already written on
                         // the TUI's line: this Enter submits it together with
                         // the recorded text, which is only a part of the
@@ -4380,6 +4442,8 @@ public class ClaudeSessionController {
                         // the partial text before the panel's Enter is sent.
                         terminalRecalledSubmission = true;
                     } else {
+                        // Anything typed after that submission starts a new
+                        // line the recorder has in full, so it is known text.
                         submitted = line;
                     }
                 }

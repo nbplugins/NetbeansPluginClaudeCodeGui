@@ -4303,6 +4303,73 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A send queued behind another one belongs to the run that accepted it. If
+     * the tab is restarted while it waits, it must not write the prompt through
+     * the replacement process's connector, where it would execute in a
+     * conversation the user did not type it for. Once the first send's text
+     * went to the closed process, its delayed Enter must not be delivered to
+     * the replacement either.
+     */
+    @Test
+    void aQueuedGuiSendIsDroppedWhenTheTabRestartsBeforeItWrites() throws Exception {
+        List<String> writes = Collections.synchronizedList(new ArrayList<>());
+        controller.simulatePtyWrite(bytes -> writes.add(
+                new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch firstPaused = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        Thread first = new Thread(() -> {
+            try {
+                controller.simulateSendPrompt("hello", () -> START_MS,
+                        () -> START_MS + 200L, () -> {
+                            firstPaused.countDown();
+                            try {
+                                releaseFirst.await(5, TimeUnit.SECONDS);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        });
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        }, "first-gui-send");
+        first.start();
+        assertTrue(firstPaused.await(5, TimeUnit.SECONDS),
+                "the first text must be written");
+
+        Thread second = new Thread(() -> {
+            try {
+                controller.simulateSendPrompt("world", () -> START_MS + 50L,
+                        () -> START_MS + 250L, () -> { });
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        }, "second-gui-send");
+        second.start();
+        // BLOCKED means the sender has already captured the generation it was
+        // accepted for and is waiting for the first send to release the lock.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (second.getState() != Thread.State.BLOCKED
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10L);
+        }
+        assertEquals(Thread.State.BLOCKED, second.getState(),
+                "the second send must be queued behind the first one");
+
+        // The user stops the session and starts another one while both sends
+        // are still open.
+        controller.stopProcess();
+        releaseFirst.countDown();
+        first.join(5_000L);
+        second.join(5_000L);
+
+        assertNull(failure.get(), "the sends must not fail");
+        assertEquals(List.of("hello"), writes,
+                "neither the queued prompt nor a stale Enter may reach the replacement process");
+    }
+
+    /**
      * Text typed during the pause and then submitted by the terminal Enter is
      * only a part of the line (the panel text is not in the recorder), so the
      * text becomes unknown while the first submission's time is kept.
@@ -4321,6 +4388,32 @@ class ClaudeSessionControllerTest {
                 "the recorded text is only a part of the submitted line");
         assertEquals(START_MS + 100L, controller.simulatePromptSubmittedAtValue(),
                 "the terminal Enter's time is the submission time");
+    }
+
+    /**
+     * Once a terminal Enter has submitted the panel line during the pause, the
+     * next line typed in the terminal is recorded in full: its submission must
+     * keep its text instead of being reported as a part of the panel line, and
+     * the panel's delayed Enter must not clear that evidence either.
+     */
+    @Test
+    void textSubmittedAfterTheGapEnterStaysKnown() {
+        controller.simulateGuiSend("hello", START_MS);
+        // The user submits the panel line from the terminal before the
+        // panel's own Enter is written.
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 50L);
+
+        assertEquals("next", controller.simulateTerminalInput(
+                        "next\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the line typed on the fresh line is recorded in full");
+
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertEquals("next", controller.simulateLastPromptText(),
+                "the panel's Enter must not clear the newer submission's text");
+        assertEquals(START_MS + 100L, controller.simulatePromptSubmittedAtValue(),
+                "the newer submission keeps its own time");
     }
 
     /** Clearing the input with Ctrl+U discards a recalled prompt: the next text is known. */
