@@ -2901,6 +2901,64 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Two tabs resumed the same saved conversation {@code a}: the first owns
+     * it, so the second only borrows it even though {@code --resume} named that
+     * file. Stopping the second tab without submitting a prompt releases the
+     * borrowed hold, and the final lookup must still keep the launch
+     * conversation — an unrelated conversation written since the launch must
+     * not take the rename just because it is unheld.
+     */
+    @Test
+    void aStoppingTabKeepsTheLaunchConversationItOnlyBorrows() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "noise", "noise");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS - 5_000L);
+
+        // The first tab owns the saved conversation.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+        // The second tab resumed the same conversation and so only borrows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList) {
+                    @Override
+                    void stopWriter() {
+                        super.stopWriter();
+                        // The exit waiter releases this tab's claims while the
+                        // writer shuts down, before the final lookup runs.
+                        simulateProcessExit();
+                    }
+                };
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+        // An unrelated conversation is written after the launch but stays
+        // older than the launch conversation.
+        appendUserPrompt(dir, "noise", "unrelated work", START_MS + 10_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS + 11_000L);
+        appendUserPrompt(dir, "a", "from the first tab", START_MS + 11_500L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 12_000L);
+
+        tabB.stopAndRename("Shared Name");
+
+        assertEquals("Shared Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation is renamed, not a newer unrelated file");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "noise").customTitle(),
+                "the unrelated conversation must keep its name");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as
@@ -4537,6 +4595,28 @@ class ClaudeSessionControllerTest {
                 "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 START_MS + 1L),
                 "the menu selection must not prefix the submitted prompt");
+    }
+
+    /**
+     * A numbered menu can offer a free-text option recognised only by its
+     * label ({@code "Type something."}): the digit activates that option's
+     * editor instead of answering the menu, so the menu stays open and the
+     * text typed next is the menu's answer, not a submitted prompt.
+     */
+    @Test
+    void aDigitOnALabelTypedTextOptionDoesNotDismissTheMenu() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        controller.simulateTerminalInput(new byte[]{'3'}, START_MS);
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the answer to a text menu is not a submitted prompt");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
     }
 
     /**

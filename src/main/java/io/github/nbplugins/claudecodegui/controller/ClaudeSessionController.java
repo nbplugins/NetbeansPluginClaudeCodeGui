@@ -2029,7 +2029,9 @@ public class ClaudeSessionController {
      * list) uses digits as search text and stays open, and a checkbox or
      * text-input menu only moves to an option on a digit, waiting for its
      * submit key — retiring those on the first digit would turn the search
-     * text into prompt evidence.
+     * text into prompt evidence. A text-input option is recognised by its flag
+     * or by its label ({@code "Type something."}), like everywhere else in the
+     * answer protocol: the digit only activates its editor.
      */
     private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu) {
         if (menu.options().isEmpty()) return false;
@@ -2040,7 +2042,7 @@ public class ClaudeSessionController {
                 char c = response.charAt(i);
                 if (c < '0' || c > '9') return false;
             }
-            if (option.hasCheckbox() || option.hasTextInput()) return false;
+            if (option.hasCheckbox() || isTextInputOption(option)) return false;
         }
         return true;
     }
@@ -2231,7 +2233,11 @@ public class ClaudeSessionController {
      * <p>A held conversation that this controller only borrowed (another live
      * tab established it or was writing it first) is another tab's file and is
      * not included: preserving it as this tab's own would let it win the final
-     * post-stop lookup over the file this tab actually created.
+     * post-stop lookup over the file this tab actually created. The launch
+     * conversation is the exception: a tab that resumed a saved file another
+     * live tab had already claimed only borrows it, yet that file is still the
+     * conversation this tab was opened on, and its rename must target it — a
+     * merely guessed borrowed file stays excluded.
      */
     Set<String> claimedSessionIds(java.io.File dir, java.nio.file.Path configDir) {
         Set<String> ids = new HashSet<>();
@@ -2242,11 +2248,24 @@ public class ClaudeSessionController {
             if (key.configDir().equals(wantedConfig)
                     && key.projectDir().equals(wantedProject)
                     && claims.holders.contains(this)
-                    && !claims.borrowed.contains(this)) {
+                    && (!claims.borrowed.contains(this)
+                        || isLaunchIdentity(key.sessionId()))) {
                 ids.add(key.sessionId());
             }
         });
         return ids;
+    }
+
+    /**
+     * Returns whether {@code sessionId} is the conversation this tab launched
+     * on with {@code --continue}/{@code --resume}. Such a conversation is this
+     * tab's own even when another live tab claimed it first and this tab is
+     * therefore only a borrower: the file is not a guess made from matching
+     * prompt text.
+     */
+    private boolean isLaunchIdentity(String sessionId) {
+        return launchIdentityKnown && launchSessionId != null
+                && launchSessionId.equals(sessionId);
     }
 
     /**
