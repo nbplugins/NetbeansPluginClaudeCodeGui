@@ -535,6 +535,30 @@ class ClaudeSessionStoreTest {
     }
 
     /**
+     * A user message can be split into several text blocks. Only the whole
+     * textual message is the prompt: accepting an individual block that
+     * matches would let a longer unrelated message look like this tab's
+     * prompt.
+     */
+    @Test
+    void containsUserPromptSince_requiresTheWholeMessageAcrossBlocks() throws IOException {
+        Path workDir = tmpDir.resolve("myproject");
+        Path sessionDir = createSessionDir(tmpDir, workDir);
+        writeJsonl(sessionDir.resolve("s1.jsonl"),
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":["
+                        + "{\"type\":\"text\",\"text\":\"continue\"},"
+                        + "{\"type\":\"text\",\"text\":\"and run the deployment\"}]},"
+                        + "\"timestamp\":\"" + OLD_TS.plusSeconds(60) + "\"}");
+
+        assertFalse(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "continue"),
+                "a block of a longer message is not the whole prompt");
+        assertTrue(ClaudeSessionStore.containsUserPromptSince(workDir, tmpDir, "s1",
+                OLD_TS.toEpochMilli(), "continue\nand run the deployment"),
+                "the whole textual message is the prompt");
+    }
+
+    /**
      * Claude stores tool results as {@code type: "user"} records while it
      * works. A sibling tab finishing a tool must not look like a human prompt
      * submitted in this tab.

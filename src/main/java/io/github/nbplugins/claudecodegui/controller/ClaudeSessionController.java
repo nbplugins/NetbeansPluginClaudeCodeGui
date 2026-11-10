@@ -259,16 +259,19 @@ public class ClaudeSessionController {
 
     /**
      * Session IDs this tab established or guessed as its own before it stopped
-     * its writer, kept eligible for the final post-stop identity lookup of
+     * its writer — or before its process exited on its own while the tab stayed
+     * open — kept eligible for the final post-stop identity lookup of
      * {@link #stopAndRename(String)}. Stopping the PTY runs the exit callback,
      * which releases this tab's live claims; without the preserved evidence
      * this tab's own conversation would then look like another live tab's file
      * (or like a file established by another tab) and the lookup could pick an
      * unrelated conversation.
      *
-     * <p>A conversation the tab only borrowed is not listed: it belongs to
-     * another live tab, and preserving it would make the borrowed file win over
-     * the file this tab actually created.
+     * <p>A conversation the tab only borrowed is not listed by the stop-time
+     * snapshot: it belongs to another live tab, and preserving it would make the
+     * borrowed file win over the file this tab actually created. The exit-time
+     * snapshot does carry a borrowed launch conversation: the borrow ends with
+     * the process, and the tab still has to rename the file it was launched on.
      */
     private volatile Set<String> preservedClaims = Set.of();
 
@@ -1129,8 +1132,11 @@ public class ClaudeSessionController {
             // callback releases this tab's claims, so the conversations it
             // established or guessed as its own are carried over explicitly.
             // A borrowed conversation is another live tab's file and stays
-            // eligible to that tab instead.
-            Set<String> held = claimedSessionIds(dir, configDir);
+            // eligible to that tab instead. A process that quit on its own
+            // before this call already released the claims and left the
+            // conversations it held in preservedClaims: they count the same.
+            Set<String> held = new HashSet<>(preservedClaims);
+            held.addAll(claimedSessionIds(dir, configDir));
             stopWriter();
             sessionId = resolveIdentityWithPreservedClaims(held);
         }
@@ -2395,8 +2401,20 @@ public class ClaudeSessionController {
     private void onProcessExited(long generation) {
         synchronized (processOwnershipLock) {
             if (generation != processGeneration) return;
+            // The tab stays open after Claude quits on its own, and Save &
+            // Switch can still rename the conversation that was on screen. The
+            // claims are about to be released, so the conversations they held
+            // are carried into that later lookup; a borrowed conversation that
+            // is not the launch identity stays eligible to its owner.
+            java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+            Set<String> held = claimedSessionIds(dir, activeConfigDir);
             LIVE_SESSIONS.remove(this);
             releaseAllClaims();
+            if (!held.isEmpty()) {
+                Set<String> merged = new HashSet<>(preservedClaims);
+                merged.addAll(held);
+                preservedClaims = Set.copyOf(merged);
+            }
         }
     }
 

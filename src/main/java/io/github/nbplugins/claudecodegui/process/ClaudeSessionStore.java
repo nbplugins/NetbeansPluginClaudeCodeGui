@@ -505,11 +505,14 @@ public final class ClaudeSessionStore {
             if (content == null) return false;
             if (content.isTextual()) return isSamePrompt(content.asText(), prompt);
             if (content.isArray()) {
+                // The whole textual message is the prompt: a message split
+                // into several blocks is longer than any one of them, and
+                // accepting a single matching block would make a longer
+                // unrelated message look like this tab's prompt.
                 StringBuilder joined = new StringBuilder();
                 for (JsonNode block : content) {
                     String text = textOfBlock(block);
                     if (text == null) continue;
-                    if (isSamePrompt(text, prompt)) return true;
                     if (joined.length() > 0) joined.append('\n');
                     joined.append(text);
                 }

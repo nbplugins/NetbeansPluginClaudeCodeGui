@@ -2959,6 +2959,59 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The PTY can exit on its own (Claude quit or crashed) while the tab stays
+     * open, and the user then closes it with a new name. The exit callback has
+     * already released this tab's claims, so a conversation it only borrowed is
+     * no longer evidence by the time Save &amp; Switch resolves the target: it
+     * must be carried over from the exit, or an unrelated unheld file takes the
+     * rename just because it is newer.
+     */
+    @Test
+    void aTabWhoseProcessExitedKeepsItsLaunchConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "noise", "noise");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS - 5_000L);
+
+        // The first tab owns the saved conversation.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+        // The second tab resumed the same conversation and so only borrows it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a", "noise"));
+
+        // An unrelated conversation is written after the launch but stays
+        // older than the launch conversation.
+        appendUserPrompt(dir, "noise", "unrelated work", START_MS + 10_000L);
+        setMtime(dir.resolve("noise.jsonl"), START_MS + 11_000L);
+        appendUserPrompt(dir, "a", "from the first tab", START_MS + 11_500L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 12_000L);
+
+        // Claude quits on its own while the tab stays open.
+        tabB.simulateProcessExit();
+
+        tabB.stopAndRename("Shared Name");
+
+        assertEquals("Shared Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation is renamed, not a newer unrelated file");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "noise").customTitle(),
+                "the unrelated conversation must keep its name");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as
