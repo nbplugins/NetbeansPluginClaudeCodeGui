@@ -4692,6 +4692,29 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A digit that names no item selects nothing: the TUI keeps the menu open,
+     * so the recorder must not retire it — otherwise the text typed next is
+     * recorded as prompt evidence instead of staying a menu answer.
+     */
+    @Test
+    void aDigitThatNamesNoMenuOptionDoesNotDismissTheMenu() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Pick one", List.of(
+                new ChoiceMenuModel.Option("Yes", "1"),
+                new ChoiceMenuModel.Option("No", "2")), 0));
+
+        controller.simulateTerminalInput(new byte[]{'9'}, START_MS);
+        // The next digit selects: the menu closes and its text is discarded.
+        controller.simulateTerminalInput(new byte[]{'1'}, START_MS + 50L);
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                        "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "a digit naming no option must not retire the menu");
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the terminal prompt becomes the evidence");
+    }
+
+    /**
      * A checkbox menu's free-text option is answered with the text, Up, then
      * Right, which submits the menu. The text belongs to the menu answer, not
      * to the prompt typed after it, and the Right must retire the menu the

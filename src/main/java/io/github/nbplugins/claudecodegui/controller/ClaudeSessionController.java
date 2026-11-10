@@ -2059,9 +2059,12 @@ public class ClaudeSessionController {
      * <p>The digit's own option decides. A menu can mix ordinary items with a
      * text-input one: selecting an ordinary item still closes the TUI menu, so
      * the menu must be retired only when the selected option is not text input.
+     * A digit that names no option selects nothing at all — the TUI keeps the
+     * menu open — so it must not retire the menu either.
      */
     private static boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
         if (menu.options().isEmpty()) return false;
+        boolean matched = false;
         for (ChoiceMenuModel.Option option : menu.options()) {
             String response = option.response();
             if (response == null || response.isEmpty()) return false;
@@ -2069,13 +2072,14 @@ public class ClaudeSessionController {
                 char c = response.charAt(i);
                 if (c < '0' || c > '9') return false;
             }
-            if (response.length() == 1 && response.charAt(0) == digit
-                    && (option.hasCheckbox() || isTextInputOption(option))) {
+            if (response.length() != 1 || response.charAt(0) != digit) continue;
+            if (option.hasCheckbox() || isTextInputOption(option)) {
                 // The digit only activates this option's editor or toggles it.
                 return false;
             }
+            matched = true;
         }
-        return true;
+        return matched;
     }
 
     /** Package-private for tests: the PTY is no longer running (Claude exited). */
