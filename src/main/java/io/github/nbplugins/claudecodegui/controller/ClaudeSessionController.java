@@ -463,6 +463,14 @@ public class ClaudeSessionController {
     private boolean guiSendAwaitingEnter;
 
     /**
+     * Set when a choice menu answered from the terminal consumed the line a
+     * GUI send had written: that text was the menu's search filter or answer,
+     * not a prompt, so the panel's delayed Enter must not publish it as
+     * prompt evidence. Cleared with the rest of the recorder state.
+     */
+    private boolean terminalMenuConsumedGuiSend;
+
+    /**
      * Prompt of a GUI send whose Enter has not been written yet. It must not
      * become own-session evidence before the actual submission: until then the
      * process has written nothing, and an identity scan running in the pause
@@ -1655,6 +1663,16 @@ public class ClaudeSessionController {
                 ClaudeSessionStore.listSessionIdsWrittenSince(
                         dir.toPath(), configDir, mtimeCutoff, exclude,
                         PROMPT_EVIDENCE_CANDIDATES));
+        // The known own conversation is checked even when newer unrelated
+        // files fill the limited discovery list: it is still eligible, and
+        // dropping it would let a file carrying the same common prompt text
+        // take over the tab's own identity. Eligibility — not excluded and
+        // written since the cutoff — is the same as for the listed files.
+        if (preferred != null && (exclude == null || !exclude.contains(preferred))
+                && ClaudeSessionStore.sessionFileModified(
+                        dir.toPath(), configDir, preferred) >= mtimeCutoff) {
+            candidates.add(preferred);
+        }
         return findPromptBearingSession(dir, configDir, candidates, preferred, promptAt,
                 promptText);
     }
@@ -1876,8 +1894,7 @@ public class ClaudeSessionController {
      * before the screen poll as another menu answer and swallows it.
      *
      * @param keepCompletedMenu {@code true} to preserve the dismissed-menu
-     *                          marker; process resets and GUI menu answers
-     *                          clear it
+     *                          marker; process resets clear it
      */
     private void resetTerminalInputRecording(boolean keepCompletedMenu) {
         synchronized (terminalInputLine) {
@@ -1900,6 +1917,7 @@ public class ClaudeSessionController {
             terminalDraftAfterEnter = false;
             terminalGuiSubmitAt = 0L;
             guiSendAwaitingEnter = false;
+            terminalMenuConsumedGuiSend = false;
             pendingGuiPromptText = null;
             pendingGuiPromptAt = 0L;
             pendingGuiPromptExact = false;
@@ -2546,6 +2564,39 @@ public class ClaudeSessionController {
             // bytes, and a record written then must still pass the submission
             // cutoff used by the evidence lookup.
             long submittedAt = clock.getAsLong();
+            ChoiceMenuModel openMenu = openChoiceMenu();
+            if (openMenu != null || terminalMenuConsumedGuiSend) {
+                // A choice menu is open on the screen (with the menu hidden,
+                // the prompt panel stays usable): the panel text went into
+                // its search field or answered it, and this Enter selects an
+                // item instead of submitting a prompt. The search filter is
+                // not something the conversation receives, so it must not
+                // become prompt evidence — and the stale model entry must
+                // not classify the input that follows as another menu
+                // answer, or the next real prompt is swallowed.
+                try {
+                    writePty("\r");
+                } catch (IOException ex) {
+                    LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                    resetTerminalInputRecording(true);
+                    return;
+                }
+                if (openMenu != null && !isCheckboxMenu(openMenu)) {
+                    // A numbered picker closes on its selection Enter (a
+                    // checkbox menu only toggles and stays open until Right).
+                    completeTerminalMenu(openMenu);
+                }
+                if (openMenu != null && isConversationPicker(openMenu)) {
+                    // Picking an entry changes the conversation, and the
+                    // search filter says nothing about which one was picked:
+                    // the next submission has to follow the switch. When a
+                    // terminal Enter answered the picker during the pause,
+                    // it already recorded the switch.
+                    conversationSwitchAt = submittedAt;
+                }
+                resetTerminalInputRecording(true);
+                return;
+            }
             try {
                 writePty("\r");
             } catch (IOException ex) {
@@ -2774,8 +2825,14 @@ public class ClaudeSessionController {
     public void writePtyAnswer(String answer) {
         rememberChoiceMenuAnswer(answer);
         // Choosing an option is the GUI consuming the picker: text typed into
-        // its search box belongs to the picker, not to the next prompt.
-        resetTerminalInputRecording();
+        // its search box belongs to the picker, not to the next prompt. The
+        // answered menu stays in the model until the next poll, so it is
+        // retired here with the same marker the terminal path uses — a panel
+        // send in that window must not be mistaken for another menu answer.
+        synchronized (terminalInputLine) {
+            completeTerminalMenu(openChoiceMenu());
+        }
+        resetTerminalInputRecording(true);
         try {
             if (answer == null) {
                 LOG.fine("[PTY write] \\x1b (Cancel/ESC)");
@@ -4196,6 +4253,13 @@ public class ClaudeSessionController {
             terminalMenuSelection = false;
             selectedMenu = terminalSelectedMenu;
             terminalSelectedMenu = null;
+            if (entered && menuSelection && guiSendAwaitingEnter) {
+                // The terminal answered a choice menu while the panel's text
+                // was on the line: that text was the menu's search filter or
+                // its answer, so the delayed GUI Enter must not publish it as
+                // prompt evidence.
+                terminalMenuConsumedGuiSend = true;
+            }
             if (entered && !menuSelection && guiSendAwaitingEnter
                     && terminalGuiSubmitAt == 0L) {
                 // An Enter during the GUI send's pause submits the line the

@@ -4936,6 +4936,103 @@ class ClaudeSessionControllerTest {
         assertEquals("next", controller.simulateLastPromptText(),
                 "the terminal prompt must become the evidence");
     }
+
+    /**
+     * With the menu hidden the prompt panel stays usable while the
+     * {@code /resume} picker is open: the panel text goes into the picker's
+     * search field and the panel's Enter selects an entry instead of
+     * submitting a prompt. The filter must not become prompt evidence, and
+     * the picker it answered must not swallow the next terminal prompt before
+     * the screen poll removes the stale model entry.
+     */
+    @Test
+    void aPanelAnswerToTheOpenPickerIsNotPromptEvidence() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+
+        controller.simulateGuiSend("work", START_MS);
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertNull(controller.simulateLastPromptText(),
+                "the picker's search filter is not a prompt");
+        assertEquals("hello", controller.simulateTerminalInput(
+                        "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 300L),
+                "the answered picker must not swallow the next prompt");
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the terminal prompt becomes the evidence");
+        assertEquals(START_MS + 300L, controller.simulatePromptSubmittedAtValue(),
+                "the terminal prompt keeps its own submission time");
+    }
+
+    /**
+     * Cancelling the picker from the plugin's choice panel consumes it, but
+     * the model keeps reporting the entry until the next poll: a panel send
+     * in that window is a prompt, not another answer to the cancelled picker.
+     */
+    @Test
+    void aPanelSendAfterThePanelCancelledTheMenuIsAPrompt() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+        // Cancel sends Esc to the TUI; the model entry is not cleared here.
+        controller.writePtyAnswer(null);
+
+        controller.simulateGuiSend("hello", START_MS);
+        controller.completeGuiSend(() -> START_MS + 200L);
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the cancelled picker must not turn the panel send into a menu answer");
+    }
+
+    /**
+     * Once a NEW run has resolved its own conversation, newer unrelated files
+     * must not push it out of the bounded prompt-evidence list: a file that
+     * merely carries the same common prompt text would then take over the
+     * tab's identity and Save &amp; Switch would rename the wrong session.
+     */
+    @Test
+    void theResolvedOwnSessionSurvivesTheCandidateCap() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "own", "own");
+        setMtime(dir.resolve("own.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of("own"));
+
+        // The run's first prompt creates its own conversation.
+        controller.simulatePromptSubmittedAt(START_MS + 1_000L);
+        controller.simulatePromptText("first");
+        appendUserPrompt(dir, "own", "first", START_MS + 1_100L);
+        setMtime(dir.resolve("own.jsonl"), START_MS + 1_200L);
+        assertEquals("own", controller.resolveActiveSessionId());
+
+        // A second, common prompt: eight unrelated conversations are written
+        // after this tab's own file, and one of them happens to hold the same
+        // text. The own file drops out of the newest-eight discovery list but
+        // is still the conversation this run writes.
+        controller.simulatePromptSubmittedAt(START_MS + 2_000L);
+        controller.simulatePromptText("continue");
+        appendUserPrompt(dir, "own", "continue", START_MS + 2_100L);
+        setMtime(dir.resolve("own.jsonl"), START_MS + 2_200L);
+        for (int i = 0; i < 7; i++) {
+            String id = "sibling" + i;
+            writeSession(dir, id, id);
+            appendUserPrompt(dir, id, "own turn " + i, START_MS + 2_300L + i);
+            setMtime(dir.resolve(id + ".jsonl"), START_MS + 2_400L + i);
+        }
+        writeSession(dir, "impostor", "impostor");
+        appendUserPrompt(dir, "impostor", "continue", START_MS + 2_500L);
+        setMtime(dir.resolve("impostor.jsonl"), START_MS + 2_600L);
+
+        assertEquals("own", controller.resolveActiveSessionId(),
+                "the known own conversation must not be dropped by the candidate cap");
+        assertEquals("own", controller.resolveActiveSessionId(),
+                "later scans must keep the known own conversation");
+    }
     @Test
     void aBorrowedActiveConversationIsNotPreferred() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
