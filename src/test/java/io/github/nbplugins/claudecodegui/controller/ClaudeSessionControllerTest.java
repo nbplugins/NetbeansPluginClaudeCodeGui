@@ -5012,6 +5012,83 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A digit answers a numbered menu immediately and closes it, so the text
+     * typed into it is the menu's search filter, not a prompt draft. Leaving
+     * it in the recorder would prefix the next prompt typed before the screen
+     * poll and publish text the conversation never received, which an
+     * identity scan cannot match.
+     */
+    @Test
+    void textTypedIntoANumberedMenuDoesNotPrefixTheNextPrompt() {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Do you want to proceed?", List.of(
+                new ChoiceMenuModel.Option("Yes", "1"),
+                new ChoiceMenuModel.Option("No", "2")), 0));
+
+        controller.simulateTerminalInput(
+                "other".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+        // The digit selects an item; the model still reports the menu until
+        // the next screen poll.
+        controller.simulateTerminalInput(
+                "1".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS + 50L);
+
+        assertEquals("hello", controller.simulateTerminalInput(
+                        "hello\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the menu's search text is not part of the next prompt");
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the terminal prompt becomes the evidence");
+    }
+
+    /**
+     * A standalone Esc typed during the panel send's pause cancels the
+     * {@code /resume} picker; the delayed Enter then acts on the empty main
+     * prompt. It must not be classified as a picker selection, which would
+     * mark a conversation switch and let the switch recovery adopt an
+     * unrelated unheld conversation after a recalled prompt.
+     */
+    @Test
+    void aPickerCancelledDuringThePauseDoesNotEnableSwitchRecovery() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "c", "c");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("c.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "c"));
+
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+        controller.simulateGuiSend("work", START_MS + 8_000L);
+        // A standalone Esc cancels the picker during the pause; the model
+        // still reports it until the next screen poll.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 8_050L);
+        controller.completeGuiSend(() -> START_MS + 8_200L);
+
+        // A prompt recalled from the history: its text is unknown.
+        controller.simulateTerminalInput(
+                new byte[]{0x1b, '[', 'A'}, START_MS + 9_000L);
+        assertNull(controller.simulateTerminalInput(
+                new byte[]{'\r'}, START_MS + 9_100L));
+
+        // This tab's submission lands in the launch conversation...
+        appendUserPrompt(dir, "a", "recalled", START_MS + 9_700L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 9_800L);
+        // ...while an unrelated unheld conversation gets a newer record.
+        appendUserPrompt(dir, "c", "other work", START_MS + 9_900L);
+        setMtime(dir.resolve("c.jsonl"), START_MS + 10_000L);
+
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "a cancelled picker is not a conversation switch");
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "later scans must keep the launch conversation");
+    }
+
+    /**
      * Once a NEW run has resolved its own conversation, newer unrelated files
      * must not push it out of the bounded prompt-evidence list: a file that
      * merely carries the same common prompt text would then take over the

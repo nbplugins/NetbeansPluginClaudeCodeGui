@@ -1969,9 +1969,10 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Discards the recorded input after a standalone {@code ESC} cancelled a
-     * choice menu: the line then holds the picker's search text, not a prompt
-     * draft. Call while holding the {@link #terminalInputLine} lock.
+     * Discards the recorded input after a choice menu was dismissed from the
+     * terminal — by a standalone {@code ESC} or by a digit selecting an item
+     * of a numbered menu: the line then holds the menu's search text, not a
+     * prompt draft. Call while holding the {@link #terminalInputLine} lock.
      */
     private void discardPickerSearchText() {
         terminalInputLine.setLength(0);
@@ -2604,6 +2605,17 @@ public class ClaudeSessionController {
             // bytes, and a record written then must still pass the submission
             // cutoff used by the evidence lookup.
             long submittedAt = clock.getAsLong();
+            // A standalone Esc typed during the pause cancelled the choice menu
+            // the panel text was written into, and nothing has followed it to
+            // consume the cancellation: the model still reports the menu until
+            // the next poll. Consume it here, or this Enter is classified as a
+            // selection of that menu — and for the /resume picker that marks a
+            // conversation switch the Enter never made.
+            boolean cancelledPicker = terminalInputEscape == 1 && terminalEscapeOnMenu;
+            if (cancelledPicker) {
+                discardPickerSearchText();
+                terminalInputEscape = 0;
+            }
             ChoiceMenuModel openMenu = openChoiceMenu();
             if (openMenu != null) {
                 // A choice menu is open on the screen (with the menu hidden,
@@ -2635,13 +2647,13 @@ public class ClaudeSessionController {
                 resetTerminalInputRecording(true);
                 return;
             }
-            if (terminalMenuConsumedGuiSend) {
+            if (terminalMenuConsumedGuiSend || cancelledPicker) {
                 // A terminal Enter already answered the choice menu this
-                // panel text was typed into, so this Enter submits whatever
-                // the user typed on the fresh line afterwards. The panel text
-                // itself was the menu's search filter or answer and must not
-                // become evidence; the switch of a picker was recorded by
-                // that Enter.
+                // panel text was typed into, or a terminal Esc cancelled it,
+                // so this Enter submits whatever the user typed on the fresh
+                // line afterwards. The panel text itself was the menu's
+                // search filter or answer and must not become evidence; the
+                // switch of a picker was recorded by that Enter.
                 String draftLine = terminalInputLine.toString().trim();
                 boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
                 boolean draftAfterSelection = terminalDraftAfterEnter;
@@ -4599,7 +4611,11 @@ public class ClaudeSessionController {
                 ChoiceMenuModel openMenu = openChoiceMenu();
                 if (openMenu != null && c >= '0' && c <= '9') {
                     if (digitSelectionDismissesMenu(openMenu)) {
-                        completeTerminalMenu(openMenu);
+                        // The digit answers the menu and closes it, so nothing
+                        // typed into it is part of the next prompt: the search
+                        // text accumulated while it was open must not prefix
+                        // that prompt's evidence (see the Right-submit path).
+                        discardPickerSearchText();
                     }
                 } else {
                     insertTerminalChar(c);
