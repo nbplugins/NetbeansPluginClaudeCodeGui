@@ -772,6 +772,62 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The worker activates a text-input option with a digit and only then
+     * records the new focus. Terminal input classified between the write and
+     * that record still sees the previous option, so a digit meant for the
+     * editor selects another item, retires the menu and leaks the line as
+     * prompt evidence. The write and the record must share the recorder's lock.
+     */
+    @Test
+    void theActivatingWriteAndItsFocusUpdateAreAtomic() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?",
+                List.of(new ChoiceMenuModel.Option("Great", "1"),
+                        new ChoiceMenuModel.Option("Bad", "2"),
+                        new ChoiceMenuModel.Option("Type something.", "3", null,
+                                false, false, true)),
+                0));
+
+        CountDownLatch inWrite = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if ("3".equals(new String(bytes, java.nio.charset.StandardCharsets.UTF_8))) {
+                inWrite.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("TYPE:3:auto answer");
+        assertTrue(inWrite.await(5, TimeUnit.SECONDS),
+                "the worker wrote the activating digit");
+
+        java.util.concurrent.atomic.AtomicReference<String> submitted =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        CountDownLatch inputReturned = new CountDownLatch(1);
+        Thread writer = new Thread(() -> {
+            submitted.set(controller.simulateTerminalInput(
+                    "1feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 100L));
+            inputReturned.countDown();
+        }, "terminal-writer");
+        writer.start();
+
+        // On the fixed code the writer waits for the recorder's lock; without
+        // the shared lock it runs inside the gap and returns here.
+        inputReturned.await(500, TimeUnit.MILLISECONDS);
+        release.countDown();
+        writer.join(5_000L);
+
+        assertNull(submitted.get(),
+                "the digit answers the option's editor, not another item");
+        assertEquals(0, inputReturned.getCount(),
+                "the terminal writer must not be left blocked");
+    }
+
+    /**
      * A model switch writes the command at the TUI's cursor, so a draft typed
      * in the terminal is submitted together with it. The write bypasses the
      * terminal recorder, so unless the command retires the draft the next panel
@@ -5389,6 +5445,31 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Up recalls the history while the prompt panel hides menus: the poll
+     * publishes a permission menu only after the key, and Enter then answers
+     * that menu. The recalled text was the menu's search filter, not a
+     * submitted prompt, so it must not replace the exact evidence of the
+     * prompt already submitted — losing it makes the running conversation
+     * unmatchable and the scan can adopt an unrelated file.
+     */
+    @Test
+    void aRecalledLineDoesNotReplaceTheEvidenceWhenEnterAnswersAMenu() {
+        controller.simulatePromptText("hello");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+        // Up arrives before the poll publishes the menu.
+        controller.simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 20_000L);
+        model.setActiveChoiceMenu(menu("Do you want to proceed?", "Yes", "No"));
+
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 20_100L);
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the menu answer must not lift the submitted prompt's evidence");
+        assertEquals(START_MS + 10_000L, controller.simulatePromptSubmittedAtValue(),
+                "the menu answer is not a submission of the recalled line");
+    }
+
+    /**
      * A numbered menu can offer a free-text option recognised only by its
      * label ({@code "Type something."}): the digit activates that option's
      * editor instead of answering the menu, so the menu stays open and the
@@ -7125,6 +7206,67 @@ class ClaudeSessionControllerTest {
         assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
                         .findSession(work, config, "a").customTitle(),
                 "the ambiguous candidate must not be renamed either");
+    }
+
+    /**
+     * The tab was launched on {@code a} and the user then picked another live
+     * tab's {@code b} in the {@code /resume} picker. Nothing submitted since
+     * shows which file the process writes: {@code b} is claimed by its own tab,
+     * so no evidence pass can adopt it, and the tracked identity stays on the
+     * launch conversation. Treating that stale identity as this tab's own would
+     * write the name into {@code a} — the conversation the picker left behind.
+     */
+    @Test
+    void anUnresolvedPickerSwitchDoesNotRenameTheLaunchConversation() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS - 5_000L);
+
+        // This tab launched the saved conversation a.
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        // A live sibling holds the conversation picked in the TUI.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 1_000L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            // The /resume picker is published and the user confirms an entry:
+            // the switch is recorded, but which file was picked is not.
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Resume session", List.of(
+                    new ChoiceMenuModel.Option("older", "ARROW:0"),
+                    new ChoiceMenuModel.Option("newer", "ARROW:1")), 0));
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 20_000L);
+
+            // The picked conversation receives only assistant output, so no
+            // prompt-based pass can resolve the switch either.
+            appendAssistantLine(dir, "b", START_MS + 21_000L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 21_100L);
+
+            controller.stopAndRename("A-title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the conversation the picker left behind must not be renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the picked conversation cannot be proven to be this tab's");
     }
 
     /**

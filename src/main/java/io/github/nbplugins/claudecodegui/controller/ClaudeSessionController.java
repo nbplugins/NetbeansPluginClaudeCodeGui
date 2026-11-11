@@ -1328,7 +1328,18 @@ public class ClaudeSessionController {
      */
     private boolean identityRemainsAmbiguous(java.io.File dir, java.nio.file.Path configDir,
                                              String sessionId) {
-        if (sessionId == null || isLaunchIdentity(sessionId)) return false;
+        if (sessionId == null) return false;
+        if (isLaunchIdentity(sessionId) && conversationSwitchAt > 0
+                && promptSubmittedAt <= conversationSwitchAt) {
+            // The last thing the terminal did was switch the conversation, and
+            // nothing submitted since has shown which file the process writes.
+            // The launch conversation is then the one the switch left behind:
+            // a picker entry may be a conversation another live tab writes,
+            // which no evidence pass can adopt, so the entered name cannot be
+            // attributed to the launch file either.
+            return true;
+        }
+        if (isLaunchIdentity(sessionId)) return false;
         SessionKey key = keyFor(dir, configDir, sessionId);
         SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
         if (claims != null && claims.owners.contains(this)) return false;
@@ -2380,7 +2391,9 @@ public class ClaudeSessionController {
      * TUI cursor on. Called from the answer workers, so it takes the recorder's
      * lock itself; the state it updates is what
      * {@link #digitSelectionDismissesMenu} reads for a digit typed into the
-     * terminal while the write is still settling.
+     * terminal while the write is still settling. The workers reach the write
+     * and this call inside one lock section, so input classified between them
+     * cannot see the previous option.
      */
     private void trackForwardedMenuFocus(ChoiceMenuModel menu, int index) {
         if (menu == null || menu.options().isEmpty()) return;
@@ -3848,12 +3861,17 @@ public class ClaudeSessionController {
                                 byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
                                 int step = Integer.signum(delta);
                                 for (int i = 0; i < Math.abs(delta); i++) {
-                                    writePty(arrow);
-                                    // The TUI cursor is on the next option now:
-                                    // terminal input arriving during the pause
-                                    // belongs to that option, not to the one the
-                                    // last poll reported.
-                                    trackForwardedMenuFocus(current, currentIdx + (i + 1) * step);
+                                    // The write and the focus update share the
+                                    // recorder's lock: input classified between
+                                    // them would still see the old option.
+                                    synchronized (terminalInputLine) {
+                                        writePty(arrow);
+                                        // The TUI cursor is on the next option now:
+                                        // terminal input arriving during the pause
+                                        // belongs to that option, not to the one the
+                                        // last poll reported.
+                                        trackForwardedMenuFocus(current, currentIdx + (i + 1) * step);
+                                    }
                                     Thread.sleep(80);
                                 }
                                 Thread.sleep(100);
@@ -3862,12 +3880,14 @@ public class ClaudeSessionController {
                             Thread.sleep(200);
                             writePty("\r");
                         } else {
-                            writePty(digit);
-                            // The digit activates the type-input option: its
-                            // editor holds the cursor, so a digit typed during
-                            // the pause is text for it, not a selection of
-                            // another item (see digitSelectionDismissesMenu).
-                            trackForwardedMenuFocus(current, targetIdx);
+                            synchronized (terminalInputLine) {
+                                writePty(digit);
+                                // The digit activates the type-input option: its
+                                // editor holds the cursor, so a digit typed during
+                                // the pause is text for it, not a selection of
+                                // another item (see digitSelectionDismissesMenu).
+                                trackForwardedMenuFocus(current, targetIdx);
+                            }
                             Thread.sleep(200);
                             writePty(text);
                             Thread.sleep(200);
@@ -3912,8 +3932,13 @@ public class ClaudeSessionController {
                     Thread t = new Thread(() -> {
                         try {
                             for (int idx = 0; idx < Math.abs(delta); idx++) {
-                                writePty(arrow);
-                                trackForwardedMenuFocus(current, currentIdx + (idx + 1) * step);
+                                // The write and the focus update share the
+                                // recorder's lock: input classified between them
+                                // would still see the old option.
+                                synchronized (terminalInputLine) {
+                                    writePty(arrow);
+                                    trackForwardedMenuFocus(current, currentIdx + (idx + 1) * step);
+                                }
                                 Thread.sleep(80);
                             }
                             writePty("\r");
@@ -5558,12 +5583,15 @@ public class ClaudeSessionController {
                     // input that follows.
                     completeTerminalMenu(openMenu);
                 }
-                if (unknownText) {
+                if (unknownText && !onMenu) {
                     // The line was filled from the TUI history (Up/Down) or
                     // completed by Tab and may have been edited since: the
                     // characters recorded here are only a part of the prompt,
                     // so its text is unknown and an in-process resume must be
-                    // followed by file times.
+                    // followed by file times. With a menu open the Enter
+                    // answers it instead: the recalled text is the picker's
+                    // search filter, which submits no prompt and must not
+                    // replace the evidence of the prompt already submitted.
                     terminalRecalledSubmission = true;
                 } else if (!onMenu && (gapEdited || !line.isEmpty())) {
                     // With a choice menu open Enter selects an item instead of
