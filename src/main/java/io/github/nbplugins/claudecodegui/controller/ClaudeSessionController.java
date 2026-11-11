@@ -1248,8 +1248,8 @@ public class ClaudeSessionController {
         if (!rename) return;
         if (ambiguous) {
             LOG.warning("Skipped renaming session " + sessionId + " in " + configDir
-                    + ": another live tab writes the same conversation and another file"
-                    + " holds this prompt; the identity cannot be told apart");
+                    + ": another file holds this prompt and the identity cannot be"
+                    + " told apart");
             return;
         }
         if (dir == null || configDir == null || sessionId == null) {
@@ -1275,9 +1275,9 @@ public class ClaudeSessionController {
 
     /**
      * Returns whether {@code sessionId} is a conversation this tab cannot prove
-     * it is the writer of: another live tab holds it as well, this tab has not
-     * established it at launch, and the store also holds a file with this run's
-     * prompt that no other live tab claims.
+     * it is the writer of: this tab has not established it at launch, and the
+     * store also holds a file with this run's prompt that no other live tab
+     * claims.
      *
      * <p>Two NEW tabs that submitted identical text leave exactly this state:
      * the prompt matched in the sibling's file first, so this tab tracks it
@@ -1285,24 +1285,34 @@ public class ClaudeSessionController {
      * appears later without displacing it. A matching prompt does not establish
      * ownership here, so neither file may be renamed as this tab's.
      *
+     * <p>The sibling need not still be running: its exit releases its claim but
+     * does not turn this tab's earlier guess into ownership, so the ambiguity is
+     * judged from the store rather than from the live claim registry.
+     *
      * <p>Called before {@link #stopProcess()}, while this run's prompt evidence
-     * and the claim registry still describe the running session.
+     * still describes the running session.
      */
     private boolean identityRemainsAmbiguous(java.io.File dir, java.nio.file.Path configDir,
                                              String sessionId) {
         if (sessionId == null || isLaunchIdentity(sessionId)) return false;
         SessionKey key = keyFor(dir, configDir, sessionId);
         SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
-        if (claims == null || !heldByAnotherLiveTab(claims)) return false;
-        if (claims.owners.contains(this)) return false;
+        if (claims != null && claims.owners.contains(this)) return false;
         String promptText = lastPromptText;
         long promptAt = promptSubmittedAt;
         if (promptText == null || promptText.isBlank() || promptAt <= 0) return false;
         // A file holding the same prompt that no other live tab claims could
         // equally be the one this run wrote: the evidence cannot tell them apart.
+        // Only a file touched during this run can compete; one that merely
+        // quotes the same text from an earlier session cannot. Once the user has
+        // typed in the terminal after the submission, the conversation the tab
+        // was on before that input is the one it left behind, not a competitor:
+        // only files written after the input are candidates.
+        long since = Math.max(processStartedAt, promptAt);
+        if (externalInputAt > since) since = externalInputAt;
         Set<String> shared = claimedByOthers(dir, configDir);
         shared.add(sessionId);
-        return findPromptBearingSession(dir, configDir, 0L, shared, null,
+        return findPromptBearingSession(dir, configDir, since, shared, null,
                 promptAt, promptText) != null;
     }
 
@@ -5022,10 +5032,18 @@ public class ClaudeSessionController {
                 }
             }
         }
-        if (entered && !emptyEnter) {
+        boolean pickedConversation = menuSelection && isConversationPicker(selectedMenu);
+        if (entered && !emptyEnter && (!menuSelection || pickedConversation)) {
+            // An ordinary menu answer only answers a question in the current
+            // conversation: it submits nothing and does not make the prompt
+            // evidence stale, so it must not move the external-input cutoff
+            // past the submission (that would drop the exact-text evidence of
+            // a prompt that did go to the conversation on screen). Selecting a
+            // conversation in the picker is different: it changes what the
+            // process writes.
             externalInputAt = now;
         }
-        if (menuSelection && isConversationPicker(selectedMenu)) {
+        if (pickedConversation) {
             // Enter with the /resume picker open selected a session. That
             // changes the conversation that way, and nothing else in the input
             // tells which conversation was picked. An ordinary menu answer (a

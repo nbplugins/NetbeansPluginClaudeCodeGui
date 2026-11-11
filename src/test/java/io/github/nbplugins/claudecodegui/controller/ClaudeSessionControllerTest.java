@@ -5813,6 +5813,65 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A tab that resumed another live tab's conversation answers a permission
+     * menu with Enter after submitting its prompt. The menu answer changes
+     * nothing in the conversation, so it must not hide the submission from the
+     * identity scan: Save &amp; Switch would otherwise rename the launch
+     * conversation while the resumed file is the one holding the prompt.
+     */
+    @Test
+    void aPermissionMenuAnswerDoesNotHideTheSubmittedPrompt() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        writeSession(dir, "x", "x");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        setMtime(dir.resolve("x.jsonl"), START_MS - 5_000L);
+
+        // A sibling tab resumed x and is writing it.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "x", Set.of("a", "x"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "x"));
+
+        try {
+            controller.simulateGuiSend("hello", START_MS + 10_000L);
+            controller.completeGuiSend(() -> START_MS + 10_100L);
+
+            // The submission went to the resumed conversation.
+            appendUserPrompt(dir, "x", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("x.jsonl"), START_MS + 10_600L);
+
+            // A permission menu is answered with Enter before the next scan.
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Allow edit?", List.of(
+                    new ChoiceMenuModel.Option("Yes", "ARROW:0"),
+                    new ChoiceMenuModel.Option("No", "ARROW:1")), 0));
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 10_700L);
+            model.clearChoiceMenu();
+
+            controller.stopAndRename("Resumed title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertEquals("Resumed title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "x").customTitle(),
+                "the conversation holding the submitted prompt is renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation was not the one on screen");
+    }
+
+    /**
      * A picker cancelled with a standalone Esc immediately before a GUI send
      * stays dismissed: the send rewrites the recorder, but the screen poll has
      * not removed the model's stale entry yet. Without the dismissed-menu
@@ -6938,6 +6997,65 @@ class ClaudeSessionControllerTest {
             setMtime(dir.resolve("a.jsonl"), START_MS + 11_200L);
             assertEquals("b", controller.resolveActiveSessionId(),
                     "the shared conversation is still the one this tab tracks");
+
+            controller.stopAndRename("A-title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the sibling's conversation must not be renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the ambiguous candidate must not be renamed either");
+    }
+
+    /**
+     * The sibling of {@link #aStopDoesNotRenameEitherOfTwoSharedUnresolvedFiles}
+     * exits without a rename before this tab is stopped. Its departure releases
+     * its claim but does not turn this tab's earlier guess into ownership: both
+     * files still hold the same prompt, so neither may be renamed.
+     */
+    @Test
+    void aStopDoesNotRenameWhenTheSiblingExitedBeforeTheStop() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_600L);
+            assertEquals("b", controller.resolveActiveSessionId());
+            assertEquals("b", tabB.resolveActiveSessionId());
+
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_200L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the shared conversation is still the one this tab tracks");
+
+            // The sibling stops without renaming; its claim is released.
+            tabB.stopProcess();
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the departure does not resolve the identity");
 
             controller.stopAndRename("A-title");
         } finally {
