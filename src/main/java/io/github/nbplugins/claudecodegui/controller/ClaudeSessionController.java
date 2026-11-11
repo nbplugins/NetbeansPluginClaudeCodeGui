@@ -1369,16 +1369,45 @@ public class ClaudeSessionController {
             // its own without being the file this submission went to.
             shared.add(launchSessionId);
         }
-        if (promptText == null || promptText.isBlank()) {
+        return hasCompetingSession(dir, configDir, since, promptAt, promptText, shared);
+    }
+
+    /**
+     * Returns whether the store holds a conversation other than those in
+     * {@code exclude} that carries this submission: the same text when it is
+     * known, or a user record of its own when it is not.
+     *
+     * <p>The lookup repeats the resolver's coarse-mtime relaxation: a file
+     * written right after the submission can round below it and still be the
+     * one this run wrote, so the second pass starts
+     * {@link #SESSION_MTIME_GRANULARITY_MS} earlier. The user record's own
+     * timestamp stays strict either way.
+     */
+    private boolean hasCompetingSession(java.io.File dir,
+                                        java.nio.file.Path configDir,
+                                        long since, long promptAt,
+                                        String promptText, Set<String> exclude) {
+        boolean unknownText = promptText == null || promptText.isBlank();
+        boolean relaxed = since > SESSION_MTIME_GRANULARITY_MS;
+        long relaxedSince = since - SESSION_MTIME_GRANULARITY_MS;
+        if (unknownText) {
             // The submitted text is unknown (recalled from the TUI history or
             // completed by Tab), so no file can be matched by its content: a
             // file holding a user record of its own since the submission could
             // equally be the one this run wrote.
-            return newestSessionWithUserMessageSince(dir, configDir, since, promptAt, shared)
-                    != null;
+            if (newestSessionWithUserMessageSince(dir, configDir, since, promptAt, exclude)
+                    != null) {
+                return true;
+            }
+            return relaxed && newestSessionWithUserMessageSince(dir, configDir,
+                    relaxedSince, promptAt, exclude) != null;
         }
-        return findPromptBearingSession(dir, configDir, since, shared, null,
-                promptAt, promptText) != null;
+        if (findPromptBearingSession(dir, configDir, since, exclude, null,
+                promptAt, promptText) != null) {
+            return true;
+        }
+        return relaxed && findPromptBearingSession(dir, configDir, relaxedSince, exclude,
+                null, promptAt, promptText) != null;
     }
 
     /**
@@ -1484,6 +1513,12 @@ public class ClaudeSessionController {
         }
         String newest = null;
         boolean ownEvidence = false;
+        // Whether the published identity was picked by submission evidence
+        // (a matching prompt or user record) rather than by file times alone.
+        // An mtime-only refresh of the same identity carries no new evidence
+        // about who wrote it, so it must not replace the evidence the guess
+        // was adopted on (see publishIdentityScanResult).
+        boolean evidenceBased = false;
         if (dir != null && configDir != null && since > 0) {
             // A conversation owned by a live tab (or by this tab) that already
             // contains the prompt submitted from here is the strongest evidence
@@ -1602,6 +1637,7 @@ public class ClaudeSessionController {
                 }
                 newest = findPromptBearingSession(dir, configDir, since, ownExclude,
                         ownPreferred, promptAt, promptText);
+                evidenceBased = newest != null;
                 if (ownPreferred != null && !ownPreferred.equals(newest)
                         && since > SESSION_MTIME_GRANULARITY_MS) {
                     // Coarse file times can round this tab's own file below the
@@ -1617,6 +1653,7 @@ public class ClaudeSessionController {
                             ownPreferred, promptAt, promptText);
                     if (relaxedOwn != null) {
                         newest = relaxedOwn;
+                        evidenceBased = true;
                     }
                 }
                 if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
@@ -1628,6 +1665,7 @@ public class ClaudeSessionController {
                     newest = findPromptBearingSession(dir, configDir,
                             since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
                             ownPreferred, promptAt, promptText);
+                    evidenceBased = newest != null;
                 }
                 // A match in a file this tab only follows is not proof that
                 // this run created it: it is another live tab's conversation,
@@ -1659,6 +1697,7 @@ public class ClaudeSessionController {
                     }
                     if (newer != null && !newer.equals(newest)) {
                         newest = newer;
+                        evidenceBased = true;
                         // A conversation written later by someone else is not
                         // the file this run created for its own submission.
                         ownFileMatch = false;
@@ -1693,6 +1732,7 @@ public class ClaudeSessionController {
                             && activeId.equals(launchSessionId) ? activeId : null;
                     newest = findPromptBearingSession(dir, configDir, ordered,
                             borrowedPreferred, promptAt, promptText);
+                    evidenceBased = newest != null;
                 }
             }
             if (promptAt > 0 && promptAt >= externalAt
@@ -1756,10 +1796,12 @@ public class ClaudeSessionController {
                     if (ownCandidates == null) {
                         newest = newestSessionWithUserMessageSince(dir, configDir, since,
                                 promptAt, ownExclude);
+                        evidenceBased = newest != null;
                         if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                             newest = newestSessionWithUserMessageSince(dir, configDir,
                                     since - SESSION_MTIME_GRANULARITY_MS, promptAt,
                                     ownExclude);
+                            evidenceBased = newest != null;
                         }
                         ownEvidence = newest != null;
                         ownRecordMatch = newest != null;
@@ -1793,6 +1835,7 @@ public class ClaudeSessionController {
                                        > ClaudeSessionStore.sessionFileModified(
                                             dir.toPath(), configDir, newest)) {
                                 newest = switchedTo;
+                                evidenceBased = true;
                                 // A conversation another live tab holds is not
                                 // this run's own file: it was resumed into, so
                                 // adopting it must not establish ownership.
@@ -1803,10 +1846,12 @@ public class ClaudeSessionController {
                     } else if (!ownCandidates.isEmpty()) {
                         newest = newestSharedSessionWrittenSince(dir, configDir, since,
                                 promptAt, ownCandidates, exclude);
+                        evidenceBased = newest != null;
                         if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                             newest = newestSharedSessionWrittenSince(dir, configDir,
                                     since - SESSION_MTIME_GRANULARITY_MS, promptAt,
                                     ownCandidates, exclude);
+                            evidenceBased = newest != null;
                         }
                         ownRecordMatch = newest != null;
                     }
@@ -1833,11 +1878,13 @@ public class ClaudeSessionController {
                     }
                     newest = newestSharedSessionWrittenSince(dir, configDir, since,
                             promptAt, shared, exclude);
+                    evidenceBased = newest != null;
                     if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                         // Coarse file times can round the write below the submission;
                         // the record's own timestamp still has to match.
                         newest = newestSharedSessionWrittenSince(dir, configDir,
                                 since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
+                        evidenceBased = newest != null;
                     }
                 }
                 if (switchAt > 0 && !ownRecordMatch) {
@@ -1875,6 +1922,7 @@ public class ClaudeSessionController {
                                > ClaudeSessionStore.sessionFileModified(dir.toPath(),
                                     configDir, newest))) {
                         newest = switched;
+                        evidenceBased = true;
                         // No other live tab holds the switched-to conversation,
                         // so the record in it can only have come from this
                         // process: it is the file this run resumed into. It
@@ -1889,6 +1937,7 @@ public class ClaudeSessionController {
             if (newest == null) {
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                         dir.toPath(), configDir, since, exclude);
+                evidenceBased = false;
             }
             if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
                 // Coarse filesystem timestamps can round a file written right
@@ -1905,10 +1954,12 @@ public class ClaudeSessionController {
                 newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
                         dir.toPath(), configDir,
                         since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
+                evidenceBased = false;
             }
         }
         return publishIdentityScanResult(generation, scanId, dir, configDir, newest,
-                ownEvidence, promptText, promptAt, Math.max(since, externalAt));
+                ownEvidence, promptText, promptAt, Math.max(since, externalAt),
+                evidenceBased);
     }
 
     /**
@@ -2081,7 +2132,8 @@ public class ClaudeSessionController {
                                               java.io.File dir,
                                               java.nio.file.Path configDir,
                                               String newest, boolean ownEvidence,
-                                              String promptText, long promptAt, long since) {
+                                              String promptText, long promptAt, long since,
+                                              boolean evidenceBased) {
         synchronized (processOwnershipLock) {
             if (generation != processGeneration) {
                 return activeSessionId != null;
@@ -2093,11 +2145,15 @@ public class ClaudeSessionController {
             if (ownEvidence && newest != null) {
                 ownSessionId = newest;
             }
-            if (newest != null) {
+            if (newest != null && (evidenceBased || !newest.equals(guessSessionId))) {
                 // Remember the submission the identity was adopted on: terminal
                 // input can later lift the prompt evidence without resolving
                 // another conversation, and the stop-time ambiguity check must
-                // still use the adoption's evidence then.
+                // still use the adoption's evidence then. A file-time-only
+                // refresh of the same identity carries no new submission: only
+                // an assistant-only append prompted it, and replacing the
+                // evidence with the newer command cutoff would hide the
+                // competing file.
                 guessSessionId = newest;
                 guessPromptText = promptText;
                 guessPromptAt = promptAt;
@@ -2126,13 +2182,13 @@ public class ClaudeSessionController {
     /** Package-private for tests: publishes a result scanned for an older process run. */
     boolean simulatePublishStaleScanResult(long generation, String newest) {
         return publishIdentityScanResult(generation, simulateBeginIdentityScan(),
-                null, activeConfigDir, newest, false, null, 0L, 0L);
+                null, activeConfigDir, newest, false, null, 0L, 0L, false);
     }
 
     /** Package-private for tests: publishes a scan result with explicit ordering. */
     boolean simulatePublishScanResult(long generation, long scanId, String newest) {
         return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest,
-                false, null, 0L, 0L);
+                false, null, 0L, 0L, false);
     }
 
     /** Package-private for tests: the identity inputs {@link #refreshSessionIdentity()} captures. */
@@ -3578,6 +3634,37 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Returns whether the menu an answer was accepted from stays open in the
+     * TUI until the answer worker forwards its submitting key. Such an answer
+     * is written asynchronously — the worker pauses between its writes — and
+     * terminal input arriving meanwhile belongs to the menu, so the model entry
+     * must keep classifying it until the worker retires the menu.
+     *
+     * <p>Besides the explicit protocols ({@code TYPE:}, {@code MULTI_TYPE:},
+     * {@code MULTI:}, {@code ARROW:}), a numeric answer navigates with arrow
+     * keys before submitting when the number names an item that cannot be
+     * typed (10 and above) or when the cursor sits in a text-input option: the
+     * picker or checkbox menu only closes on the Enter those workers send.
+     */
+    private boolean answerKeepsMenuOpen(String answer) {
+        if (answer == null) return false;
+        if (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:")
+                || answer.startsWith("MULTI:") || answer.startsWith("ARROW:")) {
+            return true;
+        }
+        if (!answer.matches("[0-9]+")) return false;
+        ChoiceMenuModel current = detectCurrentMenu();
+        int currentIdx = current != null ? current.defaultOptionIndex() : 0;
+        if (answer.length() == 1) {
+            boolean currentHasTextInput = current != null
+                    && currentIdx < current.options().size()
+                    && isTextInputOption(current.options().get(currentIdx));
+            return currentHasTextInput && answer.charAt(0) - '1' != currentIdx;
+        }
+        return menuCursorNumber(current) > 0;
+    }
+
+    /**
      * Writes the user's answer to the PTY.
      *
      * <p>Handles five cases:
@@ -3604,10 +3691,7 @@ public class ClaudeSessionController {
         // sends after a pause — is the exception: the TUI keeps the menu open
         // until that key, and terminal input arriving in between answers the
         // menu, so the worker retires it.
-        boolean typedAnswer = answer != null
-                && (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:")
-                    || answer.startsWith("MULTI:") || answer.startsWith("ARROW:"));
-        if (!typedAnswer) {
+        if (!answerKeepsMenuOpen(answer)) {
             synchronized (terminalInputLine) {
                 completeTerminalMenu(openChoiceMenu());
             }
@@ -3840,9 +3924,9 @@ public class ClaudeSessionController {
                     int currentIdx = currentIdx2;
                     int delta = targetIdx - currentIdx;
                     LOG.fine("[PTY write] ARROW-digit targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
-                    clearActiveChoiceMenu();
                     if (delta == 0) {
                         writePty("\r");
+                        clearActiveChoiceMenu();
                     } else {
                         byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
                         Thread t = new Thread(() -> {
@@ -3856,6 +3940,14 @@ public class ClaudeSessionController {
                                 LOG.warning("writePtyAnswer ARROW-digit write failed: " + ex.getMessage());
                             } catch (InterruptedException ie) {
                                 Thread.currentThread().interrupt();
+                            } finally {
+                                // The type-input option keeps the menu open
+                                // until the submitting Enter above, so terminal
+                                // input arriving meanwhile is still the menu's.
+                                synchronized (terminalInputLine) {
+                                    completeTerminalMenu(openChoiceMenu());
+                                }
+                                clearActiveChoiceMenu();
                             }
                         }, "pty-arrow-digit");
                         t.setDaemon(true);
@@ -3866,7 +3958,6 @@ public class ClaudeSessionController {
                     // cursor onto the item with arrow keys, then Enter.
                     int delta = Integer.parseInt(answer) - menuCursorNumber(current);
                     LOG.fine("[PTY write] ARROW-number answer=" + answer + " delta=" + delta);
-                    clearActiveChoiceMenu();
                     sendArrowsThenEnter(delta, "pty-arrow-number");
                 } else {
                     boolean isMenuDigit = answer.matches("[0-9]");
@@ -3902,6 +3993,14 @@ public class ClaudeSessionController {
                 LOG.warning(threadName + " write failed: " + ex.getMessage());
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
+            } finally {
+                // The menu stays open in the TUI until the submitting Enter
+                // above, so terminal input arriving meanwhile is still the
+                // menu's (see the other answer workers).
+                synchronized (terminalInputLine) {
+                    completeTerminalMenu(openChoiceMenu());
+                }
+                clearActiveChoiceMenu();
             }
         }, threadName);
         t.setDaemon(true);

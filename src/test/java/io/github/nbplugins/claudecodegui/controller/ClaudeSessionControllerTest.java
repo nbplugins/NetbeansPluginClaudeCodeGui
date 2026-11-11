@@ -1424,6 +1424,15 @@ class ClaudeSessionControllerTest {
                 java.nio.file.StandardOpenOption.APPEND);
     }
 
+    /** Appends an assistant record, as the running process writes a reply. */
+    private static void appendAssistantLine(java.nio.file.Path dir, String id, long millis)
+            throws java.io.IOException {
+        java.nio.file.Files.writeString(dir.resolve(id + ".jsonl"),
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}"
+                        + ",\"timestamp\":\"" + java.time.Instant.ofEpochMilli(millis) + "\"}\n",
+                java.nio.file.StandardOpenOption.APPEND);
+    }
+
     private static void setMtime(java.nio.file.Path file, long millis) throws java.io.IOException {
         java.nio.file.Files.setLastModifiedTime(file,
                 java.nio.file.attribute.FileTime.fromMillis(millis));
@@ -8549,6 +8558,164 @@ class ClaudeSessionControllerTest {
         assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
                         .findSession(work, config, "b").customTitle(),
                 "the guess must not be renamed after the cancelled picker");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the competing own file must not be renamed either");
+    }
+
+    /**
+     * An item numbered 10 or above cannot be typed into the picker: the answer
+     * is forwarded as Up/Down keys followed by Enter, with a pause between
+     * them. The menu stays open in the TUI until that Enter, so a line typed
+     * in the terminal meanwhile answers the menu and is not a prompt.
+     */
+    @Test
+    void aTwoDigitAnswerKeepsTheMenuUntilItsEnter() throws Exception {
+        List<ChoiceMenuModel.Option> options = new java.util.ArrayList<>();
+        for (int i = 1; i <= 12; i++) {
+            options.add(new ChoiceMenuModel.Option("Item " + i, String.valueOf(i)));
+        }
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Select an item", options, 0, false, 1));
+
+        byte[] down = {0x1b, '[', 'B'};
+        CountDownLatch moved = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if (java.util.Arrays.equals(bytes, down)) {
+                moved.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("10");
+        assertTrue(moved.await(5, TimeUnit.SECONDS),
+                "the worker started moving the picker cursor");
+
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the picker is still open: the typed line is the menu's");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
+
+        release.countDown();
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (model.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertNull(model.getActiveChoiceMenu(),
+                "the picker is retired once the answer has been forwarded");
+    }
+
+    /**
+     * A guess adopted on the strength of a submitted prompt keeps that evidence
+     * when a later refresh only returns the same file by its modification time:
+     * assistant output written after a cancelled {@code /resume} adds no
+     * evidence about who wrote the file, and the competing conversation with
+     * an earlier user record must still keep the stop from renaming it.
+     */
+    @Test
+    void anMtimeOnlyRefreshKeepsTheAdoptedGuessAmbiguous() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+        writeSession(dir, "b", "b");
+        appendUserPrompt(dir, "b", "continue", START_MS + 10_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the only file written since the submission is provisionally adopted");
+        controller.simulateAwaitIdentityScan();
+
+        // This tab's own file appears later and holds the same text.
+        writeSession(dir, "a", "a");
+        appendUserPrompt(dir, "a", "continue", START_MS + 12_000L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 12_500L);
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the tracked conversation is kept while the evidence cannot tell");
+        controller.simulateAwaitIdentityScan();
+
+        // The user opens the /resume picker and cancels it with Esc: no
+        // conversation was resolved, but the prompt evidence is gone.
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 20_000L);
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 20_100L);
+        controller.simulateAwaitIdentityScan();
+
+        // The reply stored after the cancelled picker touches the tracked file
+        // again; the refresh can only return it by its modification time.
+        appendAssistantLine(dir, "b", START_MS + 21_000L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 21_000L);
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the modification time still names the tracked file");
+        controller.simulateAwaitIdentityScan();
+
+        controller.stopAndRename("A-title");
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "an mtime-only refresh must not make the guess safe to rename");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the competing own file must not be renamed either");
+    }
+
+    /**
+     * Filesystems may round modification times below the submission time, so
+     * the resolver adopts a sibling file written in the same second. When this
+     * tab's own file then appears in that same rounded bucket with the same
+     * prompt, the ambiguity check must search with the same relaxed cutoff —
+     * otherwise it misses the competitor and renames the sibling's file.
+     */
+    @Test
+    void aRoundedMtimeCompetitorStillBlocksTheRename() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+        // The sibling's file was written just after the submission, but its
+        // modification time rounds down below it.
+        writeSession(dir, "b", "b");
+        appendUserPrompt(dir, "b", "continue", START_MS + 10_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 9_999L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the rounded file is still the one written since the submission");
+        controller.simulateAwaitIdentityScan();
+
+        // This tab's own file lands in the same rounded bucket with the same
+        // text: the two are indistinguishable.
+        writeSession(dir, "a", "a");
+        appendUserPrompt(dir, "a", "continue", START_MS + 12_000L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 9_999L);
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the tracked conversation is kept while the evidence cannot tell");
+        controller.simulateAwaitIdentityScan();
+
+        controller.stopAndRename("A-title");
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the rounded sibling must not be renamed while both match");
         assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
                         .findSession(work, config, "a").customTitle(),
                 "the competing own file must not be renamed either");
