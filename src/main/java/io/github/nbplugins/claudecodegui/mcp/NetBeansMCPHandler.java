@@ -539,12 +539,15 @@ public class NetBeansMCPHandler {
 
             // cwd from hook JSON == Claude's current working directory (may be a subdirectory of session root)
             String cwd = hook.has("cwd") ? hook.get("cwd").asText() : null;
-            EditMode editMode = getEditModeForCwd(cwd);
+            // Claude Code reports its permission mode in every hook call. The mode read from the
+            // terminal screen is only the fallback for a missing or unknown value (e.g. "dontAsk").
+            String permissionMode = hook.has("permission_mode") ? hook.get("permission_mode").asText() : null;
+            EditMode editMode = EditMode.fromKey(permissionMode).orElseGet(() -> getEditModeForCwd(cwd));
             // Session root is the key that matched in the registry (may differ from hook cwd when Claude cd'd into a subdir)
             String sessionRoot = getSessionRootForCwd(cwd);
 
             String filePath = getFilePath(toolInput);
-            LOGGER.fine("handlePreToolUse: editMode=" + editMode + " file=" + filePath
+            LOGGER.fine("handlePreToolUse: editMode=" + editMode + " permission_mode=" + permissionMode + " file=" + filePath
                     + " cwd=" + cwd + " sessionRoot=" + sessionRoot);
 
             // AUTO or higher (BYPASS_PERMISSIONS): auto-allow regardless of location

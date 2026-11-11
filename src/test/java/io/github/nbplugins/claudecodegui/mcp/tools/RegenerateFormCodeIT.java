@@ -5,9 +5,20 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.StyledDocument;
 import junit.framework.Test;
+import org.netbeans.api.editor.guards.GuardedSectionManager;
 import org.netbeans.junit.NbModuleSuite;
 import org.netbeans.junit.NbTestCase;
+import org.openide.cookies.EditorCookie;
+import org.openide.filesystems.FileObject;
+import org.openide.filesystems.FileUtil;
+import org.openide.loaders.DataObject;
+import org.openide.text.NbDocument;
 
 /**
  * Runs {@link RegenerateFormCode} against the real NetBeans form editor (form + form.nb
@@ -48,6 +59,19 @@ public class RegenerateFormCodeIT extends NbTestCase {
     @Override
     protected void setUp() throws Exception {
         clearWorkDir();
+        useEditorDocumentsForJava();
+    }
+
+    /**
+     * Registers the NetBeans editor kit for {@code text/x-java}, as the Java editor module
+     * (not on the test classpath) does in the IDE. Without it, a {@code .java} file is
+     * loaded into a plain {@code FilterDocument}, which has no atomic edits to roll back.
+     */
+    private static void useEditorDocumentsForJava() throws IOException {
+        FileObject kits = FileUtil.createFolder(FileUtil.getConfigRoot(), "Editors/text/x-java");
+        if (kits.getFileObject("org-netbeans-modules-editor-NbEditorKit", "instance") == null) {
+            kits.createData("org-netbeans-modules-editor-NbEditorKit", "instance");
+        }
     }
 
     /** A Free Design (GroupLayout) JFrame form is generated into empty guarded sections. */
@@ -130,6 +154,62 @@ public class RegenerateFormCodeIT extends NbTestCase {
         assertTrue("the body of an existing handler must be kept",
                 code.contains("System.out.println(\"Kept: user code of an existing handler\");"));
         assertEquals("a shared handler is generated once", 1, count(code, "private void jButton1ActionPerformed("));
+    }
+
+    /**
+     * A regeneration that fails halfway - here when inserting the second new event handler,
+     * with an Error like a LinkageError from a stale project class - leaves neither the
+     * editor document nor the files changed, and no stale guarded section behind: the next
+     * regeneration produces the same code as an undisturbed one.
+     */
+    public void testFailedRegenerationIsRolledBack() throws Exception {
+        File java = copyFixture("EventsPanel");
+        byte[] input = Files.readAllBytes(java.toPath());
+        DataObject dataObject = DataObject.find(FileUtil.toFileObject(FileUtil.normalizeFile(java)));
+        StyledDocument document = dataObject.getLookup().lookup(EditorCookie.class).openDocument();
+        assertTrue("the .java must be loaded into an editor document with atomic edits: " + document.getClass(),
+                document instanceof NbDocument.WriteLockable);
+        String documentBefore = document.getText(0, document.getLength());
+        DocumentListener failing = new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                try {
+                    if (e.getDocument().getText(e.getOffset(), e.getLength()).contains("void jTextField1ActionPerformed")) {
+                        throw new IncompatibleClassChangeError("injected failure");
+                    }
+                } catch (BadLocationException ex) {
+                    throw new IllegalStateException(ex);
+                }
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+            }
+        };
+        document.addDocumentListener(failing);
+        try {
+            regenerate(java);
+            fail("the injected failure must fail the regeneration");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("java.lang.IncompatibleClassChangeError: injected failure"));
+            assertFalse("the rollback must leave no partial changes: " + e.getMessage(), e.getMessage().contains("unsaved"));
+        } finally {
+            document.removeDocumentListener(failing);
+        }
+
+        assertEquals("the document must be rolled back", documentBefore, document.getText(0, document.getLength()));
+        assertFalse("the rolled back document must not be modified", dataObject.isModified());
+        assertNull("the rolled back handler section must not stay registered",
+                GuardedSectionManager.getInstance(document).findInteriorSection("event_jLabel1MouseClicked"));
+        assertTrue("the file content must not be changed", Arrays.equals(input, Files.readAllBytes(java.toPath())));
+
+        regenerate(java);
+
+        assertMatchesExpected("EventsPanel", java);
     }
 
     /** Per-component variable modifiers and local variables. */

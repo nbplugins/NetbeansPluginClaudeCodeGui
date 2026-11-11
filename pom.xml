@@ -556,6 +556,12 @@
             <artifactId>org-netbeans-modules-editor-lib</artifactId>
             <version>${netbeans.version}</version>
         </dependency>
+        <!-- Guarded sections API (regenerate_form_code rolls back the event handler sections of a failed regeneration) -->
+        <dependency>
+            <groupId>org.netbeans.api</groupId>
+            <artifactId>org-netbeans-modules-editor-guards</artifactId>
+            <version>${netbeans.version}</version>
+        </dependency>
         <!-- SSE/HTTP server for MCP -->
         <dependency>
             <groupId>org.eclipse.jetty</groupId>

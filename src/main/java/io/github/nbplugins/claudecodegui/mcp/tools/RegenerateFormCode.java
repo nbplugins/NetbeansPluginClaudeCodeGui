@@ -19,12 +19,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.Document;
+import javax.swing.text.StyledDocument;
+import org.netbeans.api.editor.guards.GuardedSectionManager;
+import org.netbeans.api.editor.guards.InteriorSection;
 import org.openbeans.claude.netbeans.NbUtils;
 import org.openbeans.claude.netbeans.tools.Tool;
 import org.openide.cookies.EditorCookie;
 import org.openide.filesystems.FileObject;
 import org.openide.filesystems.FileUtil;
 import org.openide.loaders.DataObject;
+import org.openide.text.NbDocument;
 
 /**
  * MCP tool that regenerates the GUI Builder guarded code ({@code initComponents()}
@@ -72,6 +76,9 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
     /** The form module's data object of a {@code .java} / {@code .form} pair. */
     private static final String FORM_DATA_OBJECT = "org.netbeans.modules.form.FormDataObject";
 
+    /** Name prefix of the guarded section of an event handler method (as {@code JavaCodeGenerator} names it). */
+    private static final String EVENT_SECTION_PREFIX = "event_";
+
     /** Guarded header of an event handler method, capturing the handler name. */
     private static final Pattern EVENT_HANDLER_HEADER = Pattern.compile("//GEN-FIRST:event_([\\w$]+)");
 
@@ -106,6 +113,13 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
      * @param addedHandlers  event handler methods that were missing in the {@code .java} and were generated
      */
     record Outcome(boolean designerOpen, boolean codeChanged, String generatedText, List<String> addedHandlers) {}
+
+    /** An error detected by this tool, with a message meant for Claude. */
+    static final class FormToolException extends IllegalStateException {
+        FormToolException(String message) { super(message); }
+
+        FormToolException(String message, Throwable cause) { super(message, cause); }
+    }
 
     /** Creates a new instance of this tool. */
     public RegenerateFormCode() {}
@@ -240,26 +254,32 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
 
         String javaText = javaFo.asText();
         if (!javaText.contains("//GEN-BEGIN:initComponents")) {
-            throw new IllegalStateException(javaName + " has no generated initComponents() guarded block "
+            throw new FormToolException(javaName + " has no generated initComponents() guarded block "
                     + "(//GEN-BEGIN:initComponents ... //GEN-END:initComponents); the form editor cannot generate code into it");
         }
 
         DataObject dataObject = DataObject.find(javaFo);
         Object editorSupport = formEditorSupport(dataObject);
         if (editorSupport == null) {
-            throw new IllegalStateException(javaName + " is not recognized by NetBeans as a GUI Builder form "
+            throw new FormToolException(javaName + " is not recognized by NetBeans as a GUI Builder form "
                     + "(is the Swing GUI Builder / form module enabled?)");
         }
         // An unsupported NetBeans version fails here, before the form is touched.
         FormEditorApi api = FormEditorApi.resolve(editorSupport.getClass());
         if (dataObject.isModified()) {
-            throw new IllegalStateException(javaName + " has unsaved changes in the IDE. "
+            throw new FormToolException(javaName + " has unsaved changes in the IDE. "
                     + "Save them (saveDocument) or ask the user to revert them, then call regenerate_form_code again.");
         }
         waitForDocumentInSync(dataObject.getLookup().lookup(EditorCookie.class), javaFo, javaName);
 
         Set<String> existingHandlers = existingEventHandlers(javaText);
-        Outcome outcome = onEdt(() -> regenerateInFormEditor(api, editorSupport, javaName, formName, existingHandlers));
+        Outcome outcome;
+        try {
+            outcome = onEdt(() -> regenerateInFormEditor(api, editorSupport, javaName, formName, existingHandlers));
+        } catch (Exception | LinkageError e) {
+            // The .java was unmodified before, so a modified one now holds partial changes.
+            throw regenerationFailed(javaName, formName, e, dataObject.isModified());
+        }
         String designerNote = outcome.designerOpen()
                 ? " The open GUI Builder was reloaded from the edited .form." : "";
         if (!outcome.codeChanged()) {
@@ -267,7 +287,7 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
                     + "; nothing was regenerated." + designerNote;
         }
         if (!documentMatchesDisk(outcome.generatedText(), javaFo.asText())) {
-            throw new IllegalStateException("The code was regenerated in the IDE but " + javaName
+            throw new FormToolException("The code was regenerated in the IDE but " + javaName
                     + " on disk was not updated. Ask the user to save it in the IDE.");
         }
         String handlersNote = outcome.addedHandlers().isEmpty() ? ""
@@ -311,30 +331,143 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
             formEditor = invoke(api.getFormEditor(), editorSupport);
         }
         if (formEditor == null) {
-            throw formLoadError(formName);
+            throw formLoadError(formName, null);
         }
+        boolean closed = false;
         try {
-            if (!(Boolean) invoke(api.isFormLoaded(), formEditor)
-                    || (Boolean) invoke(api.anyPersistenceError(), formEditor)) {
-                throw formLoadError(formName);
+            if (!(Boolean) invoke(api.isFormLoaded(), formEditor)) {
+                // Not reportLoadingErrors(): for a form that failed to load it shows modal dialogs.
+                throw formLoadError(formName, null);
+            }
+            if ((Boolean) invoke(api.anyPersistenceError(), formEditor)) {
+                String details = api.reportLoadingErrors() == null ? null
+                        : (String) invoke(api.reportLoadingErrors(), formEditor);
+                throw formLoadError(formName, details);
             }
             Object formModel = invoke(api.getFormModel(), formEditor);
             if (formModel == null || (Boolean) invoke(api.isReadOnly(), formModel)) {
-                throw new IllegalStateException(formName + " was loaded read-only (missing or damaged guarded "
+                throw new FormToolException(formName + " was loaded read-only (missing or damaged guarded "
                         + "sections in " + javaName + ", or a read-only file); code was not regenerated.");
             }
             Document document = (Document) invoke(api.getDocument(), editorSupport);
             String before = documentText(document);
-            List<String> addedHandlers = addMissingEventHandlers(api, formModel, existingHandlers);
-            // Also delivers the queued handler events, in the same batch.
-            invoke(api.fireFormChanged(), formModel, true);
-            invoke(api.regenerateCodeIfNeeded(), formEditor);
+            List<String> addedHandlers = new ArrayList<>();
+            try {
+                // One atomic edit: if the form editor fails halfway, its changes to the document are undone.
+                atomically(document, () -> {
+                    try {
+                        addedHandlers.addAll(addMissingEventHandlers(api, formModel, existingHandlers));
+                        // Also delivers the queued handler events, in the same batch.
+                        invoke(api.fireFormChanged(), formModel, true);
+                        invoke(api.regenerateCodeIfNeeded(), formEditor);
+                    } catch (Throwable t) {
+                        removeEventHandlerSections(document, addedHandlers);
+                        throw t;
+                    }
+                    return null;
+                });
+            } catch (Exception | Error e) {
+                if (!open) {
+                    // Closing the form delivers form events the failed regeneration left queued,
+                    // which mark the .java modified again - so close it before clearing the flag.
+                    closed = true;
+                    invoke(api.closeForm(), formEditor);
+                    clearModifiedAfterRollback(api, editorSupport, document, before, e);
+                }
+                throw e;
+            }
             String after = documentText(document);
             invoke(api.saveDocument(), editorSupport);
             return new Outcome(open, !before.equals(after), after, addedHandlers);
         } finally {
-            if (!open) {
+            if (!open && !closed) {
                 invoke(api.closeForm(), formEditor);
+            }
+        }
+    }
+
+    /**
+     * After a rolled back regeneration the document text is unchanged, but the editor
+     * support still marks the {@code .java} modified: it clears the flag only when an undo
+     * reaches the saved state, not after an atomic edit that was undone. A modified
+     * {@code .java} would make the next call fail with "unsaved changes", so the unchanged
+     * text is saved, which writes back the content the file already has. Only called for a
+     * form this regeneration loaded and closed again (designer not open), so nothing else
+     * touched the form, and only when the document still has the exact text from before. A
+     * failure to save is attached to {@code failure} as suppressed.
+     */
+    private static void clearModifiedAfterRollback(FormEditorApi api, Object editorSupport, Document document,
+                                                   String before, Throwable failure) {
+        try {
+            if (documentText(document).equals(before)) {
+                invoke(api.saveSourceOnly(), editorSupport);
+            }
+        } catch (Exception e) {
+            failure.addSuppressed(e);
+        }
+    }
+
+    /**
+     * Runs the task as one atomic edit of the document ({@link NbDocument#runAtomic}). The
+     * editor's document undoes all changes of an atomic edit that ends with a
+     * {@link RuntimeException} - but not with an {@link Error}, e.g. a {@link LinkageError}
+     * from loading a class of the project. So anything the task throws is passed through
+     * as a {@code RuntimeException} and rethrown unwrapped afterwards. A document without
+     * atomic edits is changed directly.
+     *
+     * @param document the document the task changes
+     * @param task     the changes
+     * @return the task's result
+     * @throws Exception what the task threw ({@link Error}s are rethrown as such)
+     */
+    static <T> T atomically(Document document, Callable<T> task) throws Exception {
+        if (!(document instanceof StyledDocument styledDocument)) {
+            return task.call();
+        }
+        AtomicReference<T> result = new AtomicReference<>();
+        try {
+            NbDocument.runAtomic(styledDocument, () -> {
+                try {
+                    result.set(task.call());
+                } catch (Throwable t) {
+                    throw new RollbackSignal(t);
+                }
+            });
+        } catch (RollbackSignal signal) {
+            Throwable t = signal.getCause();
+            if (t instanceof Exception e) {
+                throw e;
+            }
+            throw (Error) t;
+        }
+        return result.get();
+    }
+
+    /** Carries what the task of {@link #atomically} threw out of the atomic edit, so that it is rolled back. */
+    private static final class RollbackSignal extends RuntimeException {
+        RollbackSignal(Throwable cause) {
+            super(null, cause, false, false);
+        }
+    }
+
+    /**
+     * Unregisters the guarded sections of the given event handlers, if the form editor
+     * created them. Rolling back an atomic edit undoes the text of a section created in
+     * it, but the section stays registered in the {@link GuardedSectionManager}; when the
+     * document is saved later, its guard markers would be written at the collapsed position.
+     */
+    private static void removeEventHandlerSections(Document document, List<String> handlers) {
+        if (handlers.isEmpty() || !(document instanceof StyledDocument styledDocument)) {
+            return;
+        }
+        GuardedSectionManager guards = GuardedSectionManager.getInstance(styledDocument);
+        if (guards == null) {
+            return;
+        }
+        for (String handler : handlers) {
+            InteriorSection section = guards.findInteriorSection(EVENT_SECTION_PREFIX + handler);
+            if (section != null) {
+                section.removeSection();
             }
         }
     }
@@ -371,9 +504,55 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
         return added;
     }
 
-    private static IllegalStateException formLoadError(String formName) {
-        return new IllegalStateException("NetBeans could not load " + formName
-                + " without errors. Check the .form XML, or open the form in the GUI Builder (Design view) to see the errors.");
+    /**
+     * Turns a failed regeneration into an error whose message tells Claude what went
+     * wrong. An error of this tool keeps its message; any other one, e.g. thrown by the
+     * form module, is described by its type and message, since its message alone may be
+     * empty. A {@link LinkageError} means a class used by the form (e.g. a custom
+     * component of the project) could not be loaded from the project's compiled classes.
+     *
+     * @param javaName    name of the {@code .java} file
+     * @param formName    name of the {@code .form} file
+     * @param cause       what was thrown
+     * @param leftChanges whether the failed regeneration left unsaved changes in the {@code .java} document
+     * @return the error to throw
+     */
+    static FormToolException regenerationFailed(String javaName, String formName, Throwable cause,
+                                                boolean leftChanges) {
+        String message;
+        if (cause instanceof FormToolException) {
+            message = cause.getMessage();
+        } else {
+            message = "The NetBeans form editor failed to regenerate the code of " + javaName + " from "
+                    + formName + ": " + describe(cause) + ".";
+            if (cause instanceof LinkageError) {
+                message += " A class used by the form could not be loaded from the project's compiled classes;"
+                        + " they are probably missing or out of date. Ask the user to clean and build the project,"
+                        + " then call regenerate_form_code again.";
+            } else {
+                message += " The stack trace is in the IDE log (messages.log).";
+            }
+        }
+        if (leftChanges) {
+            message += " The failed regeneration left unsaved, partial changes in " + javaName
+                    + " in the IDE; the file on disk was not changed by it. Ask the user to discard them"
+                    + " (close " + javaName + " without saving) before calling regenerate_form_code again.";
+        }
+        return new FormToolException(message, cause);
+    }
+
+    private static String describe(Throwable t) {
+        String message = t.getMessage();
+        return message == null || message.isBlank() ? t.getClass().getName() : t.getClass().getName() + ": " + message;
+    }
+
+    private static IllegalStateException formLoadError(String formName, String details) {
+        String message = "NetBeans could not load " + formName + " without errors; code was not regenerated.";
+        if (details != null && !details.isBlank()) {
+            message += " The form editor reported:\n" + details.strip() + "\n";
+        }
+        return new FormToolException(message
+                + " Check the .form XML, or open the form in the GUI Builder (Design view) to see the errors.");
     }
 
     /**
@@ -391,14 +570,18 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
      * {@code FormModel}, {@code FormEvents}, {@code Event}): the method signatures and the
      * form model's event queuing are the same in both. {@code RegenerateFormCodeIT} runs
      * the tool against the real form editor of NetBeans 23, the compile-time version.
+     *
+     * <p>{@code FormEditor.reportLoadingErrors()} is only used to describe load errors;
+     * the form module keeps it "temporarily for compatibility", so it is optional
+     * ({@code null} when missing) and its absence only drops those details.
      */
     record FormEditorApi(Method isOpened, Method loadForm, Method reloadFormEditor, Method getFormEditor,
-                         Method getDocument, Method saveDocument,
+                         Method getDocument, Method saveDocument, Method saveSourceOnly,
                          Method isFormLoaded, Method anyPersistenceError, Method getFormModel,
                          Method regenerateCodeIfNeeded, Method closeForm,
                          Method isReadOnly, Method fireFormChanged,
                          Method getFormEvents, Method getAllEventHandlers, Method getEventsForHandler,
-                         Method fireEventHandlerAdded) {
+                         Method fireEventHandlerAdded, Method reportLoadingErrors) {
 
         /**
          * Resolves the form module methods starting from the runtime class of the form editor support.
@@ -423,6 +606,7 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
                     getFormEditor,
                     method(supportClass, "getDocument", Document.class),
                     method(supportClass, "saveDocument", null),
+                    method(supportClass, "saveSourceOnly", null),
                     method(editorClass, "isFormLoaded", boolean.class),
                     method(editorClass, "anyPersistenceError", boolean.class),
                     getFormModel,
@@ -434,7 +618,17 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
                     method(eventsClass, "getAllEventHandlers", String[].class),
                     getEventsForHandler,
                     method(modelClass, "fireEventHandlerAdded", null,
-                            eventClass, String.class, String.class, String.class, boolean.class));
+                            eventClass, String.class, String.class, String.class, boolean.class),
+                    optionalMethod(editorClass, "reportLoadingErrors", String.class));
+        }
+
+        /** Like {@link #method}, but returns {@code null} instead of failing. */
+        private static Method optionalMethod(Class<?> owner, String name, Class<?> returnType, Class<?>... paramTypes) {
+            try {
+                return method(owner, name, returnType, paramTypes);
+            } catch (IllegalStateException e) {
+                return null;
+            }
         }
 
         /**
@@ -460,7 +654,7 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
     }
 
     private static IllegalStateException unsupported(Class<?> owner, String methodName, String problem, Exception cause) {
-        return new IllegalStateException("Unsupported NetBeans form editor version: "
+        return new FormToolException("Unsupported NetBeans form editor version: "
                 + owner.getName() + "." + methodName + "() " + problem, cause);
     }
 
@@ -514,7 +708,7 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
         long deadline = System.currentTimeMillis() + DOCUMENT_SYNC_TIMEOUT_MS;
         while (!documentMatchesDisk(documentText(document), diskText)) {
             if (System.currentTimeMillis() > deadline) {
-                throw new IllegalStateException("The open editor of " + javaName + " still differs from the file on disk. "
+                throw new FormToolException("The open editor of " + javaName + " still differs from the file on disk. "
                         + "Ask the user to reload or close it in the IDE, then call regenerate_form_code again.");
             }
             Thread.sleep(100);
@@ -557,21 +751,30 @@ public class RegenerateFormCode implements Tool<RegenerateFormCode.Params, Strin
         }
     }
 
-    private static <T> T onEdt(Callable<T> task) throws Exception {
+    /**
+     * Runs the task on the EDT and rethrows whatever it threw, {@link Error}s included -
+     * otherwise {@code invokeAndWait} wraps them in an {@code InvocationTargetException}
+     * without a message.
+     */
+    static <T> T onEdt(Callable<T> task) throws Exception {
         if (EventQueue.isDispatchThread()) {
             return task.call();
         }
         AtomicReference<T> result = new AtomicReference<>();
-        AtomicReference<Exception> error = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
         EventQueue.invokeAndWait(() -> {
             try {
                 result.set(task.call());
-            } catch (Exception e) {
-                error.set(e);
+            } catch (Throwable t) {
+                error.set(t);
             }
         });
-        if (error.get() != null) {
-            throw error.get();
+        Throwable t = error.get();
+        if (t instanceof Exception e) {
+            throw e;
+        }
+        if (t instanceof Error err) {
+            throw err;
         }
         return result.get();
     }

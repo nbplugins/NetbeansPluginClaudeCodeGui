@@ -101,6 +101,48 @@ public class RegenerateFormCodeTest {
     }
 
     @Test
+    public void errorThrownOnEdtIsRethrownAsIs() {
+        // invokeAndWait would wrap it in an InvocationTargetException without a message
+        IncompatibleClassChangeError error = assertThrows(IncompatibleClassChangeError.class,
+                () -> RegenerateFormCode.onEdt(() -> {
+                    throw new IncompatibleClassChangeError("widget.PopupMenu and widget.PopupMenu$Separator disagree");
+                }));
+        assertEquals("widget.PopupMenu and widget.PopupMenu$Separator disagree", error.getMessage());
+    }
+
+    @Test
+    public void linkageErrorOfFormModuleIsDescribedWithBuildHint() {
+        IllegalStateException e = RegenerateFormCode.regenerationFailed("Dlg.java", "Dlg.form",
+                new IncompatibleClassChangeError("widget.PopupMenu and widget.PopupMenu$Separator disagree"), false);
+
+        assertTrue(e.getMessage().startsWith("The NetBeans form editor failed to regenerate the code of Dlg.java from Dlg.form: "
+                + "java.lang.IncompatibleClassChangeError: widget.PopupMenu and widget.PopupMenu$Separator disagree."),
+                e.getMessage());
+        assertTrue(e.getMessage().contains("clean and build the project"), e.getMessage());
+        assertFalse(e.getMessage().contains("unsaved"), e.getMessage());
+    }
+
+    @Test
+    public void exceptionWithoutMessageIsDescribedByItsType() {
+        IllegalStateException e = RegenerateFormCode.regenerationFailed("Dlg.java", "Dlg.form",
+                new NullPointerException(), false);
+
+        assertTrue(e.getMessage().contains(": java.lang.NullPointerException."), e.getMessage());
+        assertFalse(e.getMessage().contains("null"), e.getMessage());
+        assertTrue(e.getMessage().contains("IDE log"), e.getMessage());
+    }
+
+    @Test
+    public void ownErrorKeepsItsMessageAndReportsLeftoverChanges() {
+        IllegalStateException e = RegenerateFormCode.regenerationFailed("Dlg.java", "Dlg.form",
+                new RegenerateFormCode.FormToolException("Dlg.form was loaded read-only."), true);
+
+        assertTrue(e.getMessage().startsWith("Dlg.form was loaded read-only. The failed regeneration left unsaved, "
+                + "partial changes in Dlg.java"), e.getMessage());
+        assertTrue(e.getMessage().contains("close Dlg.java without saving"), e.getMessage());
+    }
+
+    @Test
     public void runChecksAccessToBothFilesBeforeRegenerating() throws Exception {
         createForm("MyFrame");
         List<File> checked = new ArrayList<>();

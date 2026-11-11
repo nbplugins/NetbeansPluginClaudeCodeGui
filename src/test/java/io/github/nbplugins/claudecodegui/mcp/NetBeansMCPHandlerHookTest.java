@@ -191,11 +191,72 @@ class NetBeansMCPHandlerHookTest {
     }
 
     // -------------------------------------------------------------------------
+    // permission_mode of the hook call takes precedence over the screen-detected mode
+    // -------------------------------------------------------------------------
+
+    @Test
+    void hookPermissionModeAutoAutoAllowsWhenScreenDetectionMissedIt() throws Exception {
+        // No registry entry: the mode was not recognized on the terminal screen
+        CompletableFuture<String> future = handler.handlePreToolUse(editJsonWithMode(FILE_OUTSIDE, "auto"));
+
+        assertTrue(future.isDone(), "auto mode reported by the hook must auto-allow immediately");
+        assertTrue(future.get(1, TimeUnit.SECONDS).contains("\"allow\""));
+    }
+
+    @Test
+    void hookPermissionModeBypassAutoAllows() throws Exception {
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.DEFAULT);
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJsonWithMode(FILE_OUTSIDE, "bypassPermissions"));
+
+        assertTrue(future.isDone());
+        assertTrue(future.get(1, TimeUnit.SECONDS).contains("\"allow\""));
+    }
+
+    @Test
+    void hookPermissionModeAcceptEditsAutoAllowsOnlyInsideProject() throws Exception {
+        CompletableFuture<String> inside = handler.handlePreToolUse(editJsonWithMode(FILE_INSIDE, "acceptEdits"));
+        assertTrue(inside.isDone());
+        assertTrue(inside.get(1, TimeUnit.SECONDS).contains("\"allow\""));
+
+        CompletableFuture<String> outside = handler.handlePreToolUse(editJsonWithMode(FILE_OUTSIDE, "acceptEdits"));
+        assertFalse(outside.isDone() && outside.get(1, TimeUnit.SECONDS).contains("\"allow\""),
+                "acceptEdits must not auto-allow a file outside the project");
+    }
+
+    @Test
+    void hookPermissionModeDefaultOverridesStaleScreenDetection() throws Exception {
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.AUTO);
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJsonWithMode(FILE_INSIDE, "default"));
+
+        assertFalse(future.isDone() && future.get(1, TimeUnit.SECONDS).contains("\"allow\""),
+                "default mode reported by the hook must not auto-allow");
+    }
+
+    @Test
+    void unknownHookPermissionModeFallsBackToScreenDetection() throws Exception {
+        ClaudeSessionModel.EDIT_MODE_REGISTRY.put(CWD, EditMode.BYPASS_PERMISSIONS);
+
+        CompletableFuture<String> future = handler.handlePreToolUse(editJsonWithMode(FILE_OUTSIDE, "dontAsk"));
+
+        assertTrue(future.isDone());
+        assertTrue(future.get(1, TimeUnit.SECONDS).contains("\"allow\""));
+    }
+
+    // -------------------------------------------------------------------------
     // helpers
     // -------------------------------------------------------------------------
 
     private static String editJson(String filePath) {
         return editJsonWithCwd(filePath, CWD);
+    }
+
+    private static String editJsonWithMode(String filePath, String permissionMode) {
+        return "{\"tool_name\":\"Edit\","
+                + "\"tool_input\":{\"file_path\":\"" + filePath + "\","
+                + "\"old_string\":\"x\",\"new_string\":\"y\"},"
+                + "\"cwd\":\"" + CWD + "\",\"permission_mode\":\"" + permissionMode + "\"}";
     }
 
     private static String editJsonWithCwd(String filePath, String cwd) {

@@ -101,8 +101,12 @@ public class RegenerateFormCodeEditorTest {
             model.editor = this;
         }
 
+        /** Non-fatal load errors, as {@code reportLoadingErrors()} describes them; {@code null} for none. */
+        String loadingErrors;
+
         public boolean isFormLoaded() { return loaded; }
-        public boolean anyPersistenceError() { return false; }
+        public boolean anyPersistenceError() { return loadingErrors != null; }
+        public String reportLoadingErrors() { return loadingErrors; }
         public FakeFormModel getFormModel() { return model; }
         public void closeForm() { closed = true; loaded = false; }
 
@@ -210,6 +214,22 @@ public class RegenerateFormCodeEditorTest {
 
         assertEquals(List.of(), outcome.addedHandlers());
         assertEquals(NEW_CODE, support.savedJava);
+    }
+
+    @Test
+    public void loadErrorsOfTheFormEditorAreReported() throws Exception {
+        FakeEditorSupport support = new FakeEditorSupport(false);
+        support.formEditor.loadingErrors = "Error in loading component: [JFrame]->jPanel1->tblData\n"
+                + "Cannot load property: unknownProperty";
+
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> regenerate(support, "MyFrame.java", "MyFrame.form", Set.of()));
+
+        assertTrue(e.getMessage().startsWith("NetBeans could not load MyFrame.form without errors; code was not regenerated."),
+                e.getMessage());
+        assertTrue(e.getMessage().contains("Cannot load property: unknownProperty"), e.getMessage());
+        assertEquals(OLD_CODE, support.savedJava, "nothing may be regenerated or saved");
+        assertTrue(support.formEditor.closed, "a form loaded only for regeneration must be closed again");
     }
 
     @Test
