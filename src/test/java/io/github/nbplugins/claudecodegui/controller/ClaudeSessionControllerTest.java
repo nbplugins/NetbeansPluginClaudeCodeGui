@@ -942,6 +942,123 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Text typed into an open menu — a search filter or a text option's
+     * answer — belongs to the menu, not to the next prompt. When an answer
+     * worker submits the menu, the recorded line must be dropped with it:
+     * otherwise the next prompt sent from the panel is composed with the
+     * menu's text and published as evidence the conversation never received.
+     */
+    @Test
+    void aMenuAnswerIsNotDraftedIntoTheNextPanelPrompt() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        CountDownLatch digitDone = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if ("3".equals(new String(bytes, java.nio.charset.StandardCharsets.UTF_8))) {
+                digitDone.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("TYPE:3:auto");
+        assertTrue(digitDone.await(5, TimeUnit.SECONDS),
+                "the worker activated the text option");
+
+        // Keys typed during the worker's pause answer the menu's editor.
+        controller.simulateTerminalInput(
+                "feedback".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 100L);
+
+        release.countDown();
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while (model.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertNull(model.getActiveChoiceMenu(),
+                "the worker retired the menu once its answer was forwarded");
+
+        assertEquals("hello", controller.simulateGuiSend("hello", START_MS + 300L),
+                "the menu's answer must not become the draft of the next prompt");
+    }
+
+    /**
+     * A NEW tab first guessed a sibling's {@code b}, then its own newer {@code a}
+     * appeared. A third tab resuming {@code a} makes the file a live tab's own,
+     * but that resume does not prove the earlier guess was correct: {@code a}
+     * still carries this run's submission, so it must keep competing and the
+     * stop must not write the name into the guessed file.
+     */
+    @Test
+    void resumingTheCompetingFileDoesNotMakeTheGuessSafeToRename() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            // The sibling's file is written first and this tab guesses it.
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 10_600L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the only file written since the submission is provisionally adopted");
+            controller.simulateAwaitIdentityScan();
+
+            // This tab's own newer file appears and holds the same text.
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 12_000L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 12_500L);
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the tracked conversation is kept while the evidence cannot tell");
+
+            // A third tab resumes a, so the competitor now belongs to a live tab.
+            ClaudeSessionModel modelC = new ClaudeSessionModel();
+            modelC.setWorkingDirectory(work.toFile());
+            ClaudeSessionController tabC =
+                    new ClaudeSessionController(modelC, Collections::emptyList);
+            tabC.simulateProcessStart(START_MS + 20_000L, true);
+            tabC.simulateLiveSession(config, "a", Set.of("a", "b"));
+            try {
+                controller.stopAndRename("A-title");
+            } finally {
+                tabC.stopProcess();
+            }
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the guessed conversation must not be renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the competing file keeps the guess unresolved");
+    }
+
+    /**
      * A model switch writes the command at the TUI's cursor, so a draft typed
      * in the terminal is submitted together with it. The write bypasses the
      * terminal recorder, so unless the command retires the draft the next panel

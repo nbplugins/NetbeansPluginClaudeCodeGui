@@ -1372,7 +1372,15 @@ public class ClaudeSessionController {
             }
         }
         if (promptAt <= 0) return false;
-        Set<String> shared = sessionsOwnedByOtherLiveTabs(dir, configDir);
+        // A file another live tab launched on is that tab's conversation, but
+        // the launch does not prove it recorded this submission: the tab may
+        // have resumed the very file this run wrote, and only files written
+        // since the submission are considered. A later resume of a competing
+        // file therefore leaves the earlier guess just as unresolved as
+        // before, so it must still compete; excluding it would authorize a
+        // rename the evidence cannot support. The tracked file is the
+        // candidate itself and stays out of the search.
+        Set<String> shared = new HashSet<>();
         shared.add(sessionId);
         if (launchIdentityKnown && launchSessionId != null) {
             // The launch conversation is this tab's own by construction, not
@@ -5168,16 +5176,19 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Writes the key that answers a choice menu and retires that menu inside
-     * the recorder's lock. The write alone is not enough: between it and the
-     * retirement a terminal writer waiting for the lock could classify the
-     * prompt typed right after the key against the menu the TUI already
-     * dismissed, and swallow it as another menu answer.
+     * Writes the key that answers a choice menu, retires that menu and drops
+     * the line recorded while it was open, all inside the recorder's lock. The
+     * write alone is not enough: between it and the retirement a terminal
+     * writer waiting for the lock could classify the prompt typed right after
+     * the key against the menu the TUI already dismissed, and swallow it as
+     * another menu answer. The line typed into the menu — its search filter or
+     * a text option's answer — is the menu's, not a draft of the next prompt:
+     * keeping it would prefix that prompt's evidence with it.
      */
     private void writePtyAnsweringMenu(byte[] bytes) throws IOException {
         synchronized (terminalInputLine) {
             writePty(bytes);
-            completeTerminalMenu(openChoiceMenu());
+            discardPickerSearchText();
         }
     }
 
