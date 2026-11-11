@@ -317,6 +317,53 @@ class ScreenContentDetectorTest {
         assertEquals(java.util.Optional.of(expected), detector.detectEditMode(lines));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "  ⏵⏵ auto mode on · 3 shells · esc to interrupt · ← 1 agent · ↓ to manage | AUTO",
+            "  ⏵⏵ accept edits on · 2 shells · ← 1 agent                              | ACCEPT_EDITS",
+            "  ⏸ plan mode on (shift+tab to cycle) · ← 1 agent                        | PLAN",
+            "  ⏵⏵ bypass permissions on · ← 2 agents                                  | BYPASS_PERMISSIONS"
+    })
+    void detectEditModeWhenAgentListRenderedBelowModeLine(String modeLine, EditMode expected) {
+        List<String> lines = new ArrayList<>(List.of(
+                "❯ ",
+                "────────────────────────────────────────────────────────────",
+                modeLine,
+                "",
+                "  ● main",
+                "  ◯ Plan     Parsing superclasses              2h 18m 31s · ↓ 145.7k tokens",
+                "  ◯ Explore  Reading mutabilityUtils.kt        23m 6s · ↓ 90.5k tokens"
+        ));
+        for (int i = 0; i < 3; i++) lines.add("");
+        assertEquals(java.util.Optional.of(expected), detector.detectEditMode(lines));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 5, 10})
+    void detectEditModeWithCompactHintAndManyAgentRows(int agents) {
+        List<String> lines = new ArrayList<>(List.of(
+                "❯ ",
+                "────────────────────────────────────────────────────────────",
+                "  ⏸ plan mode on · 3 shells · esc to interrupt · ← 1 agent   ✘ Auto-update failed",
+                "                                            0% until auto-compact",
+                "",
+                "  ● main"
+        ));
+        for (int i = 0; i < agents; i++) lines.add("  ◯ Agent" + i + "  Working on something   1m · ↓ 1k tokens");
+        assertEquals(java.util.Optional.of(EditMode.PLAN), detector.detectEditMode(lines));
+    }
+
+    @org.junit.jupiter.api.Test
+    void detectEditModeMainBulletAbovePromptIsNotCut() {
+        List<String> lines = new ArrayList<>(List.of(
+                "  ● main branch looks fine",
+                "❯ ",
+                "────────────────────────────────────────────────────────────",
+                "  ⏵⏵ auto mode on (shift+tab to cycle)"
+        ));
+        assertEquals(java.util.Optional.of(EditMode.AUTO), detector.detectEditMode(lines));
+    }
+
     @org.junit.jupiter.api.Test
     void detectEditModeNotAcceptEditsWhenOnlyMentionedInMenuOptionAboveBottom() {
         // A line above the bottom one is only trusted when it starts with the mode glyph;

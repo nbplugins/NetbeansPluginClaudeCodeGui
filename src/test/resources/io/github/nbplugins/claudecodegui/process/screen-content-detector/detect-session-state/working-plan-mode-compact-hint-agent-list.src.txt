@@ -1,0 +1,10 @@
+* Simmering… (32m 29s · ↓ 7.5k tokens)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── j2k-conversion-plugin-stage ─
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ plan mode on · 3 shells · esc to interrupt · ← 1 agent · ↓ to manage          ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+                                                                                                                                        0% until auto-compact
+
+  ● main
+  ◯ Plan  Checking KotlinPluginModeProvider for duplicate definitions                                                             2h 40m 42s · ↓ 70.2k tokens
