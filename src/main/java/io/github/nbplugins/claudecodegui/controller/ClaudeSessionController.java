@@ -1329,14 +1329,14 @@ public class ClaudeSessionController {
     private boolean identityRemainsAmbiguous(java.io.File dir, java.nio.file.Path configDir,
                                              String sessionId) {
         if (sessionId == null) return false;
-        if (isLaunchIdentity(sessionId) && conversationSwitchAt > 0
-                && promptSubmittedAt <= conversationSwitchAt) {
+        if (conversationSwitchAt > 0 && promptSubmittedAt <= conversationSwitchAt) {
             // The last thing the terminal did was switch the conversation, and
             // nothing submitted since has shown which file the process writes.
-            // The launch conversation is then the one the switch left behind:
-            // a picker entry may be a conversation another live tab writes,
-            // which no evidence pass can adopt, so the entered name cannot be
-            // attributed to the launch file either.
+            // The identity tracked here is then the conversation the switch
+            // left behind — whether it was established at launch or resolved
+            // by evidence before the switch: a picker entry may be a
+            // conversation another live tab writes, which no evidence pass can
+            // adopt, so the entered name cannot be attributed to that file.
             return true;
         }
         if (isLaunchIdentity(sessionId)) return false;
@@ -3760,7 +3760,7 @@ public class ClaudeSessionController {
                             Thread.sleep(100);
                         }
                         // Right arrow to submit the selection
-                        writePty(new byte[]{0x1b, '[', 'C'});
+                        writePtyAnsweringMenu(new byte[]{0x1b, '[', 'C'});
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer MULTI write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
@@ -3823,7 +3823,7 @@ public class ClaudeSessionController {
                         writePty(new byte[]{0x1b, '[', 'A'});
                         // 6. Submit with right arrow
                         Thread.sleep(100);
-                        writePty(new byte[]{0x1b, '[', 'C'});
+                        writePtyAnsweringMenu(new byte[]{0x1b, '[', 'C'});
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer MULTI_TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
@@ -3878,7 +3878,7 @@ public class ClaudeSessionController {
                             }
                             writePty(text);
                             Thread.sleep(200);
-                            writePty("\r");
+                            writePtyAnsweringMenu("\r");
                         } else {
                             synchronized (terminalInputLine) {
                                 writePty(digit);
@@ -3891,7 +3891,7 @@ public class ClaudeSessionController {
                             Thread.sleep(200);
                             writePty(text);
                             Thread.sleep(200);
-                            writePty("\r");
+                            writePtyAnsweringMenu("\r");
                         }
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer TYPE write failed: " + ex.getMessage());
@@ -3918,13 +3918,10 @@ public class ClaudeSessionController {
                 int delta = targetIdx - currentIdx;
                 LOG.fine("[PTY write] ARROW targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
                 if (delta == 0) {
-                    writePty("\r");
                     // The picker closes on that Enter: until then its entry
                     // stays the context for terminal input (see the TYPE
-                    // branch), and it is retired once the Enter is out.
-                    synchronized (terminalInputLine) {
-                        completeTerminalMenu(openChoiceMenu());
-                    }
+                    // branch), and it is retired together with the Enter.
+                    writePtyAnsweringMenu("\r");
                     clearActiveChoiceMenu();
                 } else {
                     byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
@@ -3941,7 +3938,7 @@ public class ClaudeSessionController {
                                 }
                                 Thread.sleep(80);
                             }
-                            writePty("\r");
+                            writePtyAnsweringMenu("\r");
                         } catch (IOException ex) {
                             LOG.warning("writePtyAnswer ARROW write failed: " + ex.getMessage());
                         } catch (InterruptedException ie) {
@@ -3973,17 +3970,28 @@ public class ClaudeSessionController {
                     int delta = targetIdx - currentIdx;
                     LOG.fine("[PTY write] ARROW-digit targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
                     if (delta == 0) {
-                        writePty("\r");
+                        writePtyAnsweringMenu("\r");
                         clearActiveChoiceMenu();
                     } else {
                         byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                        int step = Integer.signum(delta);
                         Thread t = new Thread(() -> {
                             try {
                                 for (int i = 0; i < Math.abs(delta); i++) {
-                                    writePty(arrow);
+                                    // The write and the focus update share the
+                                    // recorder's lock. The arrows leave the
+                                    // text-input option, where a digit was text
+                                    // for its editor: without the update the
+                                    // recorder would swallow the digit that
+                                    // selects an ordinary option as more editor
+                                    // text, and the prompt after it with it.
+                                    synchronized (terminalInputLine) {
+                                        writePty(arrow);
+                                        trackForwardedMenuFocus(current, currentIdx + (i + 1) * step);
+                                    }
                                     Thread.sleep(80);
                                 }
-                                writePty("\r");
+                                writePtyAnsweringMenu("\r");
                             } catch (IOException ex) {
                                 LOG.warning("writePtyAnswer ARROW-digit write failed: " + ex.getMessage());
                             } catch (InterruptedException ie) {
@@ -4036,7 +4044,7 @@ public class ClaudeSessionController {
                     writePty(arrow);
                     Thread.sleep(80);
                 }
-                writePty("\r");
+                writePtyAnsweringMenu("\r");
             } catch (IOException ex) {
                 LOG.warning(threadName + " write failed: " + ex.getMessage());
             } catch (InterruptedException ie) {
@@ -5157,6 +5165,25 @@ public class ClaudeSessionController {
             resetTerminalInputRecording(true);
             writePty(text);
         }
+    }
+
+    /**
+     * Writes the key that answers a choice menu and retires that menu inside
+     * the recorder's lock. The write alone is not enough: between it and the
+     * retirement a terminal writer waiting for the lock could classify the
+     * prompt typed right after the key against the menu the TUI already
+     * dismissed, and swallow it as another menu answer.
+     */
+    private void writePtyAnsweringMenu(byte[] bytes) throws IOException {
+        synchronized (terminalInputLine) {
+            writePty(bytes);
+            completeTerminalMenu(openChoiceMenu());
+        }
+    }
+
+    /** @see #writePtyAnsweringMenu(byte[]) */
+    private void writePtyAnsweringMenu(String text) throws IOException {
+        writePtyAnsweringMenu(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /**
