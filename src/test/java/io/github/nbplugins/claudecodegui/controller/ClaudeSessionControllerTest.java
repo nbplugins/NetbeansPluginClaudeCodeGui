@@ -8254,6 +8254,103 @@ class ClaudeSessionControllerTest {
                 .findSession(work, config, "s1").customTitle());
     }
 
+    /**
+     * A NEW tab submits a prompt whose text the plugin never sees (recalled
+     * from the TUI history or completed by Tab). The first file with a user
+     * record written since that submission is only a provisional guess: the
+     * tab's own file appears later with the same kind of record, and the
+     * evidence cannot tell which one this run wrote. The stop must not write
+     * the entered name into either of them.
+     */
+    @Test
+    void aStopDoesNotRenameAnUnknownTextGuessWhileAnotherFileCompares() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        // The recalled prompt is submitted while no file of this run exists;
+        // the only file written since then is adopted provisionally.
+        controller.simulatePromptText(null);
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+        writeSession(dir, "b", "b");
+        appendUserPrompt(dir, "b", "sibling prompt", START_MS + 10_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the only file written since the submission is provisionally adopted");
+        controller.simulateAwaitIdentityScan();
+
+        // This tab's own file appears later: another ID, the same submission,
+        // and no text that could match it as this run's evidence.
+        writeSession(dir, "a", "a");
+        appendUserPrompt(dir, "a", "own prompt", START_MS + 12_000L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 12_500L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the tracked conversation is kept while the evidence cannot tell");
+        controller.simulateAwaitIdentityScan();
+
+        controller.stopAndRename("A-title");
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the provisional guess must not be renamed as this tab's");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the competing file must not be renamed as this tab's");
+    }
+
+    /**
+     * A checkbox answer is forwarded asynchronously: the worker waits between
+     * the toggles and sends the submitting Right arrow last, and the TUI keeps
+     * the menu open while it does. Terminal input arriving in that window
+     * answers the menu, so a line typed there is not a prompt and must not
+     * become prompt evidence.
+     */
+    @Test
+    void aCheckboxAnswerKeepsTheMenuUntilTheSubmittingArrow() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Select files", List.of(
+                checkbox("1", false), checkbox("2", false)), 0));
+
+        CountDownLatch firstToggle = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if ("1".equals(new String(bytes, java.nio.charset.StandardCharsets.UTF_8))) {
+                firstToggle.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("MULTI:1");
+
+        assertTrue(firstToggle.await(5, TimeUnit.SECONDS),
+                "the worker forwarded the first toggle");
+
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the TUI is still in the checkbox menu: the typed line is the menu's");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
+
+        release.countDown();
+
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (model.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertNull(model.getActiveChoiceMenu(),
+                "the menu is retired once the answer has been forwarded");
+    }
+
     // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------

@@ -1315,7 +1315,7 @@ public class ClaudeSessionController {
         if (claims != null && claims.owners.contains(this)) return false;
         String promptText = lastPromptText;
         long promptAt = promptSubmittedAt;
-        if (promptText == null || promptText.isBlank() || promptAt <= 0) return false;
+        if (promptAt <= 0) return false;
         // A file holding the same prompt that no other live tab established
         // could equally be the one this run wrote: the evidence cannot tell
         // them apart. A merely tentative claim is another guess, not ownership:
@@ -1331,6 +1331,20 @@ public class ClaudeSessionController {
         if (externalInputAt > since) since = externalInputAt;
         Set<String> shared = sessionsOwnedByOtherLiveTabs(dir, configDir);
         shared.add(sessionId);
+        if (launchIdentityKnown && launchSessionId != null) {
+            // The launch conversation is this tab's own by construction, not
+            // another tab's guess: after a switch it may receive a record of
+            // its own without being the file this submission went to.
+            shared.add(launchSessionId);
+        }
+        if (promptText == null || promptText.isBlank()) {
+            // The submitted text is unknown (recalled from the TUI history or
+            // completed by Tab), so no file can be matched by its content: a
+            // file holding a user record of its own since the submission could
+            // equally be the one this run wrote.
+            return newestSessionWithUserMessageSince(dir, configDir, since, promptAt, shared)
+                    != null;
+        }
         return findPromptBearingSession(dir, configDir, since, shared, null,
                 promptAt, promptText) != null;
     }
@@ -3518,11 +3532,13 @@ public class ClaudeSessionController {
         // answered menu stays in the model until the next poll, so it is
         // retired here with the same marker the terminal path uses — a panel
         // send in that window must not be mistaken for another menu answer.
-        // An answer typed into the menu's editor is the exception: the TUI keeps
-        // it open until the worker's Enter, and terminal input arriving in
-        // between answers that editor, so the worker retires it.
+        // An answer typed into the menu's editor — or toggled in a checkbox
+        // menu, whose submitting arrow the worker sends after a pause — is the
+        // exception: the TUI keeps the menu open until that key, and terminal
+        // input arriving in between answers the menu, so the worker retires it.
         boolean typedAnswer = answer != null
-                && (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:"));
+                && (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:")
+                    || answer.startsWith("MULTI:"));
         if (!typedAnswer) {
             synchronized (terminalInputLine) {
                 completeTerminalMenu(openChoiceMenu());
@@ -3561,11 +3577,18 @@ public class ClaudeSessionController {
                         LOG.warning("writePtyAnswer MULTI write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        // The checkbox menu stays open in the TUI until the
+                        // submitting arrow above, so terminal input arriving
+                        // meanwhile is still the menu's (see the TYPE branch).
+                        synchronized (terminalInputLine) {
+                            completeTerminalMenu(openChoiceMenu());
+                        }
+                        clearActiveChoiceMenu();
                     }
                 }, "pty-multiselect");
                 t.setDaemon(true);
                 t.start();
-                clearActiveChoiceMenu();
             } else if (answer.startsWith("MULTI_TYPE:")) {
                 // Format: MULTI_TYPE:checks:typeN:text
                 // e.g. MULTI_TYPE:1,3:5:my text  or  MULTI_TYPE::5:my text
