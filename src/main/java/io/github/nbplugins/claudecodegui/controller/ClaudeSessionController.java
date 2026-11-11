@@ -106,6 +106,12 @@ public class ClaudeSessionController {
 
     /** Package-private for tests: runs whenever the PTY child is killed. */
     private volatile Runnable ptyKillHook;
+
+    /**
+     * Package-private for tests: runs just before the stop path snapshots the
+     * session claims, so a concurrent process exit can be interleaved there.
+     */
+    private volatile Runnable claimSnapshotHook;
     private volatile java.util.function.Consumer<PtyTtyConnector> ptyTargetHook;
     private java.io.File workingDir;
     private volatile JediTermWidget terminalWidget;
@@ -1231,8 +1237,17 @@ public class ClaudeSessionController {
                 // eligible to that tab instead. A process that quit on its own
                 // before this call already released the claims and left the
                 // conversations it held in preservedClaims: they count the same.
-                Set<String> held = new HashSet<>(preservedClaims);
-                held.addAll(claimedSessionIds(dir, configDir));
+                // The exit waiter moves the claims between those two sets under
+                // the ownership lock, so both are read under it: reading them
+                // apart could take the old preserved set and the already
+                // cleared live set, hiding the conversation this tab held.
+                Runnable hook = claimSnapshotHook;
+                if (hook != null) hook.run();
+                Set<String> held;
+                synchronized (processOwnershipLock) {
+                    held = new HashSet<>(preservedClaims);
+                    held.addAll(claimedSessionIds(dir, configDir));
+                }
                 stopWriter();
                 sessionId = resolveIdentityWithPreservedClaims(held);
             }
@@ -4929,6 +4944,15 @@ public class ClaudeSessionController {
      */
     void simulatePtyKill(Runnable hook) {
         ptyKillHook = hook;
+    }
+
+    /**
+     * Package-private for tests: runs just before the stop path reads the live
+     * and preserved session claims, so a process exit can be interleaved with
+     * that snapshot.
+     */
+    void simulateClaimSnapshotHook(Runnable hook) {
+        claimSnapshotHook = hook;
     }
 
     /**

@@ -8103,6 +8103,55 @@ class ClaudeSessionControllerTest {
                 "a newer unrelated session must not be renamed");
     }
 
+    /**
+     * This tab's process quits on its own while Save &amp; Switch is taking the
+     * snapshot of the claims it must carry into the final lookup. The exit
+     * waiter moves the claims from the live registry into the preserved set;
+     * the snapshot must observe the transition as a whole. Reading the two sets
+     * apart would miss the shared conversation this tab held, and the scan
+     * would then rename an unrelated eligible file even though the shared one
+     * is the newest.
+     */
+    @Test
+    void aStopSnapshotsTheClaimsTheExitWaiterIsReleasing() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "shared", "shared");
+        setMtime(dir.resolve("shared.jsonl"), START_MS + 12_000L);
+        writeSession(dir, "unrelated", "unrelated");
+        setMtime(dir.resolve("unrelated.jsonl"), START_MS + 5_000L);
+
+        // Another live tab resumed the same saved conversation.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, "shared", Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "shared", Set.of("shared", "unrelated"));
+        // The process quits exactly while the stop path snapshots the claims.
+        controller.simulateClaimSnapshotHook(controller::simulateProcessExit);
+
+        try {
+            controller.stopAndRename("Shared Title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertEquals("Shared Title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "shared").customTitle(),
+                "the conversation this tab held is renamed even after its process quit");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "unrelated").customTitle(),
+                "an unrelated file must not be renamed");
+    }
+
     @Test
     void stopAndRename_skipsUnchangedTitle() throws Exception {
         java.nio.file.Path config = tmpDir.resolve("config");
