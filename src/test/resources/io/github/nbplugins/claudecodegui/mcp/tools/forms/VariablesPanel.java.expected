@@ -1,0 +1,48 @@
+public class VariablesPanel extends javax.swing.JPanel {
+
+    public VariablesPanel() {
+        initComponents();
+    }
+
+    @SuppressWarnings("unchecked")
+    // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
+    private void initComponents() {
+
+        defaultLabel = new javax.swing.JLabel();
+        publicButton = new javax.swing.JButton();
+        protectedField = new javax.swing.JTextField();
+        packageCheckBox = new javax.swing.JCheckBox();
+        staticLabel = new javax.swing.JLabel();
+        javax.swing.JLabel localLabel = new javax.swing.JLabel();
+        final javax.swing.JLabel finalLocalLabel = new javax.swing.JLabel();
+
+        defaultLabel.setText("form default: private field");
+        add(defaultLabel);
+
+        publicButton.setText("public field");
+        add(publicButton);
+
+        protectedField.setText("protected field");
+        add(protectedField);
+
+        packageCheckBox.setText("package-private field");
+        add(packageCheckBox);
+
+        staticLabel.setText("private static field");
+        add(staticLabel);
+
+        localLabel.setText("local variable");
+        add(localLabel);
+
+        finalLocalLabel.setText("final local variable");
+        add(finalLocalLabel);
+    }// </editor-fold>//GEN-END:initComponents
+
+    // Variables declaration - do not modify//GEN-BEGIN:variables
+    private javax.swing.JLabel defaultLabel;
+    javax.swing.JCheckBox packageCheckBox;
+    protected javax.swing.JTextField protectedField;
+    public javax.swing.JButton publicButton;
+    private static javax.swing.JLabel staticLabel;
+    // End of variables declaration//GEN-END:variables
+}

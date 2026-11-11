@@ -1,0 +1,24 @@
+public class LocalDefaultsPanel extends javax.swing.JPanel {
+
+    public LocalDefaultsPanel() {
+        initComponents();
+    }
+
+    @SuppressWarnings("unchecked")
+    // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
+    private void initComponents() {
+
+        javax.swing.JLabel defaultLocalLabel = new javax.swing.JLabel();
+        publicFieldButton = new javax.swing.JButton();
+
+        defaultLocalLabel.setText("form default: local variable");
+        add(defaultLocalLabel);
+
+        publicFieldButton.setText("public field");
+        add(publicFieldButton);
+    }// </editor-fold>//GEN-END:initComponents
+
+    // Variables declaration - do not modify//GEN-BEGIN:variables
+    public javax.swing.JButton publicFieldButton;
+    // End of variables declaration//GEN-END:variables
+}

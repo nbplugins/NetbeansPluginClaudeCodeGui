@@ -1,0 +1,30 @@
+public class ModifiedPanel extends javax.swing.JPanel {
+
+    public ModifiedPanel() {
+        initComponents();
+        setToolTipText("Kept: code outside the guarded sections");
+    }
+
+    public String greeting() {
+        return "Kept: a method outside the guarded sections";
+    }
+
+    @SuppressWarnings("unchecked")
+    // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
+    private void initComponents() {
+
+        jLabel1 = new javax.swing.JLabel();
+        jButton1 = new javax.swing.JButton();
+
+        jLabel1.setText("Name:");
+        add(jLabel1);
+
+        jButton1.setText("OK");
+        add(jButton1);
+    }// </editor-fold>//GEN-END:initComponents
+
+    // Variables declaration - do not modify//GEN-BEGIN:variables
+    private javax.swing.JButton jButton1;
+    private javax.swing.JLabel jLabel1;
+    // End of variables declaration//GEN-END:variables
+}

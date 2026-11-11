@@ -1,3 +1,5 @@
+- Fixed file changes opening a diff tab for review while Claude Code is in auto, accept-edits or bypass-permissions mode, when the plugin did not recognize the mode shown in Claude's status line
+- Added the `regenerate_form_code` MCP tool: after Claude edits a Swing form (`.form`), it can regenerate the form's code in the IDE, including new event handler methods, instead of editing the generated code by hand
 # 1.3.45 (2026-10-28)
 - Fixed edit-mode detection and switching while background agents or shells are listed under the status line
 # 1.3.42 (2026-10-22)
