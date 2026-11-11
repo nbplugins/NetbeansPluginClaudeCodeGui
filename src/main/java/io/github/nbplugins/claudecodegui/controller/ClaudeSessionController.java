@@ -2383,11 +2383,34 @@ public class ClaudeSessionController {
      * terminal while the write is still settling.
      */
     private void trackForwardedMenuFocus(ChoiceMenuModel menu, int index) {
-        if (menu == null) return;
+        if (menu == null || menu.options().isEmpty()) return;
         int clamped = Math.max(0, Math.min(index, menu.options().size() - 1));
         synchronized (terminalInputLine) {
-            trackMenuFocus(menu, clamped);
+            // The recorder classifies terminal input against the instance the
+            // model reports, while detectCurrentMenu() re-parses the screen into
+            // a new instance on every poll: recording the detected instance
+            // would never match (see focusedMenuOption). The forwarded position
+            // is carried over to the active instance by the option it names.
+            ChoiceMenuModel active = openChoiceMenu();
+            if (active == null || active.options().isEmpty()) return;
+            trackMenuFocus(active, optionIndexIn(active, menu.options().get(clamped)));
         }
+    }
+
+    /**
+     * Returns the index of {@code option} in {@code menu}, matching the label
+     * and the answer it stands for, or the menu's reported cursor when the
+     * option is not part of it (a detection of a different screen state).
+     */
+    private static int optionIndexIn(ChoiceMenuModel menu, ChoiceMenuModel.Option option) {
+        for (int i = 0; i < menu.options().size(); i++) {
+            ChoiceMenuModel.Option candidate = menu.options().get(i);
+            if (java.util.Objects.equals(candidate.display(), option.display())
+                    && java.util.Objects.equals(candidate.response(), option.response())) {
+                return i;
+            }
+        }
+        return menu.defaultOptionIndex();
     }
 
     /**

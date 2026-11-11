@@ -8408,6 +8408,74 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The recorder classifies terminal input against the menu instance kept in
+     * the model, while the screen detector parses a fresh instance on every
+     * poll. An answer worker that recorded its forwarded cursor on the detected
+     * instance would never match, and a digit typed during the pause would
+     * retire the menu although the cursor sits in its text-input editor: the
+     * line typed there then becomes prompt evidence.
+     */
+    @Test
+    void aTypeAnswerTracksFocusOnTheActiveMenuInstance() throws Exception {
+        List<String> screen = java.nio.file.Files.readAllLines(java.nio.file.Path.of(
+                java.util.Objects.requireNonNull(getClass().getResource(
+                        "/io/github/nbplugins/claudecodegui/process/screen-content-detector"
+                                + "/detect-choice-menu/ultraplan-tell-claude.src.txt"))
+                        .toURI()));
+
+        ClaudeSessionModel m2 = new ClaudeSessionModel();
+        ClaudeSessionController c2 = new ClaudeSessionController(m2, () -> screen);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            m2.setActiveChoiceMenu(new ChoiceMenuModel(
+                    "Claude has written up a plan and is ready to execute."
+                            + " Would you like to proceed?",
+                    List.of(new ChoiceMenuModel.Option("Yes, auto-accept edits", "1"),
+                            new ChoiceMenuModel.Option("Yes, manually approve edits", "2"),
+                            new ChoiceMenuModel.Option("No, refine with Ultraplan on"
+                                    + " Claude Code on the web", "3"),
+                            new ChoiceMenuModel.Option("Tell Claude what to change", "4",
+                                    null, false, false, true)),
+                    0));
+
+            CountDownLatch typing = new CountDownLatch(1);
+            c2.simulatePtyWrite(bytes -> {
+                if ("auto answer".equals(
+                        new String(bytes, java.nio.charset.StandardCharsets.UTF_8))) {
+                    typing.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            });
+
+            c2.writePtyAnswer("TYPE:4:auto answer");
+            assertTrue(typing.await(5, TimeUnit.SECONDS),
+                    "the worker reached the option's editor");
+
+            assertNull(c2.simulateTerminalInput(
+                            "1feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                            START_MS + 100L),
+                    "the cursor is in the option's editor: the typed line is the menu's");
+            assertNull(c2.simulateLastPromptText(),
+                    "the menu's answer must not become prompt evidence");
+
+            release.countDown();
+            long deadline = System.currentTimeMillis() + 3_000L;
+            while (m2.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertNull(m2.getActiveChoiceMenu(),
+                    "the menu is retired once the answer has been forwarded");
+        } finally {
+            release.countDown();
+            c2.stopProcess();
+        }
+    }
+
+    /**
      * An arrow-key answer navigates the picker row by row and submits with
      * Enter last. The picker stays open until that Enter, so a line typed in
      * the terminal meanwhile is its search text or an answer, not a prompt.
