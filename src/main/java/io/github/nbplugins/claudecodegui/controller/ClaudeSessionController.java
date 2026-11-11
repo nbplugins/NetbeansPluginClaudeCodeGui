@@ -3489,8 +3489,15 @@ public class ClaudeSessionController {
         // answered menu stays in the model until the next poll, so it is
         // retired here with the same marker the terminal path uses — a panel
         // send in that window must not be mistaken for another menu answer.
-        synchronized (terminalInputLine) {
-            completeTerminalMenu(openChoiceMenu());
+        // An answer typed into the menu's editor is the exception: the TUI keeps
+        // it open until the worker's Enter, and terminal input arriving in
+        // between answers that editor, so the worker retires it.
+        boolean typedAnswer = answer != null
+                && (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:"));
+        if (!typedAnswer) {
+            synchronized (terminalInputLine) {
+                completeTerminalMenu(openChoiceMenu());
+            }
         }
         resetTerminalInputRecording(true);
         try {
@@ -3581,11 +3588,18 @@ public class ClaudeSessionController {
                         LOG.warning("writePtyAnswer MULTI_TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        // The menu stays open in the TUI until the submitting
+                        // arrow above, so terminal input arriving meanwhile is
+                        // still the menu's (see the TYPE branch).
+                        synchronized (terminalInputLine) {
+                            completeTerminalMenu(openChoiceMenu());
+                        }
+                        clearActiveChoiceMenu();
                     }
                 }, "pty-multitype");
                 t.setDaemon(true);
                 t.start();
-                clearActiveChoiceMenu();
             } else if (answer.startsWith("TYPE:")) {
                 int sep = answer.indexOf(':', 5);
                 String digit = answer.substring(5, sep);
@@ -3625,11 +3639,20 @@ public class ClaudeSessionController {
                         LOG.warning("writePtyAnswer TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        // The menu is still open in the TUI until the Enter above
+                        // reaches it, and terminal input arriving meanwhile (a
+                        // typed answer submitted with Enter) is the menu's, not a
+                        // prompt: the context must stay until the answer is
+                        // actually forwarded.
+                        synchronized (terminalInputLine) {
+                            completeTerminalMenu(openChoiceMenu());
+                        }
+                        clearActiveChoiceMenu();
                     }
                 }, "pty-typeinput");
                 t.setDaemon(true);
                 t.start();
-                clearActiveChoiceMenu();
             } else if (answer.startsWith("ARROW:")) {
                 int targetIdx = Integer.parseInt(answer.substring(6));
                 ChoiceMenuModel current = model.getActiveChoiceMenu();
@@ -4989,6 +5012,14 @@ public class ClaudeSessionController {
                 // line and also sets terminalInputSinceGuiSend.
                 terminalGuiSubmitAt = now;
                 terminalGuiLineEdited = terminalInputSinceGuiSend;
+                if (pendingGuiPromptSet && pendingGuiPromptSwitch && !terminalGuiLineEdited) {
+                    // The untouched panel line was submitted by this Enter, so a
+                    // switch command on it did switch. The fact is recorded now,
+                    // not by the panel's delayed completion: a later terminal
+                    // submission replaces the text evidence without undoing the
+                    // switch the conversation already made.
+                    conversationSwitchAt = now;
+                }
             }
         }
         if (entered && !emptyEnter) {

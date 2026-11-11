@@ -3377,6 +3377,96 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A switch command submitted by a terminal Enter during the pause — the
+     * panel's untouched line — has switched the conversation. A later terminal
+     * submission of a recalled prompt replaces the text evidence, but the
+     * switch itself happened, and the stop-time lookup has to follow it to the
+     * conversation the command cleared into rather than the launch one.
+     */
+    @Test
+    void aSubmittedSwitchSurvivesALaterRecalledSubmission() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        CountDownLatch paused = new CountDownLatch(1);
+        ClaudeSessionController tab =
+                new ClaudeSessionController(model, Collections::emptyList) {
+                    @Override
+                    void pauseGuiSend() {
+                        // The terminal submits the untouched /clear, then the
+                        // user recalls an earlier prompt and submits it too.
+                        simulateTerminalInput(new byte[]{'\r'}, START_MS + 11_000L);
+                        simulateTerminalInput(new byte[]{0x1b, '[', 'A'}, START_MS + 11_050L);
+                        simulateTerminalInput(new byte[]{'\r'}, START_MS + 11_100L);
+                        paused.countDown();
+                    }
+                };
+
+        try {
+            tab.simulateProcessStart(START_MS, true);
+            tab.simulateLiveSession(config, "a", Set.of("a"));
+            tab.simulateQueueGuiSend("/clear",
+                    () -> START_MS + 10_000L, () -> START_MS + 11_200L);
+            assertTrue(paused.await(5, TimeUnit.SECONDS), "the send must pause");
+
+            // The launch conversation keeps receiving records, but the
+            // conversation /clear opened is strictly newer.
+            appendUserPrompt(dir, "a", "later work", START_MS + 11_250L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 11_300L);
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "recalled words", START_MS + 11_350L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_400L);
+
+            tab.stopAndRename("Cleared Title");
+        } finally {
+            tab.stopProcess();
+        }
+
+        assertEquals("Cleared Title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the conversation the submitted switch opened is renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the launch conversation keeps its name");
+    }
+
+    /**
+     * A GUI answer typed into a menu's text editor is forwarded with a delay:
+     * the TUI keeps the menu open until its Enter. A typed answer submitted
+     * with Enter in that window answers the same editor, so it is not a prompt
+     * and must not become prompt evidence.
+     */
+    @Test
+    void aTypedAnswerDuringTheTypeAnswerIsNotAPrompt() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3")), 0));
+
+        controller.writePtyAnswer("TYPE:3:auto answer");
+
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the TUI is still on its editor: the typed answer is the menu's");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
+
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (model.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertNull(model.getActiveChoiceMenu(),
+                "the menu is retired once the answer has been forwarded");
+    }
+
+    /**
      * A NEW tab temporarily borrows a live sibling's conversation because both
      * submitted the same text before its own file was flushed. The borrowed
      * file is the sibling's, so the final stop lookup must not preserve it as
