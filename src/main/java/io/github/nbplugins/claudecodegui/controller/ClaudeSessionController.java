@@ -273,6 +273,21 @@ public class ClaudeSessionController {
     private volatile String ownSessionId;
 
     /**
+     * The provisional identity this tab adopted and the submission evidence it
+     * was adopted on, or {@code null}/zero before one was published. A later
+     * submission from the terminal can replace the prompt evidence without
+     * resolving the conversation — a {@code /resume} command whose picker the
+     * user then cancels with Esc, for example — and the ambiguity check of
+     * {@link #stopAndRename(String)} must still judge the guess on the evidence
+     * that produced it, or the absence of newer records would read as proof
+     * that it is this tab's.
+     */
+    private String guessSessionId;
+    private String guessPromptText;
+    private long guessPromptAt;
+    private long guessSince;
+
+    /**
      * Session IDs this tab established or guessed as its own before it stopped
      * its writer — or before its process exited on its own while the tab stayed
      * open — kept eligible for the final post-stop identity lookup of
@@ -1167,6 +1182,10 @@ public class ClaudeSessionController {
             launchIdentityKnown = false;
             launchSessionId = null;
             ownSessionId = null;
+            guessSessionId = null;
+            guessPromptText = null;
+            guessPromptAt = 0L;
+            guessSince = 0L;
             promptSubmittedAt = 0;
             lastPromptText = null;
             externalInputAt = 0;
@@ -1315,7 +1334,6 @@ public class ClaudeSessionController {
         if (claims != null && claims.owners.contains(this)) return false;
         String promptText = lastPromptText;
         long promptAt = promptSubmittedAt;
-        if (promptAt <= 0) return false;
         // A file holding the same prompt that no other live tab established
         // could equally be the one this run wrote: the evidence cannot tell
         // them apart. A merely tentative claim is another guess, not ownership:
@@ -1329,6 +1347,20 @@ public class ClaudeSessionController {
         // only files written after the input are candidates.
         long since = Math.max(processStartedAt, promptAt);
         if (externalInputAt > since) since = externalInputAt;
+        synchronized (processOwnershipLock) {
+            if (sessionId.equals(guessSessionId) && guessPromptAt > 0) {
+                // This identity is the provisional guess that evidence adopted.
+                // A later command from the terminal can lift the prompt
+                // evidence without resolving another conversation — a /resume
+                // whose picker was cancelled with Esc — which would move the
+                // cutoff past every file and read as proof of ownership. The
+                // competition is judged on the evidence the guess came from.
+                promptText = guessPromptText;
+                promptAt = guessPromptAt;
+                since = guessSince;
+            }
+        }
+        if (promptAt <= 0) return false;
         Set<String> shared = sessionsOwnedByOtherLiveTabs(dir, configDir);
         shared.add(sessionId);
         if (launchIdentityKnown && launchSessionId != null) {
@@ -1473,6 +1505,15 @@ public class ClaudeSessionController {
             // session it established.
             Set<String> ownExclude = new HashSet<>(exclude);
             ownExclude.addAll(otherOwned);
+            // The file this run established for its own submission stays this
+            // tab's own when another live tab later resumes it explicitly: that
+            // tab only borrows the conversation, and excluding it would hide
+            // the very file this process writes and let an unrelated transcript
+            // win. A merely provisional guess is not remembered here, so this
+            // cannot resurrect another tab's file.
+            if (ownSessionId != null) {
+                ownExclude.remove(ownSessionId);
+            }
             // The launch conversation is this tab's own even when another live
             // tab established it (both resumed the same saved file): a
             // temporary adoption of a sibling's conversation must not make the
@@ -1867,7 +1908,7 @@ public class ClaudeSessionController {
             }
         }
         return publishIdentityScanResult(generation, scanId, dir, configDir, newest,
-                ownEvidence);
+                ownEvidence, promptText, promptAt, Math.max(since, externalAt));
     }
 
     /**
@@ -2039,7 +2080,8 @@ public class ClaudeSessionController {
     private boolean publishIdentityScanResult(long generation, long scanId,
                                               java.io.File dir,
                                               java.nio.file.Path configDir,
-                                              String newest, boolean ownEvidence) {
+                                              String newest, boolean ownEvidence,
+                                              String promptText, long promptAt, long since) {
         synchronized (processOwnershipLock) {
             if (generation != processGeneration) {
                 return activeSessionId != null;
@@ -2050,6 +2092,16 @@ public class ClaudeSessionController {
             lastPublishedScanId = scanId;
             if (ownEvidence && newest != null) {
                 ownSessionId = newest;
+            }
+            if (newest != null) {
+                // Remember the submission the identity was adopted on: terminal
+                // input can later lift the prompt evidence without resolving
+                // another conversation, and the stop-time ambiguity check must
+                // still use the adoption's evidence then.
+                guessSessionId = newest;
+                guessPromptText = promptText;
+                guessPromptAt = promptAt;
+                guessSince = since;
             }
             if (newest != null && !newest.equals(activeSessionId)) {
                 String previous = activeSessionId;
@@ -2074,13 +2126,13 @@ public class ClaudeSessionController {
     /** Package-private for tests: publishes a result scanned for an older process run. */
     boolean simulatePublishStaleScanResult(long generation, String newest) {
         return publishIdentityScanResult(generation, simulateBeginIdentityScan(),
-                null, activeConfigDir, newest, false);
+                null, activeConfigDir, newest, false, null, 0L, 0L);
     }
 
     /** Package-private for tests: publishes a scan result with explicit ordering. */
     boolean simulatePublishScanResult(long generation, long scanId, String newest) {
         return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest,
-                false);
+                false, null, 0L, 0L);
     }
 
     /** Package-private for tests: the identity inputs {@link #refreshSessionIdentity()} captures. */
@@ -2265,6 +2317,21 @@ public class ClaudeSessionController {
     private void trackMenuFocus(ChoiceMenuModel menu, int index) {
         terminalMenuFocusOwner = menu;
         terminalMenuFocusIndex = index;
+    }
+
+    /**
+     * Moves the tracked menu cursor to the option a plugin write just put the
+     * TUI cursor on. Called from the answer workers, so it takes the recorder's
+     * lock itself; the state it updates is what
+     * {@link #digitSelectionDismissesMenu} reads for a digit typed into the
+     * terminal while the write is still settling.
+     */
+    private void trackForwardedMenuFocus(ChoiceMenuModel menu, int index) {
+        if (menu == null) return;
+        int clamped = Math.max(0, Math.min(index, menu.options().size() - 1));
+        synchronized (terminalInputLine) {
+            trackMenuFocus(menu, clamped);
+        }
     }
 
     /**
@@ -3532,13 +3599,14 @@ public class ClaudeSessionController {
         // answered menu stays in the model until the next poll, so it is
         // retired here with the same marker the terminal path uses — a panel
         // send in that window must not be mistaken for another menu answer.
-        // An answer typed into the menu's editor — or toggled in a checkbox
-        // menu, whose submitting arrow the worker sends after a pause — is the
-        // exception: the TUI keeps the menu open until that key, and terminal
-        // input arriving in between answers the menu, so the worker retires it.
+        // An answer typed into the menu's editor, toggled in a checkbox menu,
+        // or picked with arrow keys — all of whose submitting keys the worker
+        // sends after a pause — is the exception: the TUI keeps the menu open
+        // until that key, and terminal input arriving in between answers the
+        // menu, so the worker retires it.
         boolean typedAnswer = answer != null
                 && (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:")
-                    || answer.startsWith("MULTI:"));
+                    || answer.startsWith("MULTI:") || answer.startsWith("ARROW:"));
         if (!typedAnswer) {
             synchronized (terminalInputLine) {
                 completeTerminalMenu(openChoiceMenu());
@@ -3671,8 +3739,14 @@ public class ClaudeSessionController {
                             int delta = targetIdx - currentIdx;
                             if (delta != 0) {
                                 byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                                int step = Integer.signum(delta);
                                 for (int i = 0; i < Math.abs(delta); i++) {
                                     writePty(arrow);
+                                    // The TUI cursor is on the next option now:
+                                    // terminal input arriving during the pause
+                                    // belongs to that option, not to the one the
+                                    // last poll reported.
+                                    trackForwardedMenuFocus(current, currentIdx + (i + 1) * step);
                                     Thread.sleep(80);
                                 }
                                 Thread.sleep(100);
@@ -3682,6 +3756,11 @@ public class ClaudeSessionController {
                             writePty("\r");
                         } else {
                             writePty(digit);
+                            // The digit activates the type-input option: its
+                            // editor holds the cursor, so a digit typed during
+                            // the pause is text for it, not a selection of
+                            // another item (see digitSelectionDismissesMenu).
+                            trackForwardedMenuFocus(current, targetIdx);
                             Thread.sleep(200);
                             writePty(text);
                             Thread.sleep(200);
@@ -3711,15 +3790,23 @@ public class ClaudeSessionController {
                 int currentIdx = current != null ? current.defaultOptionIndex() : 0;
                 int delta = targetIdx - currentIdx;
                 LOG.fine("[PTY write] ARROW targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
-                clearActiveChoiceMenu();
                 if (delta == 0) {
                     writePty("\r");
+                    // The picker closes on that Enter: until then its entry
+                    // stays the context for terminal input (see the TYPE
+                    // branch), and it is retired once the Enter is out.
+                    synchronized (terminalInputLine) {
+                        completeTerminalMenu(openChoiceMenu());
+                    }
+                    clearActiveChoiceMenu();
                 } else {
                     byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                    int step = Integer.signum(delta);
                     Thread t = new Thread(() -> {
                         try {
                             for (int idx = 0; idx < Math.abs(delta); idx++) {
                                 writePty(arrow);
+                                trackForwardedMenuFocus(current, currentIdx + (idx + 1) * step);
                                 Thread.sleep(80);
                             }
                             writePty("\r");
@@ -3727,6 +3814,14 @@ public class ClaudeSessionController {
                             LOG.warning("writePtyAnswer ARROW write failed: " + ex.getMessage());
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
+                        } finally {
+                            // The picker stays open in the TUI until the
+                            // submitting Enter above, so terminal input
+                            // arriving meanwhile is still the menu's.
+                            synchronized (terminalInputLine) {
+                                completeTerminalMenu(openChoiceMenu());
+                            }
+                            clearActiveChoiceMenu();
                         }
                     }, "pty-arrow-select");
                     t.setDaemon(true);

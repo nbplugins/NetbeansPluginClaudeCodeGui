@@ -8351,6 +8351,209 @@ class ClaudeSessionControllerTest {
                 "the menu is retired once the answer has been forwarded");
     }
 
+    /**
+     * A type-input answer activates its option with a digit and pauses before
+     * forwarding the text. The TUI cursor is in that option's editor by then,
+     * so a line typed in the terminal during the pause is editor input —
+     * including its leading digit, which no longer selects another item.
+     */
+    @Test
+    void aTypeAnswerMovesTheMenuFocusToItsEditor() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("How was your experience?", List.of(
+                new ChoiceMenuModel.Option("Great", "1"),
+                new ChoiceMenuModel.Option("Bad", "2"),
+                new ChoiceMenuModel.Option("Type something.", "3", null, false, false, true)),
+                0));
+
+        CountDownLatch typing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if ("auto answer".equals(new String(bytes, java.nio.charset.StandardCharsets.UTF_8))) {
+                typing.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("TYPE:3:auto answer");
+        assertTrue(typing.await(5, TimeUnit.SECONDS),
+                "the worker reached the option's editor");
+
+        assertNull(controller.simulateTerminalInput(
+                        "1feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the cursor is in the option's editor: the typed line is the menu's");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
+
+        release.countDown();
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (model.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertNull(model.getActiveChoiceMenu(),
+                "the menu is retired once the answer has been forwarded");
+    }
+
+    /**
+     * An arrow-key answer navigates the picker row by row and submits with
+     * Enter last. The picker stays open until that Enter, so a line typed in
+     * the terminal meanwhile is its search text or an answer, not a prompt.
+     */
+    @Test
+    void anArrowAnswerKeepsThePickerUntilItsEnter() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Select an option", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0"),
+                new ChoiceMenuModel.Option("Two", "ARROW:1")), 0));
+
+        byte[] down = {0x1b, '[', 'B'};
+        CountDownLatch moved = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if (java.util.Arrays.equals(bytes, down)) {
+                moved.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("ARROW:1");
+        assertTrue(moved.await(5, TimeUnit.SECONDS),
+                "the worker moved the picker cursor");
+
+        assertNull(controller.simulateTerminalInput(
+                        "feedback\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        START_MS + 100L),
+                "the picker is still open: the typed line is the menu's");
+        assertNull(controller.simulateLastPromptText(),
+                "the menu's answer must not become prompt evidence");
+
+        release.countDown();
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (model.getActiveChoiceMenu() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertNull(model.getActiveChoiceMenu(),
+                "the picker is retired once the answer has been forwarded");
+    }
+
+    /**
+     * A NEW tab established {@code a} as its own file. Another tab later
+     * resumes {@code a} explicitly and becomes its owner; that must not hide
+     * the file from the tab that wrote it in favour of an unrelated transcript
+     * that merely recorded the same common prompt.
+     */
+    @Test
+    void aLaterResumeByAnotherTabKeepsTheOwnFileEligible() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+        writeSession(dir, "a", "a");
+        appendUserPrompt(dir, "a", "continue", START_MS + 10_500L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 11_000L);
+
+        assertEquals("a", controller.resolveActiveSessionId(),
+                "the file holding the submission is this tab's own");
+        controller.simulateAwaitIdentityScan();
+
+        // Another tab's unrelated conversation recorded the same common text
+        // earlier; this tab's file stays the newer one.
+        writeSession(dir, "c", "c");
+        appendUserPrompt(dir, "c", "continue", START_MS + 10_800L);
+        setMtime(dir.resolve("c.jsonl"), START_MS + 10_900L);
+
+        // The sibling tab resumes this tab's conversation explicitly and
+        // becomes its owner.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS + 12_000L, true);
+        tabB.simulateLiveSession(config, "a", Set.of("a"));
+
+        try {
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the resumed file is still the conversation this tab wrote");
+            controller.simulateAwaitIdentityScan();
+
+            controller.stopAndRename("A-title");
+
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "c").customTitle(),
+                    "an unrelated transcript with the same text must not be renamed");
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "a").customTitle(),
+                    "the guess stays ambiguous while the file is shared");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * A provisional guess must not become safe to rename just because a
+     * command cancelled in the terminal replaced the prompt evidence: the
+     * cancelled picker identified no writer, and the tab's own competing file
+     * still makes the two indistinguishable.
+     */
+    @Test
+    void aCancelledPickerDoesNotMakeAGuessSafeToRename() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+        writeSession(dir, "b", "b");
+        appendUserPrompt(dir, "b", "continue", START_MS + 10_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 11_000L);
+
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the only file written since the submission is provisionally adopted");
+        controller.simulateAwaitIdentityScan();
+
+        // This tab's own file appears later and holds the same text.
+        writeSession(dir, "a", "a");
+        appendUserPrompt(dir, "a", "continue", START_MS + 12_000L);
+        setMtime(dir.resolve("a.jsonl"), START_MS + 12_500L);
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the tracked conversation is kept while the evidence cannot tell");
+        controller.simulateAwaitIdentityScan();
+
+        // The user opens the /resume picker and cancels it with Esc: no
+        // conversation was resolved, but the prompt evidence is gone.
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 20_000L);
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 20_100L);
+        controller.simulateAwaitIdentityScan();
+
+        controller.stopAndRename("A-title");
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the guess must not be renamed after the cancelled picker");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the competing own file must not be renamed either");
+    }
+
     // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------
