@@ -4315,7 +4315,7 @@ public class ClaudeSessionController {
             String customId = customModelIds.get(index - standardModelCount);
             Thread t = new Thread(() -> {
                 try {
-                    writePty("/model " + customId + "\r");
+                    writePtySubmittingLine("/model " + customId + "\r");
                     Thread.sleep(500);
                 } catch (IOException | InterruptedException ex) {
                     LOG.warning("model switch failed: " + ex.getMessage());
@@ -5110,8 +5110,28 @@ public class ClaudeSessionController {
         Thread.sleep(200);
         writePty(PTY_ESC);
         Thread.sleep(200);
-        writePty("\r");
+        // The Enter submits whatever draft the TUI holds together with the
+        // command (the write lands at its cursor), so the recorded draft is
+        // consumed and must not prefix the next prompt as evidence.
+        writePtySubmittingLine("\r");
         Thread.sleep(200);
+    }
+
+    /**
+     * Writes text that the TUI submits as a line on behalf of the plugin: any
+     * draft typed in the terminal is part of that line, so the recorder forgets
+     * it with the write. The reset and the write share the recorder's lock, so
+     * input arriving at the same moment is neither lost nor mistaken for a
+     * prefix of the next prompt.
+     *
+     * @param text the command line to submit
+     * @throws IOException if the write fails
+     */
+    private void writePtySubmittingLine(String text) throws IOException {
+        synchronized (terminalInputLine) {
+            resetTerminalInputRecording(true);
+            writePty(text);
+        }
     }
 
     /**

@@ -772,6 +772,54 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * A model switch writes the command at the TUI's cursor, so a draft typed
+     * in the terminal is submitted together with it. The write bypasses the
+     * terminal recorder, so unless the command retires the draft the next panel
+     * send is published as the draft plus its own text — evidence for a prompt
+     * the conversation never received.
+     */
+    @Test
+    void aModelCommandSubmitsTheTerminalDraftAndForgetsIt() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+        com.pty4j.PtyProcess p = startEchoPty();
+        try {
+            controller.simulateConnector(
+                    new io.github.nbplugins.claudecodegui.process.PtyTtyConnector(p));
+
+            java.lang.reflect.Field customField =
+                    ClaudeSessionController.class.getDeclaredField("customModelIds");
+            customField.setAccessible(true);
+            customField.set(controller, java.util.List.of("openai/gpt-4o"));
+            java.lang.reflect.Field stdCount =
+                    ClaudeSessionController.class.getDeclaredField("standardModelCount");
+            stdCount.setAccessible(true);
+            stdCount.setInt(controller, 2);
+
+            CountDownLatch written = new CountDownLatch(1);
+            controller.simulatePtyWrite(bytes -> {
+                if ("/model openai/gpt-4o\r".equals(
+                        new String(bytes, java.nio.charset.StandardCharsets.UTF_8))) {
+                    written.countDown();
+                }
+            });
+
+            model.setLifecycle(SessionLifecycle.READY);
+            controller.simulateTerminalInput(
+                    "draft".getBytes(java.nio.charset.StandardCharsets.UTF_8), START_MS);
+
+            controller.switchModel(2);
+            assertTrue(written.await(5, TimeUnit.SECONDS),
+                    "the model command was written");
+
+            assertEquals("next", controller.simulateGuiSend("next", START_MS + 200L),
+                    "the draft was submitted by the model command, not by the next send");
+        } finally {
+            p.destroyForcibly();
+        }
+    }
+
+    /**
      * Verifies that {@code stopProcess} resets {@code customModelIds} and
      * {@code standardModelCount} to their initial values.
      */
