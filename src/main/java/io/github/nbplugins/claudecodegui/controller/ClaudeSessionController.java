@@ -1316,8 +1316,12 @@ public class ClaudeSessionController {
         String promptText = lastPromptText;
         long promptAt = promptSubmittedAt;
         if (promptText == null || promptText.isBlank() || promptAt <= 0) return false;
-        // A file holding the same prompt that no other live tab claims could
-        // equally be the one this run wrote: the evidence cannot tell them apart.
+        // A file holding the same prompt that no other live tab established
+        // could equally be the one this run wrote: the evidence cannot tell
+        // them apart. A merely tentative claim is another guess, not ownership:
+        // two NEW tabs can each adopt a different file of the same prompt pair,
+        // and excluding the other tab's guess would hide the very file that
+        // matches this tab's, letting the stop rename the wrong conversation.
         // Only a file touched during this run can compete; one that merely
         // quotes the same text from an earlier session cannot. Once the user has
         // typed in the terminal after the submission, the conversation the tab
@@ -1325,7 +1329,7 @@ public class ClaudeSessionController {
         // only files written after the input are candidates.
         long since = Math.max(processStartedAt, promptAt);
         if (externalInputAt > since) since = externalInputAt;
-        Set<String> shared = claimedByOthers(dir, configDir);
+        Set<String> shared = sessionsOwnedByOtherLiveTabs(dir, configDir);
         shared.add(sessionId);
         return findPromptBearingSession(dir, configDir, since, shared, null,
                 promptAt, promptText) != null;
@@ -4953,6 +4957,22 @@ public class ClaudeSessionController {
      */
     void simulateClaimSnapshotHook(Runnable hook) {
         claimSnapshotHook = hook;
+    }
+
+    /**
+     * Package-private for tests: waits until the background identity scan
+     * queued by the last prompt send has finished, so a test can decide
+     * exactly which session files that scan observes.
+     */
+    void simulateAwaitIdentityScan() {
+        long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        while (identityScanPending.get()) {
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("identity scan did not finish");
+            }
+            Thread.onSpinWait();
+        }
     }
 
     /**

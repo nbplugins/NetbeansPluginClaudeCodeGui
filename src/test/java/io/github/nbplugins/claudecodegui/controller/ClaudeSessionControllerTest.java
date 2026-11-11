@@ -7071,6 +7071,62 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * Both NEW tabs submit identical prompts, and both files hold the prompt
+     * before either tab scans its store. The first tab takes the newest file;
+     * the second excludes it as the first tab's claim and takes the other. The
+     * claim the second tab excluded is only the first tab's guess, so the two
+     * files stay indistinguishable for a rename: neither may be renamed.
+     */
+    @Test
+    void aStopDoesNotRenameWhenTheSiblingHoldsTheOtherGuess() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS, true);
+        tabB.simulateLiveSession(config, null, Set.of());
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, null, Set.of());
+
+        try {
+            controller.simulatePromptText("hello");
+            controller.simulatePromptSubmittedAt(START_MS + 10_000L);
+            tabB.simulatePromptText("hello");
+            tabB.simulatePromptSubmittedAt(START_MS + 10_000L);
+
+            // Both files exist before either tab scans.
+            writeSession(dir, "a", "a");
+            appendUserPrompt(dir, "a", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("a.jsonl"), START_MS + 10_600L);
+            writeSession(dir, "b", "b");
+            appendUserPrompt(dir, "b", "hello", START_MS + 10_500L);
+            setMtime(dir.resolve("b.jsonl"), START_MS + 11_200L);
+
+            assertEquals("b", controller.resolveActiveSessionId(),
+                    "the first tab takes the newest file");
+            assertEquals("a", tabB.resolveActiveSessionId(),
+                    "the second tab can only take the other one");
+
+            tabB.stopAndRename("B-title");
+        } finally {
+            tabB.stopProcess();
+        }
+
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the guess this tab tracked must not be renamed");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the sibling's guess must not be renamed either");
+    }
+
+    /**
      * A NEW tab that created its conversation and is merely followed by a
      * sibling has nothing ambiguous about its file: the rename must still
      * happen there.
@@ -7203,6 +7259,11 @@ class ClaudeSessionControllerTest {
             // Both tabs submit the same text from the GUI.
             controller.simulateSentPrompt("hello", START_MS + 10_000L);
             tabB.simulateSentPrompt("hello", START_MS + 10_000L);
+            // Let the background scans finish before any file exists: their
+            // timing is otherwise free to adopt a file ahead of the explicit
+            // resolutions this test describes.
+            controller.simulateAwaitIdentityScan();
+            tabB.simulateAwaitIdentityScan();
 
             // This tab resolves its own conversation first.
             appendUserPrompt(dir, "a", "hello", START_MS + 10_400L);
@@ -7219,6 +7280,8 @@ class ClaudeSessionControllerTest {
             // file: this tab temporarily borrows it.
             controller.simulateSentPrompt("again", START_MS + 11_000L);
             tabB.simulateSentPrompt("again", START_MS + 11_000L);
+            controller.simulateAwaitIdentityScan();
+            tabB.simulateAwaitIdentityScan();
             appendUserPrompt(dir, "b", "again", START_MS + 11_400L);
             setMtime(dir.resolve("b.jsonl"), START_MS + 11_500L);
             assertEquals("b", controller.resolveActiveSessionId(),
