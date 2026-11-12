@@ -747,6 +747,11 @@ public class ClaudeSessionController {
         return promptSubmittedAt;
     }
 
+    /** Package-private for tests: the terminal-input cutoff of the prompt evidence. */
+    long simulateExternalInputAtValue() {
+        return externalInputAt;
+    }
+
     /** Package-private for tests: the prompt-evidence part of {@link #sendPrompt(String)}. */
     void simulateSentPrompt(String text, long sentAt) {
         rememberSentPrompt(text, sentAt);
@@ -5615,7 +5620,9 @@ public class ClaudeSessionController {
         boolean recalled;
         boolean menuSelection;
         ChoiceMenuModel selectedMenu;
+        long externalBeforeInput;
         synchronized (terminalInputLine) {
+            externalBeforeInput = externalInputAt;
             terminalLineEntered = false;
             terminalEnterOnEmptyLine = false;
             submitted = appendTerminalInput(bytes);
@@ -5700,8 +5707,13 @@ public class ClaudeSessionController {
                 if (isResumeCommand(submitted)) {
                     // /clear switches at once; a /resume only opens the picker,
                     // so the evidence of the conversation it may fail to leave
-                    // is kept until an entry is picked or it is cancelled.
-                    armPickerSwitch();
+                    // is kept until an entry is picked or it is cancelled. The
+                    // snapshot predates this input: the external-input cutoff
+                    // is moved below for the submission itself, and restoring
+                    // it to this Enter's time would make the earlier prompt
+                    // look stale and let the scan ignore its text evidence.
+                    armPickerSwitch(conversationSwitchAt, promptSubmittedAt,
+                            externalBeforeInput, lastPromptText);
                 }
                 conversationSwitchAt = now;
                 lastPromptText = null;

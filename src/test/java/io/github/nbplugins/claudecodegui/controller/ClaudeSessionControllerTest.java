@@ -9504,6 +9504,35 @@ class ClaudeSessionControllerTest {
                 "its submission time comes back with it");
     }
 
+    /**
+     * The cancelled command also puts back the external-input cutoff: the
+     * {@code /resume} Enter is not a submission to the conversation, so it must
+     * not leave the cutoff at the command's own time, where the earlier prompt
+     * would look stale to the stop-time lookup.
+     */
+    @Test
+    void aCancelledPickerRestoresTheExternalInputCutoff() {
+        controller.simulateExternalInput(START_MS + 4_000L);
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 5_000L);
+
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_000L);
+        assertEquals(START_MS + 10_000L, controller.simulateExternalInputAtValue(),
+                "expected: the submission itself is the newest terminal input");
+
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 10_100L);
+        // A standalone Esc becomes a cancellation once the next input shows it
+        // was not part of a sequence: a second Esc is that input.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 10_150L);
+
+        assertEquals(START_MS + 4_000L, controller.simulateExternalInputAtValue(),
+                "the cancelled command never reached the conversation");
+    }
+
     // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------
