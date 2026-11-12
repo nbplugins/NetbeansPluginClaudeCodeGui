@@ -3855,13 +3855,22 @@ public class ClaudeSessionController {
     public void cancelPrompt() {
         if (connector == null) return;
         synchronized (terminalInputLine) {
+            ChoiceMenuModel menu = openChoiceMenu();
             // Esc dismisses the choice menu on the screen: cancelling the
             // /resume picker leaves the conversation where it was. The screen
             // poll may not have published the picker yet, so a pending /resume
             // admission counts as the picker just the same.
-            ChoiceMenuModel menu = openChoiceMenu();
             if (isConversationPicker(menu) || (menu == null && pickerSwitchPending)) {
                 restorePickerSwitch();
+            }
+            if (menu != null) {
+                // The Esc sent below dismisses the menu on the screen, but this
+                // write bypasses the recorder, so the model would keep reporting
+                // it until the next poll: the next panel send's Enter would then
+                // read as an answer to it and drop the prompt evidence, and the
+                // search text typed into its box would prefix the next prompt.
+                // Both are retired here, atomically with the cancelling write.
+                discardPickerSearchText();
             }
         }
         try {
@@ -5409,11 +5418,7 @@ public class ClaudeSessionController {
      * evidence instead of being dropped.
      */
     private void writePtyAnsweringMenu(byte[] bytes) throws IOException {
-        boolean submits = false;
-        String draft = null;
-        boolean draftExact = true;
-        long submittedAt = 0L;
-        boolean resumeDraft = false;
+        boolean publishes = false;
         synchronized (terminalInputLine) {
             ChoiceMenuModel menu = openChoiceMenu();
             // The answer workers pause between the arrows and this key: terminal
@@ -5425,39 +5430,65 @@ public class ClaudeSessionController {
             boolean enterOnAnsweredMenu = menu == null
                     && terminalCompletedMenu != null
                     && bytes.length == 1 && bytes[0] == '\r';
+            String draft = null;
+            boolean draftExact = true;
+            long submittedAt = 0L;
             if (enterOnAnsweredMenu) {
                 draft = terminalInputLine.toString().trim();
                 draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
-                resumeDraft = draftExact && isResumeCommand(draft);
                 submittedAt = System.currentTimeMillis();
-                submits = true;
             }
             writePty(bytes);
-            if (enterOnAnsweredMenu) {
+            if (!enterOnAnsweredMenu) {
+                discardPickerSearchText();
+            } else {
                 // The line is submitted: it must not prefix the next one, and a
                 // delayed panel Enter is no longer its submission.
                 resetTerminalInputRecording(true);
-                // The scan itself is queued below, outside the lock.
-                if (submits && resumeDraft) {
-                    // A /resume typed after the early answer switches the
-                    // conversation: it is not a prompt written to the current
-                    // one, and the picker it opens can still be cancelled.
-                    armPickerSwitch();
+                // The evidence is published inside this critical section: a
+                // terminal writer that takes the lock next would otherwise
+                // submit a newer prompt first and be overwritten here with this
+                // older draft, while its later input cutoff stayed — leaving
+                // both prompt-evidence branches stale. The scan itself is
+                // queued below, outside the lock.
+                if (draftExact && isConversationCommand(draft)) {
+                    // /resume and /clear switch the conversation instead of
+                    // writing into it, so their text is no file's prompt; only
+                    // the /resume picker can still be cancelled.
+                    if (isResumeCommand(draft)) {
+                        armPickerSwitch();
+                    }
                     conversationSwitchAt = submittedAt;
                     lastPromptText = null;
                     promptSubmittedAt = submittedAt;
+                    publishes = true;
+                } else if (!draftExact) {
+                    publishes = publishPromptEvidence(null, submittedAt);
+                } else if (!draft.isBlank()) {
+                    publishes = publishPromptEvidence(draft, submittedAt);
                 }
-            } else {
-                discardPickerSearchText();
             }
         }
-        if (submits) {
-            if (resumeDraft) {
-                scheduleIdentityRefresh();
-            } else {
-                rememberSentPrompt(draft, submittedAt, draftExact);
-            }
+        if (publishes) {
+            scheduleIdentityRefresh();
         }
+    }
+
+    /**
+     * Publishes the evidence of a submission the recorder observed, unless
+     * newer evidence is already recorded: a writer that submitted after this
+     * one must keep its text and time. Call while holding the
+     * {@link #terminalInputLine} lock.
+     *
+     * @param text  the submitted text, or {@code null} when it is unknown
+     * @param sentAt submission time
+     * @return {@code true} when the evidence was written
+     */
+    private boolean publishPromptEvidence(String text, long sentAt) {
+        if (sentAt < promptSubmittedAt) return false;
+        lastPromptText = text;
+        promptSubmittedAt = sentAt;
+        return true;
     }
 
     /** @see #writePtyAnsweringMenu(byte[]) */

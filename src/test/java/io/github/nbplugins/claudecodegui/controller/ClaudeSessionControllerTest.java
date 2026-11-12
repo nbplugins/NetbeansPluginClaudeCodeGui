@@ -9439,6 +9439,121 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The early-answer recovery also submits whatever command the user typed
+     * after answering the menu. {@code /clear} switches the conversation just
+     * like {@code /resume}, so its line is no prompt's text and the switch has
+     * to advance — recording it as an ordinary submission would leave the scan
+     * following the conversation the tab is no longer on.
+     */
+    @Test
+    void theWorkersEnterSubmittingClearIsAConversationSwitch() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Select an option", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0"),
+                new ChoiceMenuModel.Option("Two", "ARROW:1")), 0));
+
+        byte[] down = {0x1b, '[', 'B'};
+        java.util.concurrent.CountDownLatch moved =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if (java.util.Arrays.equals(bytes, down)) {
+                moved.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("ARROW:1");
+        assertTrue(moved.await(5, TimeUnit.SECONDS),
+                "the worker paused before its submitting Enter");
+
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 100L);
+        controller.simulateTerminalInput(
+                "/clear".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 200L);
+
+        release.countDown();
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (controller.simulatePromptSubmittedAtValue() == 0L
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+
+        assertNull(controller.simulateLastPromptText(),
+                "a command switches the conversation, it is not prompt evidence");
+        assertTrue(controller.simulatePromptSubmittedAtValue() > 0L,
+                "the submission is recorded for the scan");
+    }
+
+    /**
+     * The worker's Enter publishes its evidence inside the recorder lock: a
+     * terminal writer that submitted after this one must keep its newer text
+     * and time, or the stop-time lookup follows a prompt that is no longer the
+     * last one the conversation received.
+     */
+    @Test
+    void theWorkersEnterDoesNotReplaceNewerPromptEvidence() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Select an option", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0"),
+                new ChoiceMenuModel.Option("Two", "ARROW:1")), 0));
+
+        byte[] down = {0x1b, '[', 'B'};
+        byte[] enterKey = {'\r'};
+        java.util.concurrent.CountDownLatch moved =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if (java.util.Arrays.equals(bytes, down)) {
+                moved.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            } else if (java.util.Arrays.equals(bytes, enterKey)) {
+                entered.countDown();
+            }
+        });
+
+        controller.writePtyAnswer("ARROW:1");
+        assertTrue(moved.await(5, TimeUnit.SECONDS),
+                "the worker paused before its submitting Enter");
+
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 100L);
+        controller.simulateTerminalInput(
+                "older".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 200L);
+        // A terminal writer submits a newer prompt before this older draft is
+        // published; its timestamp is later than the worker's capture.
+        long newerAt = System.currentTimeMillis() + 60_000L;
+        controller.simulatePromptText("newer");
+        controller.simulatePromptSubmittedAt(newerAt);
+
+        release.countDown();
+        assertTrue(entered.await(5, TimeUnit.SECONDS),
+                "the worker submits the line");
+        // The worker publishes right after writing its Enter: give it a moment
+        // to do so, then check that it left the newer evidence alone.
+        long deadline = System.currentTimeMillis() + 1_000L;
+        while (controller.simulatePromptSubmittedAtValue() == newerAt
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10L);
+        }
+
+        assertEquals("newer", controller.simulateLastPromptText(),
+                "the newer submission keeps the prompt evidence");
+        assertEquals(newerAt, controller.simulatePromptSubmittedAtValue(),
+                "and its submission time comes back with it");
+    }
+
+    /**
      * {@code /resume} only opens the picker: cancelling it with Esc leaves the
      * conversation where it was, so the stop must still save the name into the
      * launch conversation instead of treating the switch as unresolved.
@@ -9546,6 +9661,56 @@ class ClaudeSessionControllerTest {
                 io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
                         .findSession(work, config, "a").customTitle(),
                 "the cancelled picker never switched the conversation");
+        } finally {
+            p.destroyForcibly();
+        }
+    }
+
+    /**
+     * Cancelling a published picker from the panel must retire it at once: the
+     * plugin writes the Esc itself, so the screen poll would keep reporting the
+     * menu. A panel prompt sent before that poll then has its Enter mistaken
+     * for a picker selection — the evidence is dropped and the switch is
+     * recorded again, although the conversation never changed.
+     */
+    @Test
+    void aPickerCancelledFromThePanelIsRetiredBeforeTheNextSend() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+        com.pty4j.PtyProcess p = startEchoPty();
+        try {
+            controller.simulateConnector(
+                    new io.github.nbplugins.claudecodegui.process.PtyTtyConnector(p));
+
+            java.nio.file.Path config = tmpDir.resolve("config");
+            java.nio.file.Path work = tmpDir.resolve("project");
+            java.nio.file.Path dir = sessionDir(config, work);
+
+            writeSession(dir, "a", "a");
+            setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+            model.setWorkingDirectory(work.toFile());
+            controller.simulateProcessStart(START_MS, true);
+            controller.simulateLiveSession(config, "a", Set.of("a"));
+
+            controller.simulateTerminalInput(
+                    "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 10_000L);
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                    new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+
+            // The user cancels the published picker from the panel and sends
+            // the next prompt before the screen poll clears the menu.
+            controller.cancelPrompt();
+            controller.simulateGuiSend("hello", START_MS + 20_000L);
+            controller.completeGuiSend();
+
+            controller.stopAndRename("A-title");
+
+            assertEquals("A-title",
+                    io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "a").customTitle(),
+                    "the cancelled picker never switched the conversation");
         } finally {
             p.destroyForcibly();
         }
