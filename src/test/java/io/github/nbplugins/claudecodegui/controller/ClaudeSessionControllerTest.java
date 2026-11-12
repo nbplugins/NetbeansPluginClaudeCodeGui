@@ -9509,6 +9509,49 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The panel's Cancel button is the other way to dismiss the picker: like a
+     * terminal Esc it must roll the pending switch back even when the screen
+     * poll has not published the menu yet.
+     */
+    @Test
+    void aPickerCancelledFromThePanelBeforeItIsPublishedKeepsTheLaunchConversationRenamable()
+            throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+        com.pty4j.PtyProcess p = startEchoPty();
+        try {
+        controller.simulateConnector(
+                new io.github.nbplugins.claudecodegui.process.PtyTtyConnector(p));
+
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_000L);
+        // The user presses the panel's Cancel before the picker is published.
+        controller.cancelPrompt();
+
+        controller.stopAndRename("A-title");
+
+        assertEquals("A-title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the cancelled picker never switched the conversation");
+        } finally {
+            p.destroyForcibly();
+        }
+    }
+
+    /**
      * Cancelling the picker also puts back the prompt evidence the resume
      * command replaced, so the conversation the tab was on before stays the
      * submission the stop-time lookup follows.

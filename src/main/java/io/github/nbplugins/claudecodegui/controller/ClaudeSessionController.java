@@ -3856,8 +3856,11 @@ public class ClaudeSessionController {
         if (connector == null) return;
         synchronized (terminalInputLine) {
             // Esc dismisses the choice menu on the screen: cancelling the
-            // /resume picker leaves the conversation where it was.
-            if (isConversationPicker(openChoiceMenu())) {
+            // /resume picker leaves the conversation where it was. The screen
+            // poll may not have published the picker yet, so a pending /resume
+            // admission counts as the picker just the same.
+            ChoiceMenuModel menu = openChoiceMenu();
+            if (isConversationPicker(menu) || (menu == null && pickerSwitchPending)) {
                 restorePickerSwitch();
             }
         }
