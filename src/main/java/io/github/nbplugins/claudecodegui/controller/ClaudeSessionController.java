@@ -3856,20 +3856,21 @@ public class ClaudeSessionController {
         if (connector == null) return;
         synchronized (terminalInputLine) {
             ChoiceMenuModel menu = openChoiceMenu();
+            boolean pendingPicker = menu == null && pickerSwitchPending;
             // Esc dismisses the choice menu on the screen: cancelling the
             // /resume picker leaves the conversation where it was. The screen
             // poll may not have published the picker yet, so a pending /resume
             // admission counts as the picker just the same.
-            if (isConversationPicker(menu) || (menu == null && pickerSwitchPending)) {
+            if (isConversationPicker(menu) || pendingPicker) {
                 restorePickerSwitch();
             }
-            if (menu != null) {
+            if (menu != null || pendingPicker) {
                 // The Esc sent below dismisses the menu on the screen, but this
                 // write bypasses the recorder, so the model would keep reporting
                 // it until the next poll: the next panel send's Enter would then
-                // read as an answer to it and drop the prompt evidence, and the
-                // search text typed into its box would prefix the next prompt.
-                // Both are retired here, atomically with the cancelling write.
+                // read as an answer to it and drop the prompt evidence. The text
+                // typed into the menu's box is not a prompt draft either, so
+                // both are retired here, atomically with the cancelling write.
                 discardPickerSearchText();
             }
         }
