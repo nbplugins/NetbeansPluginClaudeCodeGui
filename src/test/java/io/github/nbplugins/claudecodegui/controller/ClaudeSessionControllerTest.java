@@ -9270,6 +9270,240 @@ class ClaudeSessionControllerTest {
                 "the competing own file must not be renamed either");
     }
 
+    /**
+     * A launch-known tab switches to the conversation a live sibling writes;
+     * no evidence pass may adopt that file, so the tab keeps tracking the
+     * conversation the switch left behind. A prompt submitted afterwards moves
+     * the evidence cutoff past the switch without showing where the switch
+     * went, and it was also written into the launch conversation whenever the
+     * picker selection never took effect. Neither may authorize the rename: the
+     * entered name cannot be attributed to the conversation the process left.
+     */
+    @Test
+    void aPromptBeforeTheDestinationRecordDoesNotUnblockTheRename() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+        writeSession(dir, "b", "b");
+        setMtime(dir.resolve("b.jsonl"), START_MS + 1_000L);
+
+        // A sibling tab launched the conversation the picker will select.
+        ClaudeSessionModel modelB = new ClaudeSessionModel();
+        modelB.setWorkingDirectory(work.toFile());
+        ClaudeSessionController tabB =
+                new ClaudeSessionController(modelB, Collections::emptyList);
+        tabB.simulateProcessStart(START_MS - 500L, true);
+        tabB.simulateLiveSession(config, "b", Set.of("a", "b"));
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a", "b"));
+
+        try {
+            // The user opens /resume and picks the sibling's conversation.
+            controller.simulateTerminalInput(
+                    "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 10_000L);
+            model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                    new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+            controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 10_100L);
+            controller.simulateAwaitIdentityScan();
+
+            // A prompt submitted after the switch; no file records it, so the
+            // scan has nothing to follow the switch with.
+            controller.simulateTerminalInput(
+                    "later\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    START_MS + 20_000L);
+            controller.simulateAwaitIdentityScan();
+            assertEquals("a", controller.resolveActiveSessionId(),
+                    "the launch conversation stays tracked while the destination is unknown");
+
+            controller.stopAndRename("A-title");
+
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "a").customTitle(),
+                    "a submission after an unresolved switch must not rename the"
+                            + " conversation the process left");
+            assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                            .findSession(work, config, "b").customTitle(),
+                    "the live sibling's conversation must not be renamed either");
+        } finally {
+            tabB.stopProcess();
+        }
+    }
+
+    /**
+     * The counterpart of the previous test: once a record written after the
+     * switch resolves the destination, the entered name goes there. The
+     * post-switch evidence must not block a rename the evidence does support.
+     */
+    @Test
+    void aSwitchResolvedByTheDestinationRecordStaysRenamable() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+
+        // The picker switches to a saved conversation no other tab holds.
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_000L);
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 10_100L);
+
+        // The destination records the prompt submitted after the switch.
+        controller.simulateTerminalInput(
+                "later\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 20_000L);
+        writeSession(dir, "b", "b");
+        appendUserPrompt(dir, "b", "later", START_MS + 20_500L);
+        setMtime(dir.resolve("b.jsonl"), START_MS + 20_600L);
+        assertEquals("b", controller.resolveActiveSessionId(),
+                "the record written after the switch names the destination");
+        controller.simulateAwaitIdentityScan();
+
+        controller.stopAndRename("Switched Name");
+
+        assertEquals("Switched Name",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "b").customTitle(),
+                "the resolved destination is the conversation the name belongs to");
+        assertNull(io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the conversation left by the switch must not be renamed");
+    }
+
+    /**
+     * An arrow-key answer pauses between its navigation and its Enter. The user
+     * can answer the menu with Enter in the terminal during that pause and then
+     * type the next prompt; the worker's Enter submits that draft as a real
+     * prompt, so its text must become the prompt evidence — dropping it leaves
+     * the stop-time lookup unable to follow the conversation.
+     */
+    @Test
+    void theWorkersEnterAfterAnEarlyMenuAnswerIsRecorded() throws Exception {
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Select an option", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0"),
+                new ChoiceMenuModel.Option("Two", "ARROW:1")), 0));
+
+        byte[] down = {0x1b, '[', 'B'};
+        java.util.concurrent.CountDownLatch moved =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        controller.simulatePtyWrite(bytes -> {
+            if (java.util.Arrays.equals(bytes, down)) {
+                moved.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        controller.writePtyAnswer("ARROW:1");
+        assertTrue(moved.await(5, TimeUnit.SECONDS),
+                "the worker paused before its submitting Enter");
+
+        // The user answers the menu in the terminal and types the next prompt,
+        // leaving it unsubmitted for the worker's Enter.
+        controller.simulateTerminalInput(new byte[]{'\r'}, START_MS + 100L);
+        controller.simulateTerminalInput(
+                "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 200L);
+        assertNull(controller.simulateLastPromptText(),
+                "nothing is submitted until the worker's Enter");
+
+        release.countDown();
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (controller.simulateLastPromptText() == null
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+
+        assertEquals("hello", controller.simulateLastPromptText(),
+                "the Enter submits the draft, so it is the prompt evidence");
+        assertTrue(controller.simulatePromptSubmittedAtValue() > 0L,
+                "the submission time is recorded with it");
+    }
+
+    /**
+     * {@code /resume} only opens the picker: cancelling it with Esc leaves the
+     * conversation where it was, so the stop must still save the name into the
+     * launch conversation instead of treating the switch as unresolved.
+     */
+    @Test
+    void aCancelledPickerKeepsTheLaunchConversationRenamable() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+
+        // The user types /resume, its picker opens and Esc cancels it; then the
+        // stop dialog is opened without any further keystroke.
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_000L);
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 10_100L);
+
+        controller.stopAndRename("A-title");
+
+        assertEquals("A-title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "a cancelled picker never changed the conversation");
+    }
+
+    /**
+     * Cancelling the picker also puts back the prompt evidence the resume
+     * command replaced, so the conversation the tab was on before stays the
+     * submission the stop-time lookup follows.
+     */
+    @Test
+    void aCancelledPickerRestoresThePromptEvidence() {
+        controller.simulatePromptText("continue");
+        controller.simulatePromptSubmittedAt(START_MS + 5_000L);
+
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_000L);
+        assertEquals(START_MS + 10_000L, controller.simulatePromptSubmittedAtValue(),
+                "expected: the command submission is the newest evidence");
+
+        model.setActiveChoiceMenu(new ChoiceMenuModel("Resume Session (1 of 1)", List.of(
+                new ChoiceMenuModel.Option("One", "ARROW:0")), 0));
+
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 10_100L);
+        // A standalone Esc only becomes a cancellation once the next input
+        // shows it was not part of an escape sequence: a second Esc is that
+        // input and consumes it.
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 10_150L);
+
+        assertEquals("continue", controller.simulateLastPromptText(),
+                "the prompt submitted before the cancelled picker is the evidence again");
+        assertEquals(START_MS + 5_000L, controller.simulatePromptSubmittedAtValue(),
+                "its submission time comes back with it");
+    }
+
     // -------------------------------------------------------------------------
     // No-op listener base class
     // -------------------------------------------------------------------------

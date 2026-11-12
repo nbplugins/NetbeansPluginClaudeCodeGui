@@ -349,6 +349,34 @@ public class ClaudeSessionController {
     private volatile long conversationSwitchAt;
 
     /**
+     * Anchor time of the scan result that identified a conversation written
+     * after {@link #conversationSwitchAt}, or {@code 0} when no evidence-based
+     * result has been published since the switch.
+     *
+     * <p>A submission made after the switch is not proof that its destination
+     * was followed: the scan may still track the conversation the switch left
+     * behind, because the destination can be another live tab's file and no
+     * evidence pass may adopt it. Only a result adopted from a record written
+     * after the switch shows that the destination is known (see
+     * {@link #identityRemainsAmbiguous}).
+     */
+    private volatile long postSwitchResolvedAt;
+
+    /**
+     * Snapshot of the evidence a submitted {@code /resume} replaced, kept until
+     * the picker confirms a conversation or its admission is cancelled. Opening
+     * the picker switches nothing, so a cancelled picker must leave the
+     * post-stop identity lookup with the evidence the command replaced.
+     *
+     * <p>Guarded by {@link #terminalInputLine}.
+     */
+    private boolean pickerSwitchPending;
+    private long switchBeforePicker;
+    private long promptBeforePicker;
+    private long externalBeforePicker;
+    private String textBeforePicker;
+
+    /**
      * Serializes prompt sends from the panel, from the text write through the
      * Enter and the publication of its evidence. Two sends pressed in quick
      * succession would otherwise interleave: the second reconciliation would
@@ -406,6 +434,14 @@ public class ClaudeSessionController {
      * confirmed as a live cancellation the recorded line is discarded.
      */
     private boolean terminalEscapeOnMenu;
+
+    /**
+     * True when that Esc cancelled the {@code /resume} picker itself: the
+     * conversation never switched, so the evidence the resume command replaced
+     * is restored (see {@link #restorePickerSwitch()}).
+     * Guarded by {@link #terminalInputLine}.
+     */
+    private boolean terminalEscapeOnPicker;
 
     /**
      * The choice menu the terminal input already completed (a digit selected a
@@ -586,6 +622,14 @@ public class ClaudeSessionController {
      * Guarded by {@link #terminalInputLine}.
      */
     private boolean pendingGuiPromptSwitch;
+
+    /**
+     * Whether the command of {@link #pendingGuiPromptSwitch} is a
+     * {@code /resume}, i.e. one whose switch waits for the picker admission
+     * and can still be cancelled. {@code /clear} switches at once.
+     * Guarded by {@link #terminalInputLine}.
+     */
+    private boolean pendingGuiPromptResume;
 
     /** Screen-poll ticks since the last background session-identity scan. */
     private int identityPollTicks = 0;
@@ -1008,6 +1052,12 @@ public class ClaudeSessionController {
         launchIdentityKnown = activeSessionId != null;
         launchSessionId = activeSessionId;
         ownSessionId = null;
+        postSwitchResolvedAt = 0L;
+        pickerSwitchPending = false;
+        switchBeforePicker = 0L;
+        promptBeforePicker = 0L;
+        externalBeforePicker = 0L;
+        textBeforePicker = null;
 
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
@@ -1190,6 +1240,12 @@ public class ClaudeSessionController {
             lastPromptText = null;
             externalInputAt = 0;
             conversationSwitchAt = 0;
+            postSwitchResolvedAt = 0L;
+            pickerSwitchPending = false;
+            switchBeforePicker = 0L;
+            promptBeforePicker = 0L;
+            externalBeforePicker = 0L;
+            textBeforePicker = null;
             resetTerminalInputRecording();
             identityPollTicks = 0;
             LIVE_SESSIONS.remove(this);
@@ -1244,6 +1300,19 @@ public class ClaudeSessionController {
             // EDT) could last forever.
             killPtyProcess();
             shutdownGuiSendQueue();
+            // An Esc that cancelled the /resume picker and was never followed by
+            // another keystroke is still pending: no later write consumed it, yet
+            // the picker is gone and the conversation never switched. Consume it
+            // before the lookup, or the evidence it should restore stays replaced
+            // and the switch reads as unresolved.
+            synchronized (terminalInputLine) {
+                if (terminalInputEscape == 1 && terminalEscapeOnMenu
+                        && terminalEscapeOnPicker) {
+                    restorePickerSwitch();
+                    discardPickerSearchText();
+                    terminalInputEscape = 0;
+                }
+            }
             synchronized (guiSendLock) {
                 sessionId = resolveActiveSessionId();
                 // The writer may still be finishing a turn, and the user may have
@@ -1329,14 +1398,17 @@ public class ClaudeSessionController {
     private boolean identityRemainsAmbiguous(java.io.File dir, java.nio.file.Path configDir,
                                              String sessionId) {
         if (sessionId == null) return false;
-        if (conversationSwitchAt > 0 && promptSubmittedAt <= conversationSwitchAt) {
-            // The last thing the terminal did was switch the conversation, and
-            // nothing submitted since has shown which file the process writes.
+        if (conversationSwitchAt > 0 && postSwitchResolvedAt < conversationSwitchAt) {
+            // No scan has identified a conversation written since the switch.
             // The identity tracked here is then the conversation the switch
             // left behind — whether it was established at launch or resolved
             // by evidence before the switch: a picker entry may be a
             // conversation another live tab writes, which no evidence pass can
             // adopt, so the entered name cannot be attributed to that file.
+            // A prompt submitted after the switch does not change that: it was
+            // also written into this tab's launch conversation when the switch
+            // never took effect, and a submission timestamp alone cannot tell
+            // the two apart.
             return true;
         }
         if (isLaunchIdentity(sessionId)) return false;
@@ -2161,6 +2233,16 @@ public class ClaudeSessionController {
                 return activeSessionId != null;
             }
             lastPublishedScanId = scanId;
+            if (newest != null && evidenceBased && conversationSwitchAt > 0
+                    && since >= conversationSwitchAt) {
+                // The result was adopted from a record written after the switch:
+                // the conversation on screen is known, so a later submission may
+                // authorize the rename. An mtime-only result says nothing about
+                // the destination and must not: a later prompt would otherwise
+                // read as proof that the switch was followed (see
+                // identityRemainsAmbiguous).
+                postSwitchResolvedAt = since;
+            }
             if (ownEvidence && newest != null) {
                 ownSessionId = newest;
             }
@@ -2297,6 +2379,7 @@ public class ClaudeSessionController {
             terminalInputPaste = false;
             terminalPasteAfterCR = false;
             terminalEscapeOnMenu = false;
+            terminalEscapeOnPicker = false;
             terminalMenuSelection = false;
             terminalSelectedMenu = null;
             terminalLineEntered = false;
@@ -2317,6 +2400,7 @@ public class ClaudeSessionController {
             pendingGuiPromptExact = false;
             pendingGuiPromptSet = false;
             pendingGuiPromptSwitch = false;
+            pendingGuiPromptResume = false;
             if (!keepCompletedMenu) {
                 terminalCompletedMenu = null;
             }
@@ -2333,6 +2417,7 @@ public class ClaudeSessionController {
         terminalInputLine.setLength(0);
         terminalInputCursor = 0;
         terminalEscapeOnMenu = false;
+        terminalEscapeOnPicker = false;
         // The cancelled menu stays in the model until the next poll: retire
         // it, or input typed right after the cancellation is still treated as
         // a menu answer.
@@ -3162,6 +3247,7 @@ public class ClaudeSessionController {
         if (isConversationPicker(menu)) {
             // Picking an entry changes the conversation, and the digit says
             // nothing about which one was picked.
+            confirmPickerSwitch();
             conversationSwitchAt = System.currentTimeMillis();
         }
     }
@@ -3190,6 +3276,12 @@ public class ClaudeSessionController {
                 // typed since to consume it: the GUI send is the next input,
                 // and the picker's search text must not become part of the
                 // submitted line.
+                if (terminalEscapeOnPicker) {
+                    // The cancelled menu was the /resume picker, so the
+                    // conversation never switched: the evidence the command
+                    // replaced has to come back, or the stop skips the rename.
+                    restorePickerSwitch();
+                }
                 discardPickerSearchText();
                 terminalInputEscape = 0;
             }
@@ -3233,6 +3325,9 @@ public class ClaudeSessionController {
             // pending until the Enter is written: the line can still be
             // edited away during the pause.
             pendingGuiPromptSwitch = isConversationCommand(isTextExact ? submitted : text);
+            // /clear switches at once, but a submitted /resume only opens the
+            // picker: its switch waits for a selection, which can be cancelled.
+            pendingGuiPromptResume = isResumeCommand(isTextExact ? submitted : text);
         }
         return submitted;
     }
@@ -3271,6 +3366,13 @@ public class ClaudeSessionController {
                 return;
             }
             long submittedAt = terminalGuiSubmitAt;
+            // Sampled before the submission publishes its own evidence: a
+            // /resume only opens the picker, and the evidence it replaced is
+            // what a cancelled picker has to put back.
+            long switchBeforeSend = conversationSwitchAt;
+            long promptBeforeSend = promptSubmittedAt;
+            long externalBeforeSend = externalInputAt;
+            String textBeforeSend = lastPromptText;
             if (submittedAt != 0L && !terminalGuiLineEdited && pendingGuiPromptSet
                     && promptSubmittedAt <= submittedAt) {
                 // The line the panel text was written to was submitted by that
@@ -3281,6 +3383,12 @@ public class ClaudeSessionController {
                 rememberSentPrompt(pendingGuiPromptText, submittedAt, pendingGuiPromptExact);
                 if (pendingGuiPromptSwitch) {
                     // The command's line was submitted untouched, so it switched.
+                    if (pendingGuiPromptResume) {
+                        // A submitted /resume only opens the picker: keep the
+                        // evidence of the conversation it may fail to leave.
+                        armPickerSwitch(switchBeforeSend, promptBeforeSend,
+                                externalBeforeSend, textBeforeSend);
+                    }
                     conversationSwitchAt = submittedAt;
                 }
             }
@@ -3389,6 +3497,12 @@ public class ClaudeSessionController {
             // conversation switch the Enter never made.
             boolean cancelledPicker = terminalInputEscape == 1 && terminalEscapeOnMenu;
             if (cancelledPicker) {
+                if (terminalEscapeOnPicker) {
+                    // The cancelled menu was the /resume picker: the conversation
+                    // never switched, so the evidence the command replaced comes
+                    // back before this Enter continues on the fresh line.
+                    restorePickerSwitch();
+                }
                 discardPickerSearchText();
                 terminalInputEscape = 0;
             }
@@ -3418,6 +3532,7 @@ public class ClaudeSessionController {
                     // Picking an entry changes the conversation, and the
                     // search filter says nothing about which one was picked:
                     // the next submission has to follow the switch.
+                    confirmPickerSwitch();
                     conversationSwitchAt = submittedAt;
                 }
                 resetTerminalInputRecording(true);
@@ -3450,6 +3565,13 @@ public class ClaudeSessionController {
                 }
                 return;
             }
+            // Sampled before the submission below publishes the command's own
+            // evidence: a submitted /resume only opens the picker, and the
+            // evidence it replaced is what a cancelled picker has to put back.
+            long switchBeforeSend = conversationSwitchAt;
+            long promptBeforeSend = promptSubmittedAt;
+            long externalBeforeSend = externalInputAt;
+            String textBeforeSend = lastPromptText;
             try {
                 writePty("\r", target);
             } catch (IOException ex) {
@@ -3469,6 +3591,7 @@ public class ClaudeSessionController {
             boolean pendingExact = pendingGuiPromptExact;
             boolean pendingSet = pendingGuiPromptSet;
             boolean pendingSwitch = pendingGuiPromptSwitch;
+            boolean pendingResume = pendingGuiPromptResume;
             boolean switched = false;
             resetTerminalInputRecording(true);
             if (alreadySubmitted && draftAfterEnter
@@ -3553,6 +3676,13 @@ public class ClaudeSessionController {
                 // the next submission has to follow it rather than the launch
                 // conversation. The switch time is the submitting Enter's, not
                 // the text-write time, which would reach back into the pause.
+                if (pendingResume) {
+                    // A submitted /resume only opened the picker: the evidence
+                    // of the conversation it may fail to leave is kept until an
+                    // entry is picked or the admission is cancelled.
+                    armPickerSwitch(switchBeforeSend, promptBeforeSend,
+                            externalBeforeSend, textBeforeSend);
+                }
                 conversationSwitchAt = guiSubmitAt != 0L ? guiSubmitAt : submittedAt;
             }
         }
@@ -3613,6 +3743,69 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Returns {@code true} when {@code text} is the {@code /resume} command,
+     * the only conversation command whose switch only happens once an entry is
+     * picked: its picker can still be cancelled, leaving the conversation where
+     * it was.
+     *
+     * @param text text submitted from the prompt panel or from the terminal
+     */
+    private static boolean isResumeCommand(String text) {
+        return text != null && text.stripLeading().startsWith("/resume");
+    }
+
+    /**
+     * Arms the switch a submitted {@code /resume} is about to record: the
+     * evidence it replaces is kept until the picker confirms a conversation
+     * ({@link #confirmPickerSwitch()}) or the admission is cancelled
+     * ({@link #restorePickerSwitch()}). The first arm wins — a command
+     * submitted while an earlier admission is still pending did not switch
+     * anything either, so the snapshot must keep reaching back to before both.
+     * Call while holding the {@link #terminalInputLine} lock, before setting
+     * {@link #conversationSwitchAt}.
+     */
+    private void armPickerSwitch() {
+        armPickerSwitch(conversationSwitchAt, promptSubmittedAt, externalInputAt,
+                lastPromptText);
+    }
+
+    /**
+     * {@link #armPickerSwitch()} with a snapshot taken before the submission
+     * that recorded the switch replaced it.
+     */
+    private void armPickerSwitch(long switchAt, long promptAt, long externalAt, String text) {
+        if (pickerSwitchPending) return;
+        pickerSwitchPending = true;
+        switchBeforePicker = switchAt;
+        promptBeforePicker = promptAt;
+        externalBeforePicker = externalAt;
+        textBeforePicker = text;
+    }
+
+    /**
+     * Disarms the pending switch: an entry was picked, so the conversation did
+     * change. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private void confirmPickerSwitch() {
+        pickerSwitchPending = false;
+    }
+
+    /**
+     * Puts back the evidence a cancelled {@code /resume} replaced: the picker
+     * was dismissed without a selection, so the process still writes the
+     * conversation it wrote before the command. Idempotent. Call while holding
+     * the {@link #terminalInputLine} lock.
+     */
+    private void restorePickerSwitch() {
+        if (!pickerSwitchPending) return;
+        pickerSwitchPending = false;
+        conversationSwitchAt = switchBeforePicker;
+        promptSubmittedAt = promptBeforePicker;
+        externalInputAt = externalBeforePicker;
+        lastPromptText = textBeforePicker;
+    }
+
+    /**
      * Returns {@code true} when {@code menu} is the session picker opened by
      * {@code /resume}. Selecting an item there changes the conversation the
      * process writes; other menus (permission prompts, the trust-folder
@@ -3642,7 +3835,11 @@ public class ClaudeSessionController {
     void rememberChoiceMenuAnswer(String answer) {
         if (answer != null && answer.startsWith("ARROW:")
                 && isConversationPicker(model.getActiveChoiceMenu())) {
-            conversationSwitchAt = System.currentTimeMillis();
+            synchronized (terminalInputLine) {
+                // The picked entry is the switch the /resume was waiting for.
+                confirmPickerSwitch();
+                conversationSwitchAt = System.currentTimeMillis();
+            }
         }
     }
 
@@ -3652,6 +3849,13 @@ public class ClaudeSessionController {
      */
     public void cancelPrompt() {
         if (connector == null) return;
+        synchronized (terminalInputLine) {
+            // Esc dismisses the choice menu on the screen: cancelling the
+            // /resume picker leaves the conversation where it was.
+            if (isConversationPicker(openChoiceMenu())) {
+                restorePickerSwitch();
+            }
+        }
         try {
             sendCancelToPty(new byte[]{0x1b});
         } catch (IOException ex) {
@@ -3737,7 +3941,13 @@ public class ClaudeSessionController {
         // menu, so the worker retires it.
         if (!answerKeepsMenuOpen(answer)) {
             synchronized (terminalInputLine) {
-                completeTerminalMenu(openChoiceMenu());
+                ChoiceMenuModel answeredMenu = openChoiceMenu();
+                if (answer == null && isConversationPicker(answeredMenu)) {
+                    // Cancelling the /resume picker leaves the conversation
+                    // where it was: put back the evidence the command replaced.
+                    restorePickerSwitch();
+                }
+                completeTerminalMenu(answeredMenu);
             }
         }
         resetTerminalInputRecording(true);
@@ -5184,11 +5394,61 @@ public class ClaudeSessionController {
      * another menu answer. The line typed into the menu — its search filter or
      * a text option's answer — is the menu's, not a draft of the next prompt:
      * keeping it would prefix that prompt's evidence with it.
+     *
+     * <p>The Enter is the exception when terminal input already answered the
+     * menu during the worker's pause: the TUI's input line is a fresh prompt
+     * draft by then, and this Enter submits it, so the line becomes the prompt
+     * evidence instead of being dropped.
      */
     private void writePtyAnsweringMenu(byte[] bytes) throws IOException {
+        boolean submits = false;
+        String draft = null;
+        boolean draftExact = true;
+        long submittedAt = 0L;
+        boolean resumeDraft = false;
         synchronized (terminalInputLine) {
+            ChoiceMenuModel menu = openChoiceMenu();
+            // The answer workers pause between the arrows and this key: terminal
+            // input can answer or dismiss the menu in the meantime, and the model
+            // keeps reporting it until the next poll. This Enter then submits the
+            // ordinary line — whatever the user typed after that input — instead
+            // of answering a menu that is already gone, so its text becomes the
+            // prompt evidence the stop-time lookup follows.
+            boolean enterOnAnsweredMenu = menu == null
+                    && terminalCompletedMenu != null
+                    && bytes.length == 1 && bytes[0] == '\r';
+            if (enterOnAnsweredMenu) {
+                draft = terminalInputLine.toString().trim();
+                draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
+                resumeDraft = draftExact && isResumeCommand(draft);
+                submittedAt = System.currentTimeMillis();
+                submits = true;
+            }
             writePty(bytes);
-            discardPickerSearchText();
+            if (enterOnAnsweredMenu) {
+                // The line is submitted: it must not prefix the next one, and a
+                // delayed panel Enter is no longer its submission.
+                resetTerminalInputRecording(true);
+                // The scan itself is queued below, outside the lock.
+                if (submits && resumeDraft) {
+                    // A /resume typed after the early answer switches the
+                    // conversation: it is not a prompt written to the current
+                    // one, and the picker it opens can still be cancelled.
+                    armPickerSwitch();
+                    conversationSwitchAt = submittedAt;
+                    lastPromptText = null;
+                    promptSubmittedAt = submittedAt;
+                }
+            } else {
+                discardPickerSearchText();
+            }
+        }
+        if (submits) {
+            if (resumeDraft) {
+                scheduleIdentityRefresh();
+            } else {
+                rememberSentPrompt(draft, submittedAt, draftExact);
+            }
         }
     }
 
@@ -5369,6 +5629,11 @@ public class ClaudeSessionController {
             terminalMenuSelection = false;
             selectedMenu = terminalSelectedMenu;
             terminalSelectedMenu = null;
+            if (menuSelection && isConversationPicker(selectedMenu)) {
+                // Selecting an entry in the /resume picker is the switch the
+                // command was waiting for.
+                confirmPickerSwitch();
+            }
             if (entered && menuSelection && guiSendAwaitingEnter) {
                 // The terminal answered a choice menu while the panel's text
                 // was on the line: that text was the menu's search filter or
@@ -5395,6 +5660,12 @@ public class ClaudeSessionController {
                     // not by the panel's delayed completion: a later terminal
                     // submission replaces the text evidence without undoing the
                     // switch the conversation already made.
+                    if (pendingGuiPromptResume) {
+                        // A submitted /resume only opened the picker: the
+                        // evidence of the conversation it may fail to leave is
+                        // kept for a cancellation.
+                        armPickerSwitch();
+                    }
                     conversationSwitchAt = now;
                 }
             }
@@ -5426,6 +5697,12 @@ public class ClaudeSessionController {
                 // destination may be a saved one no live tab holds. Its text
                 // must not become the prompt evidence either — no file holds
                 // it — so the submission is recorded as unknown-text.
+                if (isResumeCommand(submitted)) {
+                    // /clear switches at once; a /resume only opens the picker,
+                    // so the evidence of the conversation it may fail to leave
+                    // is kept until an entry is picked or it is cancelled.
+                    armPickerSwitch();
+                }
                 conversationSwitchAt = now;
                 lastPromptText = null;
             } else {
@@ -5492,6 +5769,9 @@ public class ClaudeSessionController {
                     // cancellation of a choice menu, and this Esc begins a new
                     // sequence: the cancellation is complete, so the picker's
                     // search text must not become prompt draft.
+                    if (terminalEscapeOnPicker) {
+                        restorePickerSwitch();
+                    }
                     discardPickerSearchText();
                 }
                 terminalInputEscape = 1;
@@ -5499,8 +5779,11 @@ public class ClaudeSessionController {
                 terminalPasteAfterCR = false;
                 // A standalone Esc cancels a choice menu (the /resume picker):
                 // the recorded line then holds the picker's search text, not a
-                // prompt draft.
-                terminalEscapeOnMenu = openChoiceMenu() != null;
+                // prompt draft. Cancelling the picker leaves the conversation
+                // where it was, so the switch it was opened to make is undone.
+                ChoiceMenuModel escapedMenu = openChoiceMenu();
+                terminalEscapeOnMenu = escapedMenu != null;
+                terminalEscapeOnPicker = isConversationPicker(escapedMenu);
                 // A new Esc belongs to this write, so it is not the carried
                 // standalone one and may start a sequence even right after it.
                 carriedEscape = false;
@@ -5520,6 +5803,12 @@ public class ClaudeSessionController {
                         // The carried Esc was a standalone cancellation of a
                         // choice menu: discard the picker's search text so it
                         // cannot prefix the next prompt.
+                        if (terminalEscapeOnPicker) {
+                            // The cancelled menu was the /resume picker, so the
+                            // conversation never switched and the evidence the
+                            // command replaced comes back.
+                            restorePickerSwitch();
+                        }
                         discardPickerSearchText();
                     }
                 } else if (c == '[') {
