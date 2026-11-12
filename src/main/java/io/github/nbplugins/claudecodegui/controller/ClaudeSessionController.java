@@ -5794,8 +5794,13 @@ public class ClaudeSessionController {
                 // prompt draft. Cancelling the picker leaves the conversation
                 // where it was, so the switch it was opened to make is undone.
                 ChoiceMenuModel escapedMenu = openChoiceMenu();
-                terminalEscapeOnMenu = escapedMenu != null;
-                terminalEscapeOnPicker = isConversationPicker(escapedMenu);
+                // The screen poll publishes the picker a few hundred ms after
+                // the command: an Esc that reaches it first cancels the very
+                // menu the pending switch is waiting on, so it counts as one.
+                boolean unpublishedPicker = escapedMenu == null && pickerSwitchPending;
+                terminalEscapeOnMenu = escapedMenu != null || unpublishedPicker;
+                terminalEscapeOnPicker = isConversationPicker(escapedMenu)
+                        || unpublishedPicker;
                 // A new Esc belongs to this write, so it is not the carried
                 // standalone one and may start a sequence even right after it.
                 carriedEscape = false;

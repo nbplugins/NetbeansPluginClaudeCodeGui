@@ -9474,6 +9474,41 @@ class ClaudeSessionControllerTest {
     }
 
     /**
+     * The screen poll publishes the picker a few hundred milliseconds after the
+     * command, so a user who presses Esc immediately cancels a menu the model
+     * has not seen yet. That Esc cancels the very picker the plugin is waiting
+     * on, so the switch must be rolled back just the same: otherwise the stop
+     * treats the conversation as switched and drops the name.
+     */
+    @Test
+    void aPickerCancelledBeforeItIsPublishedKeepsTheLaunchConversationRenamable() throws Exception {
+        java.nio.file.Path config = tmpDir.resolve("config");
+        java.nio.file.Path work = tmpDir.resolve("project");
+        java.nio.file.Path dir = sessionDir(config, work);
+
+        writeSession(dir, "a", "a");
+        setMtime(dir.resolve("a.jsonl"), START_MS - 5_000L);
+
+        model.setWorkingDirectory(work.toFile());
+        controller.simulateProcessStart(START_MS, true);
+        controller.simulateLiveSession(config, "a", Set.of("a"));
+
+        // /resume is submitted and Esc cancels the picker before the screen
+        // detector ever publishes it.
+        controller.simulateTerminalInput(
+                "/resume\r".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                START_MS + 10_000L);
+        controller.simulateTerminalInput(new byte[]{0x1b}, START_MS + 10_100L);
+
+        controller.stopAndRename("A-title");
+
+        assertEquals("A-title",
+                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore
+                        .findSession(work, config, "a").customTitle(),
+                "the unpublished picker was cancelled, so nothing switched");
+    }
+
+    /**
      * Cancelling the picker also puts back the prompt evidence the resume
      * command replaced, so the conversation the tab was on before stays the
      * submission the stop-time lookup follows.
