@@ -12,6 +12,7 @@ import io.github.nbplugins.claudecodegui.model.EditMode;
 import io.github.nbplugins.claudecodegui.model.SavedSession;
 import io.github.nbplugins.claudecodegui.model.SessionLifecycle;
 import io.github.nbplugins.claudecodegui.model.SessionMode;
+import io.github.nbplugins.claudecodegui.process.ClaudeProcess;
 import io.github.nbplugins.claudecodegui.process.ClaudeSessionStore;
 import io.github.nbplugins.claudecodegui.settings.ClaudeCodePreferences;
 import io.github.nbplugins.claudecodegui.settings.ClaudeProfile;
@@ -165,6 +166,26 @@ public class ClaudeSessionTab extends TopComponent
 
     /** Resume session ID actually used when the current session was started. */
     private String activeResumeSessionId;
+
+    /**
+     * Bumped for every session start and on close, so a launch whose
+     * preparation finished late cannot start a process the user already
+     * replaced or closed.
+     */
+    private volatile long startRequestSeq;
+
+    /**
+     * Directory of a launch whose preparation is still running, or {@code null}.
+     *
+     * <p>{@link ClaudeSessionModel#getWorkingDirectory()} is only updated when
+     * the process actually starts, so while the launch is being prepared it
+     * still names the previous project. Restart actions offered in that window
+     * must use this directory instead.
+     */
+    private volatile File pendingLaunchDir;
+
+    /** Effective config dir of a launch still being prepared, or {@code null}. */
+    private volatile Path pendingLaunchConfigDir;
 
     // -------------------------------------------------------------------------
     // MVC
@@ -331,23 +352,20 @@ public class ClaudeSessionTab extends TopComponent
         selectorPanel    = new ClaudeSessionSelectorPanel(dir, (d, pn, ea, mode, resumeId) -> onDirectoryOpened(d, pn, ea, mode, resumeId));
 
         // --- chat UI ---
-        choiceMenuPanel = new ChoiceMenuPanel(() -> {
-            java.io.File wd = model.getWorkingDirectory();
-            return wd != null ? wd.getAbsolutePath() : null;
-        });
+        choiceMenuPanel = new ChoiceMenuPanel(this::currentOrPendingDirectoryPath);
         promptPanel     = new ClaudePromptPanel(
                 this::sendPrompt,
                 this::cancelPrompt,
                 controller::sendShiftTab,
                 model::getPromptHistory,
-                () -> {
-                    File wd = model.getWorkingDirectory();
-                    return wd != null ? wd.getAbsolutePath() : null;
-                },
+                this::currentOrPendingDirectoryPath,
                 () -> onSaveAndSwitch("", SessionMode.NEW, null),
                 () -> openSwitchDialog(SessionMode.RESUME_SPECIFIC),
                 this::showSessionStatistics,
                 this::isSessionStatisticsAvailable);
+        // The launch is prepared off the EDT, so the input area is usable before
+        // the PTY connector exists; keep typed prompts until it does.
+        promptPanel.setSendAvailable(controller::canSendPrompt);
 
         // --- layout ---
         setLayout(new BorderLayout());
@@ -414,8 +432,7 @@ public class ClaudeSessionTab extends TopComponent
     public static void openForDirectory(File dir, String profileName) {
         SwingUtilities.invokeLater(() -> {
             for (TopComponent tc : WindowManager.getDefault().getRegistry().getOpened()) {
-                if (tc instanceof ClaudeSessionTab tab
-                        && dir.equals(tab.getWorkingDirectory())) {
+                if (tc instanceof ClaudeSessionTab tab && tab.servesDirectory(dir)) {
                     tab.requestActive();
                     return;
                 }
@@ -461,13 +478,16 @@ public class ClaudeSessionTab extends TopComponent
     @Override
     protected void componentClosed() {
         super.componentClosed();
-        File dir = model.getWorkingDirectory();
+        // Keep the project being launched when closing during its preparation:
+        // the launch is cancelled below, but reopening must still restore it.
+        File dir = currentOrPendingDirectory();
         pathToRestore = (dir != null) ? dir.getAbsolutePath() : null;
         if (pendingDiffOnClose != null) {
             try { pendingDiffOnClose.run(); } catch (Exception ex) { /* ignore */ }
             pendingDiffOnClose = null;
         }
         tabClosed = true;
+        startRequestSeq++; // cancel a launch whose preparation is still running
         displayNameGeneration.incrementAndGet(); // cancel pending polls
         if (trackedProjectInfo != null && projectNameListener != null) {
             trackedProjectInfo.removePropertyChangeListener(projectNameListener);
@@ -538,7 +558,9 @@ public class ClaudeSessionTab extends TopComponent
     @Override
     public void writeExternal(ObjectOutput out) throws IOException {
         super.writeExternal(out);
-        File dir = model.getWorkingDirectory();
+        // Persist the project being launched if one is still being prepared:
+        // the model still names the previous project in that window.
+        File dir = currentOrPendingDirectory();
         out.writeUTF(dir != null ? dir.getAbsolutePath() : "");
         out.writeUTF(selectorPanel.getSelectedProfileName());
         out.writeUTF(selectorPanel.getExtraCliArgs());
@@ -824,15 +846,15 @@ public class ClaudeSessionTab extends TopComponent
                                SessionMode mode, String resumeSessionId) {
         selectorPanel.lock();
         this.activeResumeSessionId = resumeSessionId;
-        Path configDir = null;
-        if (!ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
-            ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
-            if (profile != null && !profile.isDefault()) {
-                configDir = ClaudeProfileStore.resolveStorageDir(
-                        profile, ClaudeCodePreferences.getProfilesDir());
-            }
-        }
+        // Resolved for every profile, Default included: its extra environment
+        // may set CLAUDE_CONFIG_DIR too, and the process honors that.
+        Path configDir = resolveLaunchConfigDir(ClaudeProfileStore.findByName(profileName),
+                ClaudeCodePreferences.getProfilesDir());
         final Path capturedConfigDir = configDir;
+        // Until the process starts, the model still describes the previous
+        // project; restart actions must follow this launch instead.
+        pendingLaunchDir = dir;
+        pendingLaunchConfigDir = capturedConfigDir;
         controller.setHangCallback(
             (cmd, err) -> showStartError(cmd, err, model.getWorkingDirectory(), capturedConfigDir));
         updateDisplayName(dir);
@@ -848,14 +870,43 @@ public class ClaudeSessionTab extends TopComponent
             widget.getTerminalPanel().setBackground(termBg);
         }
         showChatLayout(widget);
-        try {
-            controller.startProcess(dir, profileName, extraCliArgs, mode, resumeSessionId, widget);
-        } catch (IOException ex) {
-            LOG.log(Level.SEVERE, "Claude process failed to start in " + dir, ex);
-            String command = controller.getLastAttemptedCommand();
-            String errorMsg = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
-            showStartError(command, errorMsg, dir, capturedConfigDir);
-        }
+        startProcessAsync(dir, profileName, extraCliArgs, mode, resumeSessionId,
+                widget, capturedConfigDir);
+    }
+
+    /**
+     * Prepares the launch-time session identity off the EDT and starts the
+     * process on the EDT afterwards.
+     *
+     * <p>Capturing the identity enumerates the project's session files; on
+     * projects with a large history that takes long enough to freeze the IDE if
+     * done inline. It must still describe the store before the process starts,
+     * so the launch waits for it.
+     */
+    private void startProcessAsync(File dir, String profileName, String extraCliArgs,
+                                   SessionMode mode, String resumeSessionId,
+                                   ZoomableJediTermWidget widget, Path configDir) {
+        final long request = ++startRequestSeq;
+        Thread t = new Thread(() -> {
+            ClaudeSessionController.LaunchIdentity identity =
+                    ClaudeSessionController.prepareLaunchIdentity(
+                            dir, profileName, mode, resumeSessionId);
+            SwingUtilities.invokeLater(() -> {
+                if (request != startRequestSeq) return;
+                try {
+                    controller.startProcess(dir, profileName, extraCliArgs, mode,
+                            resumeSessionId, identity, widget);
+                } catch (IOException ex) {
+                    LOG.log(Level.SEVERE, "Claude process failed to start in " + dir, ex);
+                    String command = controller.getLastAttemptedCommand();
+                    String errorMsg = ex.getMessage() != null
+                            ? ex.getMessage() : ex.getClass().getSimpleName();
+                    showStartError(command, errorMsg, dir, configDir);
+                }
+            });
+        }, "session-launch-prep");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void showChatLayout(JediTermWidget widget) {
@@ -1229,39 +1280,32 @@ public class ClaudeSessionTab extends TopComponent
     }
 
     public void openSwitchDialog(SessionMode initialMode) {
-        File workingDir = model.getWorkingDirectory();
+        File workingDir = currentOrPendingDirectory();
         if (workingDir == null) return;
 
-        String profileName = selectorPanel.getSelectedProfileName();
-        Path claudeConfigDir = null;
-        if (profileName != null && !io.github.nbplugins.claudecodegui.settings.ClaudeProfile.DEFAULT_NAME.equals(profileName)) {
-            io.github.nbplugins.claudecodegui.settings.ClaudeProfile profile =
-                    io.github.nbplugins.claudecodegui.settings.ClaudeProfileStore.findByName(profileName);
-            if (profile != null) {
-                claudeConfigDir = io.github.nbplugins.claudecodegui.settings.ClaudeProfileStore.resolveStorageDir(
-                        profile, ClaudeCodePreferences.getProfilesDir());
-            }
-        }
-
-        io.github.nbplugins.claudecodegui.model.SavedSession recent =
-                io.github.nbplugins.claudecodegui.process.ClaudeSessionStore.findMostRecent(
-                        workingDir.toPath(), claudeConfigDir);
-        long procStart = controller.getProcessStartedAt();
-        // If a process is running and the most recent JSONL predates it, it's an OLD session —
-        // not the currently running one (which hasn't written its JSONL yet)
-        boolean isCurrentSession = recent != null
-                && (procStart == 0 || (recent.lastAt() != null
-                        && recent.lastAt().toEpochMilli() >= procStart));
-        String currentName = isCurrentSession ? recent.displayName() : "";
-        String currentId   = isCurrentSession ? recent.sessionId() : null;
+        // The controller captured the effective config dir and session ID at launch,
+        // so the running session's name and ID are read from that same store.
+        Path runningConfigDir = currentOrPendingConfigDir();
+        String currentId = controller.resolveActiveSessionId();
+        SavedSession current = currentId != null
+                ? ClaudeSessionStore.findSession(workingDir.toPath(), runningConfigDir, currentId)
+                : null;
+        String currentName = prefillSessionName(current);
 
         final ClaudeSessionTab self = this;
-        final Path configDir = claudeConfigDir;
+        final Path configDir = dialogSessionListConfigDir(
+                ClaudeProfileStore.findByName(selectorPanel.getSelectedProfileName()),
+                ClaudeCodePreferences.getProfilesDir(), runningConfigDir);
         java.awt.Frame mainFrame = org.openide.windows.WindowManager.getDefault().getMainWindow();
         SaveAndSwitchDialog dialog = new SaveAndSwitchDialog(
                 mainFrame,
                 currentName,
-                currentId,
+                // The exclusion removes the running conversation from the list by
+                // ID alone. Only a list of the same store holds that exact
+                // conversation: another store (the profile's storage directory
+                // may have been changed in Options) can contain a copy under the
+                // same ID, and hiding it would leave the list without it.
+                excludedSessionId(currentId, configDir, runningConfigDir),
                 workingDir.toPath(),
                 configDir,
                 initialMode,
@@ -1272,8 +1316,144 @@ public class ClaudeSessionTab extends TopComponent
         dialog.setVisible(true);
     }
 
+    /**
+     * Returns the session ID the switch dialog must hide from its list: the
+     * running conversation, but only when the listed store is the store the
+     * running process writes to. Session IDs are only unique within a store,
+     * so a different store's file with the same ID is an unrelated (possibly
+     * copied) conversation and has to stay selectable.
+     *
+     * @param currentId     the running session's ID, or {@code null}
+     * @param listedStore   store the dialog lists sessions from
+     * @param runningStore  store the running session writes to
+     * @return the ID to exclude, or {@code null}
+     */
+    static String excludedSessionId(String currentId, Path listedStore, Path runningStore) {
+        if (currentId == null) return null;
+        return sameStore(listedStore, runningStore) ? currentId : null;
+    }
+
+    private static boolean sameStore(Path first, Path second) {
+        if (first == null || second == null) return first == null && second == null;
+        return first.toAbsolutePath().normalize()
+                .equals(second.toAbsolutePath().normalize());
+    }
+
+    /**
+     * Returns the name to pre-fill in the Save &amp; Switch dialog for the current
+     * session: its custom title, else its slug, else an empty string.  The raw
+     * session ID is never offered as a name.
+     *
+     * @param session current session, or {@code null}
+     * @return pre-fill value; never {@code null}
+     */
+    static String prefillSessionName(SavedSession session) {
+        if (session == null) return "";
+        String title = session.customTitle();
+        if (title != null && !title.isBlank() && !title.equals(session.sessionId())) {
+            return title;
+        }
+        String slug = session.slug();
+        return slug != null && !slug.isBlank() ? slug : "";
+    }
+
+    /**
+     * Package-private for tests: whether this tab already serves {@code dir},
+     * including a launch that is still being prepared. During that window the
+     * model still names the previous project (or none), so looking only at
+     * {@link #getWorkingDirectory()} would let a second "Open with Claude Code"
+     * create another tab and start another process for the same project.
+     *
+     * @param dir working directory to look for
+     * @return {@code true} if this tab is (or is about to be) a session for it
+     */
+    boolean servesDirectory(File dir) {
+        return dir != null && dir.equals(currentOrPendingDirectory());
+    }
+
+    /**
+     * Working directory handed to the prompt input for {@code @}-references to
+     * files pasted, dropped or completed while a launch is still being prepared.
+     *
+     * <p>The model still names the previous project until the process starts,
+     * so the pending launch's directory must win; otherwise a file from the new
+     * project would be stored as a path that only resolves inside the old one.
+     *
+     * @return absolute path of the directory the prompt will run in, or
+     *         {@code null} when no directory is known yet
+     */
+    String currentOrPendingDirectoryPath() {
+        File dir = currentOrPendingDirectory();
+        return dir != null ? dir.getAbsolutePath() : null;
+    }
+
+    /**
+     * Directory the Save &amp; Switch dialog and restart actions operate on: the
+     * launch still being prepared (if any), otherwise the running session's.
+     *
+     * <p>{@code model.getWorkingDirectory()} is only updated when the process
+     * starts, so during a pending launch it still names the previous project.
+     */
+    private File currentOrPendingDirectory() {
+        File pending = pendingLaunchDir;
+        return pending != null ? pending : model.getWorkingDirectory();
+    }
+
+    /**
+     * Effective Claude config dir matching {@link #currentOrPendingDirectory()}.
+     *
+     * @return the running session's config dir, else the pending launch's;
+     *         {@code null} only when this tab has not prepared a launch yet
+     */
+    private Path currentOrPendingConfigDir() {
+        Path active = controller.getActiveConfigDir();
+        return active != null ? active : pendingLaunchConfigDir;
+    }
+
+    /**
+     * Config directory a launch of {@code profile} will actually use.
+     *
+     * <p>Resolved exactly as {@link ClaudeProcess} resolves it for the process:
+     * the profile's storage dir, then any {@code CLAUDE_CONFIG_DIR} from the
+     * profile's extra environment variables. While the launch is pending the
+     * Save &amp; Switch dialog must list that same store, or it would offer a
+     * conversation the replacement process cannot resume.
+     *
+     * @param profile     profile of the pending launch; may be {@code null}
+     * @param profilesDir base directory for profile config dirs
+     * @return the effective config dir; the default store when nothing else is configured
+     */
+    static Path resolveLaunchConfigDir(ClaudeProfile profile, Path profilesDir) {
+        // Not skipped for Default: its extra environment variables may set
+        // CLAUDE_CONFIG_DIR, and the launched process resolves it from there.
+        return ClaudeProcess.resolveConfigDir(profile, profilesDir);
+    }
+
+    /**
+     * Config directory whose conversations the Save &amp; Switch dialog lists.
+     *
+     * <p>The dialog belongs to the running session, but "Resume specific" starts
+     * a replacement process that reloads the selected profile from
+     * {@link ClaudeProfileStore}. If the profile's storage directory was changed
+     * in Options after this session started, the replacement writes to the new
+     * directory; listing the one captured at launch would offer conversations
+     * that process cannot resume. The running session's own name is still read
+     * from its captured directory.
+     *
+     * @param profile          profile the replacement launch will use; may be {@code null}
+     * @param profilesDir      base directory for profile config dirs
+     * @param runningConfigDir config dir of the running session, used when the
+     *                         launch directory cannot be resolved
+     * @return the config dir the replacement launch will use
+     */
+    static Path dialogSessionListConfigDir(ClaudeProfile profile, Path profilesDir,
+                                           Path runningConfigDir) {
+        Path launchDir = resolveLaunchConfigDir(profile, profilesDir);
+        return launchDir != null ? launchDir : runningConfigDir;
+    }
+
     public void onSaveAndSwitch(String sessionName, SessionMode mode, String resumeId) {
-        File dir = model.getWorkingDirectory();
+        File dir = currentOrPendingDirectory();
         String profileName = selectorPanel.getSelectedProfileName();
         String extraCliArgs = selectorPanel.getExtraCliArgs();
 
@@ -1292,8 +1472,14 @@ public class ClaudeSessionTab extends TopComponent
 
         // Restart with new mode
         if (dir != null) {
-            startSession(dir, profileName, extraCliArgs, mode, resumeId);
+            restartSession(dir, profileName, extraCliArgs, mode, resumeId);
         }
+    }
+
+    /** Restarts the session with the chosen mode. Protected to allow overriding in tests. */
+    protected void restartSession(File dir, String profileName, String extraCliArgs,
+                                  SessionMode mode, String resumeId) {
+        startSession(dir, profileName, extraCliArgs, mode, resumeId);
     }
 
     /** Closes this tab. Protected to allow overriding in tests. */
@@ -1308,6 +1494,11 @@ public class ClaudeSessionTab extends TopComponent
 
     /** Tears down the chat UI layout after the PTY has already been stopped. */
     private void cleanupChatLayout() {
+        // The layout is gone: a launch whose preparation is still running would
+        // otherwise attach its process to the closed, detached widget.
+        startRequestSeq++;
+        pendingLaunchDir = null;
+        pendingLaunchConfigDir = null;
         if (terminalWidget != null) {
             terminalWidget.close();
             terminalWidget = null;
@@ -1332,6 +1523,8 @@ public class ClaudeSessionTab extends TopComponent
         }
         selectorPanel.setVisible(true);
         selectorPanel.unlock();
+        // Reflect the name just saved by stopAndRename() in the session list.
+        selectorPanel.refreshSessionList();
         add(selectorPanel, BorderLayout.CENTER);
         statusBar.setVisible(false);
         currentLifecycle = null;

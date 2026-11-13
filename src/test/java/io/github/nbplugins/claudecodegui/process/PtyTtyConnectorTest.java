@@ -78,6 +78,148 @@ class PtyTtyConnectorTest {
     }
 
     /**
+     * Verifies that every block written to the PTY reaches the input listener,
+     * which the controller uses to notice text typed in the terminal.
+     */
+    @Test
+    void testInputListenerReceivesWrittenBytes() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+                System.getProperty("os.name", "").toLowerCase().contains("win"));
+
+        PtyProcess p = startCat();
+        List<String> received = new ArrayList<>();
+        PtyTtyConnector c = new PtyTtyConnector(p);
+        c.setInputListener((bytes, sentAt) ->
+                received.add(new String(bytes, StandardCharsets.UTF_8)));
+
+        c.write("first");
+        c.write(new byte[]{'\r'});
+        // No waitFor() here: pty4j 0.12.4 never reports the exit of a child
+        // whose PTY output was read through an InputStream (as the connector
+        // does), even though the child itself terminates.
+        c.close();
+
+        assertEquals(List.of("first", "\r"), received);
+    }
+
+    /**
+     * The submission time handed to the input listener must be sampled by the
+     * connector <em>before</em> the bytes are forwarded, not by the listener
+     * itself: the child may append the prompt to its session file between the
+     * write and the listener call (the writing thread can be descheduled after
+     * the flush). A later timestamp would make the controller reject the very
+     * prompt it just sent when it looks for evidence of the conversation on
+     * screen.
+     */
+    @Test
+    void testSubmissionTimeIsSampledBeforeTheBytesAreDelivered() throws Exception {
+        RecordingPtyProcess p = new RecordingPtyProcess();
+        List<Long> times = new ArrayList<>();
+        PtyTtyConnector c = new PtyTtyConnector(p, () -> {
+            if (p.delivered) p.sampledAfterDelivery = true;
+            return 1_234L;
+        });
+        c.setInputListener((bytes, sentAt) -> times.add(sentAt));
+
+        c.write("first");
+
+        assertEquals("first", p.writtenText());
+        assertEquals(List.of(1_234L), times);
+        assertFalse(p.sampledAfterDelivery,
+                "the submission time must be sampled before the bytes reach the child");
+    }
+
+    /**
+     * The controller writes the GUI prompt's Enter under the lock it also uses
+     * for the terminal recorder. A concurrent terminal write must therefore be
+     * forwarded and recorded as one step: it may not reach the child on one
+     * side of that Enter while its listener runs on the other, because the
+     * listener would then record bytes for a line the plugin already reset.
+     */
+    @Test
+    void testWriteIsSerializedWithTheSharedInputLock() throws Exception {
+        RecordingPtyProcess p = new RecordingPtyProcess();
+        PtyTtyConnector c = new PtyTtyConnector(p);
+        List<String> received =
+                java.util.Collections.synchronizedList(new ArrayList<>());
+        c.setInputListener((bytes, sentAt) ->
+                received.add(new String(bytes, StandardCharsets.UTF_8)));
+        Object lock = new Object();
+        c.setInputLock(lock);
+
+        java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread writer;
+        synchronized (lock) {
+            writer = new Thread(() -> {
+                try {
+                    c.write("typed");
+                } catch (java.io.IOException e) {
+                    throw new RuntimeException(e);
+                } finally {
+                    done.countDown();
+                }
+            }, "connector-write-test");
+            writer.start();
+
+            assertFalse(done.await(200, java.util.concurrent.TimeUnit.MILLISECONDS),
+                    "the write must wait while the shared lock is held");
+            assertEquals("", p.writtenText(),
+                    "no bytes may reach the child while the lock is held");
+            assertTrue(received.isEmpty(),
+                    "the listener must not run while the lock is held");
+        }
+
+        assertTrue(done.await(2, java.util.concurrent.TimeUnit.SECONDS),
+                "the write must proceed once the lock is released");
+        assertEquals("typed", p.writtenText());
+        assertEquals(List.of("typed"), received);
+    }
+
+    /**
+     * A PTY double that records the order of the two events this test cares
+     * about: the pending input reaching the child and the connector sampling
+     * the submission time.
+     */
+    private static final class RecordingPtyProcess extends PtyProcess {
+        private final java.io.ByteArrayOutputStream written =
+                new java.io.ByteArrayOutputStream();
+        private final InputStream output = new ByteArrayInputStream(new byte[0]);
+        boolean delivered;
+        boolean sampledAfterDelivery;
+
+        @Override
+        public OutputStream getOutputStream() {
+            return new OutputStream() {
+                @Override
+                public void write(int b) {
+                    delivered = true;
+                    written.write(b);
+                }
+
+                @Override
+                public void write(byte[] b, int off, int len) {
+                    delivered = true;
+                    written.write(b, off, len);
+                }
+            };
+        }
+
+        String writtenText() {
+            return written.toString(StandardCharsets.UTF_8);
+        }
+
+        @Override public InputStream getInputStream() { return output; }
+        @Override public InputStream getErrorStream() { return output; }
+        @Override public int waitFor() { return 0; }
+        @Override public int exitValue() { return 0; }
+        @Override public boolean isAlive() { return true; }
+        @Override public void destroy() { }
+        @Override public void setWinSize(com.pty4j.WinSize winSize) { }
+        @Override public com.pty4j.WinSize getWinSize() { return new com.pty4j.WinSize(80, 24); }
+    }
+
+    /**
      * Verifies that the line listener receives lines with ANSI escape codes stripped.
      *
      * <p>Starts an {@code echo} process that outputs a line wrapped in ANSI colour

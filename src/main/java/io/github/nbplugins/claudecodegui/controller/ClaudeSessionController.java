@@ -22,9 +22,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
@@ -69,6 +72,23 @@ public class ClaudeSessionController {
 
     private static final int MAX_MODEL_DISCOVERY_ATTEMPTS = 1;
 
+    /**
+     * Slack for the filesystem's modification-time granularity when matching a
+     * session file against a launch/prompt time. FAT and some network
+     * filesystems round mtimes down to 1–2 s, so a file created just after a
+     * prompt — including a saved conversation resumed in-process — can be
+     * stamped before it. Applied as a second identity-scan pass (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private static final long SESSION_MTIME_GRANULARITY_MS = 2_000L;
+
+    /**
+     * Maximum number of session files written since a prompt inspected for the
+     * tab's own conversation. Reading a JSONL is not free, and the file of the
+     * running process is always among the most recently written ones.
+     */
+    private static final int PROMPT_EVIDENCE_CANDIDATES = 8;
+
     private final ClaudeSessionModel model;
 
     /**
@@ -80,8 +100,19 @@ public class ClaudeSessionController {
 
     private final ScreenContentDetector screenContentDetector = new ScreenContentDetector();
 
-    private ClaudeProcess claudeProcess;
+    private volatile ClaudeProcess claudeProcess;
     private PtyTtyConnector connector;
+    private volatile java.util.function.Consumer<byte[]> ptyWriteHook;
+
+    /** Package-private for tests: runs whenever the PTY child is killed. */
+    private volatile Runnable ptyKillHook;
+
+    /**
+     * Package-private for tests: runs just before the stop path snapshots the
+     * session claims, so a concurrent process exit can be interleaved there.
+     */
+    private volatile Runnable claimSnapshotHook;
+    private volatile java.util.function.Consumer<PtyTtyConnector> ptyTargetHook;
     private java.io.File workingDir;
     private volatile JediTermWidget terminalWidget;
 
@@ -103,6 +134,505 @@ public class ClaudeSessionController {
 
     /** {@code true} once the first byte/line from the PTY has been received. */
     private volatile boolean firstOutputReceived = false;
+
+    /**
+     * Controllers whose PTY process is currently running. Tabs that share a
+     * project / config store use this set to publish (and claim) their own
+     * session before another tab decides which file to rename.
+     */
+    private static final Set<ClaudeSessionController> LIVE_SESSIONS =
+            ConcurrentHashMap.newKeySet();
+
+    /**
+     * A session file, identified by its store: the same session ID can exist in
+     * several config dirs / projects (e.g. a JSONL copied between stores), and
+     * a claim must only hide the file it actually belongs to.
+     */
+    private record SessionKey(java.nio.file.Path configDir,
+                              java.nio.file.Path projectDir,
+                              String sessionId) { }
+
+    /** Session file → live controllers running exactly that file. */
+    private static final Map<SessionKey, SessionClaims> SESSION_CLAIMS =
+            new ConcurrentHashMap<>();
+
+    /**
+     * Live controllers writing one session file, split by how strong their hold
+     * on it is.
+     *
+     * <ul>
+     *   <li>{@link #owners} — the tab knew this conversation at launch
+     *       ({@code --continue}/{@code --resume}) and no other live tab held it
+     *       when the claim was made. Only an owner may treat the file as
+     *       established, and only ownership elsewhere makes the file foreign to
+     *       this tab.</li>
+     *   <li>{@code provisional} (a holder in neither set) — a {@code NEW} tab
+     *       guessed that this file is its own. A guess is not ownership: it must
+     *       never make the file look foreign to the tab that established it,
+     *       nor be displaced merely because another unresolved tab follows the
+     *       same file (with identical prompts the evidence cannot tell the two
+     *       apart).</li>
+     *   <li>{@link #borrowed} — the tab joined a file another live tab already
+     *       held (an in-process resume into a sibling's conversation, or a NEW
+     *       tab following it until its own file appears).</li>
+     * </ul>
+     */
+    private static final class SessionClaims {
+        final Set<ClaudeSessionController> holders = ConcurrentHashMap.newKeySet();
+        final Set<ClaudeSessionController> owners = ConcurrentHashMap.newKeySet();
+        final Set<ClaudeSessionController> borrowed = ConcurrentHashMap.newKeySet();
+    }
+
+    /**
+     * Worker for the periodic session-store scans, shared by all controllers so
+     * that the Swing EDT never enumerates the session history.
+     */
+    private static final java.util.concurrent.ExecutorService IDENTITY_SCANNER =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "session-id-scan");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /**
+     * Guards {@link #claudeProcess} replacement against a late exit callback:
+     * every started process gets a new {@link #processGeneration}, and the
+     * callback only releases ownership when its generation is still current.
+     *
+     * <p>{@link #processGeneration} is volatile for the senders that check it
+     * while holding {@link #terminalInputLine}: the stop path resets the
+     * recorder under the ownership lock, so that lock cannot be taken there
+     * (see {@link #recorderBelongsTo(long)}).
+     */
+    private final Object processOwnershipLock = new Object();
+    private volatile long processGeneration;
+
+    /**
+     * Monotonic scan counter. Scans of the same process run can overlap (the
+     * dialog resolves synchronously while the worker scans); a result is only
+     * published if no newer scan published before it.
+     */
+    private long scanSequence;
+    private long lastPublishedScanId;
+
+    /** True while a background identity scan of this controller is queued. */
+    private final java.util.concurrent.atomic.AtomicBoolean identityScanPending =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Effective Claude config dir of the running session, captured at launch.
+     * Used so that renaming targets the same store the process writes to.
+     */
+    private volatile java.nio.file.Path activeConfigDir;
+
+    /**
+     * Session ID known at launch: the resume ID for {@link SessionMode#RESUME_SPECIFIC}
+     * and the newest existing session for {@link SessionMode#CONTINUE_LAST}.  For
+     * {@link SessionMode#NEW} this is {@code null} until the session file appears.
+     */
+    private volatile String activeSessionId;
+
+    /**
+     * Session IDs that already existed when the current session was launched.
+     * They are only ineligible for an unresolved {@code NEW} session and only
+     * before the plugin has submitted a prompt (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private volatile Set<String> preStartSessionIds = Set.of();
+
+    /**
+     * {@code true} when the session ID was known before the first prompt (a
+     * {@code --continue}/{@code --resume} launch). A {@code NEW} session has no
+     * identity up front, so the file it later adopts is only a guess until the
+     * tab proves the file is its own — see {@link #claimSession}.
+     */
+    private volatile boolean launchIdentityKnown;
+
+    /**
+     * Session ID the process was launched with ({@code --continue} or
+     * {@code --resume}), or {@code null} for a {@code NEW} launch. Kept after
+     * the tracked identity changes: when a prompt submitted later turns out to
+     * have been appended to the launch conversation, that record proves the
+     * conversation never actually switched (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private volatile String launchSessionId;
+
+    /**
+     * Session ID a {@link SessionMode#NEW} run resolved as the file it created
+     * for its own submission, or {@code null} before that. The unknown-text
+     * own-file priority belongs to that file only: afterwards the run's
+     * conversation is established, and a later recalled prompt must be looked
+     * up among the run's own and the shared conversations instead of adopting
+     * an unrelated unclaimed file that merely received a user record after the
+     * submission. The ID is kept even when the tab adopts a borrowed
+     * conversation and releases its claim: the own file must stay a candidate
+     * for the submission that actually went there (see
+     * {@link #refreshSessionIdentity()}).
+     */
+    private volatile String ownSessionId;
+
+    /**
+     * The provisional identity this tab adopted and the submission evidence it
+     * was adopted on, or {@code null}/zero before one was published. A later
+     * submission from the terminal can replace the prompt evidence without
+     * resolving the conversation — a {@code /resume} command whose picker the
+     * user then cancels with Esc, for example — and the ambiguity check of
+     * {@link #stopAndRename(String)} must still judge the guess on the evidence
+     * that produced it, or the absence of newer records would read as proof
+     * that it is this tab's.
+     */
+    private String guessSessionId;
+    private String guessPromptText;
+    private long guessPromptAt;
+    private long guessSince;
+
+    /**
+     * Session IDs this tab established or guessed as its own before it stopped
+     * its writer — or before its process exited on its own while the tab stayed
+     * open — kept eligible for the final post-stop identity lookup of
+     * {@link #stopAndRename(String)}. Stopping the PTY runs the exit callback,
+     * which releases this tab's live claims; without the preserved evidence
+     * this tab's own conversation would then look like another live tab's file
+     * (or like a file established by another tab) and the lookup could pick an
+     * unrelated conversation.
+     *
+     * <p>A conversation the tab only borrowed is not listed by the stop-time
+     * snapshot: it belongs to another live tab, and preserving it would make the
+     * borrowed file win over the file this tab actually created. The exit-time
+     * snapshot does carry a borrowed launch conversation: the borrow ends with
+     * the process, and the tab still has to rename the file it was launched on.
+     */
+    private volatile Set<String> preservedClaims = Set.of();
+
+    /**
+     * Time (epoch millis) a prompt was last submitted from the plugin. Used to
+     * attribute the session file created by a new process to this tab promptly,
+     * before any sibling tab could guess and claim it.
+     */
+    private volatile long promptSubmittedAt = 0;
+
+    /**
+     * Text of the last prompt submitted from the plugin or typed in the
+     * terminal. Together with {@link #promptSubmittedAt} it is the evidence that
+     * a file written after the prompt contains this tab's own messages — e.g. a
+     * conversation resumed in-process — rather than a concurrent turn of a
+     * sibling tab.
+     */
+    private volatile String lastPromptText;
+
+    /**
+     * True while the current thread writes to the PTY on behalf of the plugin
+     * (see {@link #writePty(byte[])}), so terminal input can be told apart.
+     */
+    private final ThreadLocal<Boolean> pluginPtyWrite = ThreadLocal.withInitial(() -> false);
+
+    /**
+     * Time (epoch millis) of the last line submitted in the terminal rather
+     * than sent by the plugin. Enter can act on the TUI (e.g. choose a session
+     * in the {@code /resume} picker) without producing a prompt this tab
+     * recognises, so prompt evidence captured before it no longer describes the
+     * session on screen. Draft edits do not move it: typing the next prompt
+     * must not invalidate the evidence of the one already submitted.
+     */
+    private volatile long externalInputAt;
+
+    /**
+     * Time (epoch millis) of the last conversation change driven by a
+     * {@code /resume} or {@code /clear} command or by the answer to the
+     * {@code /resume} picker, whether sent from the prompt panel or typed in
+     * the terminal. Such a command is not a prompt written to the conversation:
+     * it switches the conversation the process writes, so prompt evidence
+     * captured before it no longer proves the shared launch conversation is the
+     * one on screen.
+     */
+    private volatile long conversationSwitchAt;
+
+    /**
+     * Anchor time of the scan result that identified a conversation written
+     * after {@link #conversationSwitchAt}, or {@code 0} when no evidence-based
+     * result has been published since the switch.
+     *
+     * <p>A submission made after the switch is not proof that its destination
+     * was followed: the scan may still track the conversation the switch left
+     * behind, because the destination can be another live tab's file and no
+     * evidence pass may adopt it. Only a result adopted from a record written
+     * after the switch shows that the destination is known (see
+     * {@link #identityRemainsAmbiguous}).
+     */
+    private volatile long postSwitchResolvedAt;
+
+    /**
+     * Snapshot of the evidence a submitted {@code /resume} replaced, kept until
+     * the picker confirms a conversation or its admission is cancelled. Opening
+     * the picker switches nothing, so a cancelled picker must leave the
+     * post-stop identity lookup with the evidence the command replaced.
+     *
+     * <p>Guarded by {@link #terminalInputLine}.
+     */
+    private boolean pickerSwitchPending;
+    private long switchBeforePicker;
+    private long promptBeforePicker;
+    private long externalBeforePicker;
+    private String textBeforePicker;
+
+    /**
+     * Serializes prompt sends from the panel, from the text write through the
+     * Enter and the publication of its evidence. Two sends pressed in quick
+     * succession would otherwise interleave: the second reconciliation would
+     * replace the still-unsubmitted pending record of the first, while the
+     * TUI line the first Enter submits already contains both texts.
+     */
+    private final Object guiSendLock = new Object();
+
+    /**
+     * Delivers panel sends one at a time, in the order they were accepted.
+     *
+     * <p>Serializing the sends on a monitor is not enough: a monitor has no
+     * first-come-first-served order, so with two sends already waiting the JVM
+     * may hand it to either of them, and the TUI then receives the prompts in
+     * an order the user never typed them in — a slash command and the
+     * instruction it was meant to precede can run swapped.
+     */
+    private java.util.concurrent.ExecutorService guiSendQueue;
+
+    /** Guards the creation and the shutdown of {@link #guiSendQueue}. */
+    private final Object guiSendQueueLock = new Object();
+
+    /**
+     * Line being typed in the terminal, assembled from the raw PTY input so
+     * that a prompt submitted from the keyboard is recognised as evidence for
+     * the conversation on screen (see {@link #onTerminalInput(byte[], long)}).
+     */
+    private final StringBuilder terminalInputLine = new StringBuilder();
+
+    /**
+     * Insertion point within {@link #terminalInputLine}, in characters. Cursor
+     * keys move it so that text inserted after an edit (typing over a typo,
+     * Delete, Backspace) lands where the user sees it.
+     */
+    private int terminalInputCursor;
+
+    /**
+     * Escape-sequence parser state: {@code 0} outside a sequence, {@code 1}
+     * right after {@code ESC}, {@code 2} inside a CSI sequence ({@code ESC [}),
+     * {@code 3} inside an SS3 sequence ({@code ESC O}).
+     *
+     * <p>A sequence is skipped as a whole: the {@code [} that opens a CSI is a
+     * parameter byte, not a final one, and treating it as final would let
+     * cursor keys (e.g. {@code ESC [ D}) leak {@code D} into the typed line.
+     */
+    private int terminalInputEscape;
+
+    /** Parameters of the CSI sequence being parsed, e.g. {@code 200}. */
+    private final StringBuilder terminalEscapeParams = new StringBuilder();
+
+    /**
+     * True when the {@code ESC} that may still turn out to be a standalone
+     * cancel was pressed while a choice menu was open. Text typed into a
+     * picker's search box never reaches a prompt, so when the {@code ESC} is
+     * confirmed as a live cancellation the recorded line is discarded.
+     */
+    private boolean terminalEscapeOnMenu;
+
+    /**
+     * True when that Esc cancelled the {@code /resume} picker itself: the
+     * conversation never switched, so the evidence the resume command replaced
+     * is restored (see {@link #restorePickerSwitch()}).
+     * Guarded by {@link #terminalInputLine}.
+     */
+    private boolean terminalEscapeOnPicker;
+
+    /**
+     * The choice menu the terminal input already completed (a digit selected a
+     * numbered item, Enter or Right submitted, Esc cancelled) while the model
+     * still reports it. The screen is polled only every half second, so the
+     * dismissed menu stays in the model for a while; input arriving in that
+     * window must not be classified against a menu the TUI no longer shows.
+     * Compared by identity: every detected menu is a fresh instance.
+     *
+     * <p>Guarded by {@link #terminalInputLine}.
+     */
+    private ChoiceMenuModel terminalCompletedMenu;
+
+    /**
+     * True when the last Enter confirmed a choice menu selection instead
+     * of submitting a prompt. Only the {@code /resume} picker changes the
+     * conversation that way: other menus (permission prompts, the trust-folder
+     * confirmation, model pickers) answer a question in the current
+     * conversation.
+     *
+     * <p>Guarded by {@link #terminalInputLine}.
+     */
+    private boolean terminalMenuSelection;
+
+    /**
+     * The menu the last Enter selected an item from, or {@code null}. Kept so
+     * the caller can tell a conversation switch (the {@code /resume} picker)
+     * from an ordinary menu answer. Guarded by {@link #terminalInputLine}.
+     */
+    private ChoiceMenuModel terminalSelectedMenu;
+
+    /**
+     * True while a bracketed paste ({@code ESC [ 200 ~} … {@code ESC [ 201 ~})
+     * is being recorded: its newlines belong to the pasted prompt and must not
+     * submit the line.
+     */
+    private boolean terminalInputPaste;
+
+    /** True when a pasted CR was recorded and the LF of a CRLF pair must be skipped. */
+    private boolean terminalPasteAfterCR;
+
+    /**
+     * True after Up/Down was pressed on an empty recorded line: the TUI then
+     * fills its input from its prompt history, with text this parser never
+     * sees. A following Enter is still a submission, only with unknown text.
+     */
+    private boolean terminalHistoryRecall;
+
+    /**
+     * True after a live Tab: the TUI completes the input from its own
+     * suggestions with text this parser never sees, so the recorded line is
+     * only a prefix of what will be submitted.
+     */
+    private boolean terminalCompletionEdited;
+
+    /** Set when Enter submitted a history-recall or completion-edited line the parser did not record. */
+    private boolean terminalRecalledSubmission;
+
+    /**
+     * True when the terminal received input other than Enter since the
+     * recorder was last reset, including edits the recorder cannot see in the
+     * buffer: Backspace on an empty recording, cursor keys, Ctrl+U or a Tab
+     * completion. Keys typed during the pause between the GUI prompt's text
+     * and its Enter are part of the line the TUI submits, so they invalidate
+     * the composed evidence even when they leave the recorded line empty.
+     */
+    private boolean terminalInputSinceGuiSend;
+
+    /**
+     * True when Enter was pressed in the terminal since the recorder was last
+     * reset, i.e. while the GUI prompt was still waiting for its own Enter.
+     * The TUI then submits the line at that Enter, and the panel's later Enter
+     * only submits an empty line: its evidence belongs to the first
+     * submission and must not be re-timed.
+     */
+    private boolean terminalEnterSinceGuiSend;
+
+    /**
+     * Set when terminal input arrived after the terminal Enter that submitted
+     * a GUI prompt during its pause. The Enter cleared the recorder, so that
+     * input starts a new line, which the delayed GUI Enter then submits;
+     * unlike the input before the Enter, its text is exactly what the
+     * conversation receives. Cleared with the rest of the recorder state.
+     */
+    private boolean terminalDraftAfterEnter;
+
+    /**
+     * Time of the terminal Enter that submitted a GUI send during its pause,
+     * or {@code 0} when no such Enter arrived. That Enter is the actual
+     * submission, so its time — not the prompt-send time — is the evidence
+     * cutoff. Guarded by {@link #terminalInputLine}.
+     */
+    private long terminalGuiSubmitAt;
+
+    /**
+     * Whether keys edited the GUI prompt's line before the terminal Enter that
+     * submitted it during the pause. {@link #terminalInputSinceGuiSend} cannot
+     * answer that afterwards: a draft typed after that Enter starts a new line
+     * and also sets it. Captured when the Enter's time is recorded and cleared
+     * with the rest of the recorder state.
+     */
+    private boolean terminalGuiLineEdited;
+
+    /**
+     * The choice menu whose cursor the terminal input has moved since the
+     * screen poll last reported its position, and the option it now sits on.
+     *
+     * <p>The poll is what normally moves {@link ChoiceMenuModel#defaultOptionIndex()},
+     * so between polls it names the previous option. A digit activates a
+     * text-input option and an Up/Down arrow steps through the items, and both
+     * happen without a poll in between: a digit naming an ordinary option must
+     * not retire the menu while the cursor is in an editor, and an arrow that
+     * left one must let the next digit select an item again. Compared by
+     * identity, so a menu instance published by a newer poll takes over;
+     * cleared when the menu is completed. Guarded by
+     * {@link #terminalInputLine}.
+     */
+    private ChoiceMenuModel terminalMenuFocusOwner;
+
+    /** The tracked cursor position in {@link #terminalMenuFocusOwner}. */
+    private int terminalMenuFocusIndex = -1;
+
+    /**
+     * True between a GUI send's prompt write and the Enter that submits it:
+     * the panel text is already on the TUI's input line. A terminal Enter in
+     * that window submits the panel text together with what was typed there,
+     * so the text recorded by the terminal parser is only a part of the
+     * prompt and must not be published as its evidence.
+     */
+    private boolean guiSendAwaitingEnter;
+
+    /**
+     * Set when a choice menu answered from the terminal consumed the line a
+     * GUI send had written: that text was the menu's search filter or answer,
+     * not a prompt, so the panel's delayed Enter must not publish it as
+     * prompt evidence. Cleared with the rest of the recorder state.
+     */
+    private boolean terminalMenuConsumedGuiSend;
+
+    /**
+     * Set when the panel text itself answered the choice menu it was written
+     * into: a bare digit selects a numbered menu's item on arrival (see
+     * {@link #writePtyAnswer(String)}), so the menu is gone before the delayed
+     * Enter and the TUI's input line is empty again. A terminal Enter during
+     * the pause then submits a line the recorder holds in full, and a draft
+     * typed there is submitted by the delayed Enter. Cleared with the rest of
+     * the recorder state.
+     */
+    private boolean terminalGuiTextAnsweredMenu;
+
+    /**
+     * Prompt of a GUI send whose Enter has not been written yet. It must not
+     * become own-session evidence before the actual submission: until then the
+     * process has written nothing, and an identity scan running in the pause
+     * could adopt another conversation's file (by matching its text, or by
+     * time for a partial line) although nothing was submitted.
+     * Published by {@link #completeGuiSend()}. Guarded by
+     * {@link #terminalInputLine}.
+     */
+    private String pendingGuiPromptText;
+
+    /** Submission time of {@link #pendingGuiPromptText}. */
+    private long pendingGuiPromptAt;
+
+    /** Whether {@link #pendingGuiPromptText} is the whole submitted line. */
+    private boolean pendingGuiPromptExact;
+
+    /** Whether a GUI send is waiting for its Enter to establish evidence. */
+    private boolean pendingGuiPromptSet;
+
+    /**
+     * Whether {@link #pendingGuiPromptText} is a TUI command that switches the
+     * conversation ({@code /resume}, {@code /clear}). The switch is evidence
+     * only once the command is actually submitted: the line can still be edited
+     * away during the pause (Ctrl+U and a new prompt), and a switch timestamp
+     * left behind would let the identity scan adopt the newer conversation the
+     * command never switched to.
+     * Guarded by {@link #terminalInputLine}.
+     */
+    private boolean pendingGuiPromptSwitch;
+
+    /**
+     * Whether the command of {@link #pendingGuiPromptSwitch} is a
+     * {@code /resume}, i.e. one whose switch waits for the picker admission
+     * and can still be cancelled. {@code /clear} switches at once.
+     * Guarded by {@link #terminalInputLine}.
+     */
+    private boolean pendingGuiPromptResume;
+
+    /** Screen-poll ticks since the last background session-identity scan. */
+    private int identityPollTicks = 0;
 
     /**
      * Called when a hang is detected: receives (command, errorMessage).
@@ -181,6 +711,155 @@ public class ClaudeSessionController {
         firstOutputReceived = outputReceived;
     }
 
+    /** Package-private for tests: sets the session identity captured at launch. */
+    void simulateActiveSession(java.nio.file.Path configDir, String sessionId,
+                               Set<String> preStartIds) {
+        activeConfigDir = configDir;
+        activeSessionId = sessionId;
+        preStartSessionIds = preStartIds != null ? Set.copyOf(preStartIds) : Set.of();
+        launchIdentityKnown = sessionId != null;
+        launchSessionId = sessionId;
+        ownSessionId = null;
+    }
+
+    /** Package-private for tests: one tick of the periodic identity refresh. */
+    void simulateIdentityTick() {
+        refreshSessionIdentityIfDue();
+    }
+
+    /** Package-private for tests: records a prompt submitted from the plugin. */
+    void simulatePromptSubmittedAt(long millis) {
+        promptSubmittedAt = millis;
+    }
+
+    /** Package-private for tests: records the text of the last submitted prompt. */
+    void simulatePromptText(String text) {
+        lastPromptText = text;
+    }
+
+    /** Package-private for tests: the recorded text of the last submission. */
+    String simulateLastPromptText() {
+        return lastPromptText;
+    }
+
+    /** Package-private for tests: the recorded time of the last submission. */
+    long simulatePromptSubmittedAtValue() {
+        return promptSubmittedAt;
+    }
+
+    /** Package-private for tests: the terminal-input cutoff of the prompt evidence. */
+    long simulateExternalInputAtValue() {
+        return externalInputAt;
+    }
+
+    /** Package-private for tests: the prompt-evidence part of {@link #sendPrompt(String)}. */
+    void simulateSentPrompt(String text, long sentAt) {
+        rememberSentPrompt(text, sentAt);
+    }
+
+    /** Package-private for tests: the choice-menu bookkeeping of {@link #writePtyAnswer(String)}. */
+    void simulateGuiChoiceAnswer(String answer) {
+        rememberChoiceMenuAnswer(answer);
+    }
+
+    /**
+     * Package-private for tests: the recorder and evidence part of
+     * {@link #sendPrompt(String)}.
+     *
+     * @return the line the conversation receives
+     */
+    String simulateGuiSend(String text, long sentAt) {
+        return reconcileGuiSend(text, sentAt);
+    }
+
+    /**
+     * Package-private for tests: the reconciliation and the initial text write
+     * of {@link #sendPrompt(String)}, without the pause and Enter that
+     * {@link #completeGuiSend()} adds.
+     */
+    void simulateGuiSendWithText(String text, long sentAt) throws IOException {
+        writeGuiPrompt(text, () -> sentAt, currentProcessGeneration());
+    }
+
+    /**
+     * {@link #simulateGuiSendWithText(String, long)} for a send accepted for
+     * {@code generation}, so a test can deliver it after a restart replaced the
+     * connector.
+     */
+    void simulateGuiSendWithText(String text, long sentAt, long generation) throws IOException {
+        writeGuiPrompt(text, () -> sentAt, generation);
+    }
+
+    /**
+     * Package-private for tests: the body of {@link #sendPrompt(String)}'s
+     * sender thread — the serialized text write, pause and Enter — with a
+     * controllable clock and the real-time sleep replaced by {@code pause}.
+     */
+    void simulateSendPrompt(String text, java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock, Runnable pause)
+            throws IOException {
+        long sendGeneration = currentProcessGeneration();
+        synchronized (guiSendLock) {
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                return;
+            }
+            writeGuiPrompt(text, writeClock, sendGeneration);
+            pause.run();
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                return;
+            }
+            completeGuiSend(enterClock, sendGeneration);
+        }
+    }
+
+    /**
+     * Package-private for tests: submits a send through the ordered queue, as
+     * {@link #sendPrompt(String)} does, and returns the queued task.
+     */
+    java.util.concurrent.Future<?> simulateQueueGuiSend(String text) {
+        return queueGuiSend(text, currentProcessGeneration());
+    }
+
+    /**
+     * Package-private for tests: submits a send through the ordered queue with
+     * controllable text-write and submission times, so a test can release it
+     * during a stop and check what its late Enter would have recorded.
+     */
+    java.util.concurrent.Future<?> simulateQueueGuiSend(String text,
+                            java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock) {
+        return queueGuiSend(text, currentProcessGeneration(), writeClock, enterClock);
+    }
+
+    /** Package-private for tests: the number of identity scans started. */
+    long simulateScanSequence() {
+        synchronized (processOwnershipLock) {
+            return scanSequence;
+        }
+    }
+
+    /**
+     * Package-private for tests: marks this controller as a live session, so
+     * that other controllers treat {@code sessionId} as owned by another tab.
+     */
+    void simulateLiveSession(java.nio.file.Path configDir, String sessionId,
+                             Set<String> preStartIds) {
+        simulateActiveSession(configDir, sessionId, preStartIds);
+        workingDir = model.getWorkingDirectory();
+        LIVE_SESSIONS.add(this);
+        claimSession(workingDir, configDir, sessionId);
+    }
+
+    /**
+     * Package-private for tests: adds a claim on {@code sessionId} to a live
+     * session that has already been started, i.e. the bookkeeping a scan
+     * publishes after it resolved the conversation.
+     */
+    void simulateClaimSession(java.nio.file.Path configDir, String sessionId) {
+        claimSession(workingDir != null ? workingDir : model.getWorkingDirectory(),
+                configDir, sessionId);
+    }
+
     /** Package-private for tests: injects a stripped PTY line into the rolling buffer. */
     void simulatePtyLine(String line) {
         synchronized (recentPtyLines) {
@@ -246,21 +925,170 @@ public class ClaudeSessionController {
     public void startProcess(java.io.File dir, String profileName, String extraCliArgs,
                              SessionMode mode, String resumeSessionId,
                              JediTermWidget widget) throws IOException {
+        startProcess(dir, profileName, extraCliArgs, mode, resumeSessionId,
+                prepareLaunchIdentity(dir, profileName, mode, resumeSessionId), widget);
+    }
+
+    /**
+     * Launch-time session identity, captured before the PTY starts.
+     *
+     * @param configDir         config dir the process will write to
+     * @param preStartSessionIds session IDs that already existed at launch
+     * @param sessionId         session ID the process will use, or {@code null}
+     *                          when it is only known after the first write
+     */
+    public record LaunchIdentity(java.nio.file.Path configDir,
+                                 Set<String> preStartSessionIds,
+                                 String sessionId) { }
+
+    /**
+     * Computes the launch-time session identity by scanning the session store.
+     *
+     * <p>The scan can take hundreds of milliseconds on projects with a large
+     * history, so callers on the EDT should run it on a worker thread and pass
+     * the result to
+     * {@link #startProcess(java.io.File, String, String, SessionMode, String, LaunchIdentity, JediTermWidget)}.
+     * The result must describe the store <em>before</em> the process starts.
+     *
+     * @param dir             working directory
+     * @param profileName     profile name, or {@code null}/{@code ""} for Default
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @return the identity the started process will use
+     */
+    public static LaunchIdentity prepareLaunchIdentity(java.io.File dir, String profileName,
+                                                       SessionMode mode,
+                                                       String resumeSessionId) {
+        ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
+        return prepareLaunchIdentity(dir,
+                ClaudeProcess.resolveConfigDir(profile, ClaudeCodePreferences.getProfilesDir()),
+                mode, resumeSessionId);
+    }
+
+    /** Package-private for tests: captures the identity against an explicit config dir. */
+    static LaunchIdentity prepareLaunchIdentity(java.io.File dir,
+                                                java.nio.file.Path configDir,
+                                                SessionMode mode,
+                                                String resumeSessionId) {
+        SessionMode effectiveMode = mode != null ? mode : SessionMode.NEW;
+        Set<String> preStartSessionIds =
+                ClaudeSessionStore.listSessionIds(dir.toPath(), configDir);
+        String sessionId = null;
+        if (effectiveMode == SessionMode.RESUME_SPECIFIC
+                && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            sessionId = resumeSessionId;
+        } else if (effectiveMode == SessionMode.CONTINUE_LAST) {
+            sessionId = ClaudeSessionStore.findLatestSessionId(dir.toPath(), configDir);
+        }
+        return new LaunchIdentity(configDir, preStartSessionIds, sessionId);
+    }
+
+    /**
+     * Makes the launch identity describe the store the process will actually
+     * write.
+     *
+     * <p>The identity is prepared on a worker thread, while the spawn re-reads
+     * the profile. If the profile's storage directory or
+     * {@code CLAUDE_CONFIG_DIR} override changed in between, the prepared
+     * snapshot lists the old store's sessions: every file in the new store
+     * would look new, and a conversation written there within the file-time
+     * slack could be adopted as this tab's own. The snapshot is then
+     * recaptured against the spawn store before the process starts writing.
+     *
+     * @param dir             working directory
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @param prepared        identity prepared earlier; may be {@code null}
+     * @param spawnConfigDir  config dir the process will use, or {@code null}
+     *                        when it cannot be resolved
+     * @return the prepared identity when it already describes
+     *         {@code spawnConfigDir}, otherwise a fresh snapshot of that store
+     */
+    static LaunchIdentity reconcileLaunchIdentity(java.io.File dir, SessionMode mode,
+                                                  String resumeSessionId,
+                                                  LaunchIdentity prepared,
+                                                  java.nio.file.Path spawnConfigDir) {
+        if (spawnConfigDir == null) return prepared;
+        if (prepared != null && prepared.configDir() != null
+                && prepared.configDir().toAbsolutePath().normalize()
+                        .equals(spawnConfigDir.toAbsolutePath().normalize())) {
+            return prepared;
+        }
+        return prepareLaunchIdentity(dir, spawnConfigDir, mode, resumeSessionId);
+    }
+
+    /**
+     * Starts the PTY process using a session identity prepared earlier with
+     * {@link #prepareLaunchIdentity(java.io.File, String, SessionMode, String)}.
+     *
+     * @param dir             working directory
+     * @param profileName     profile name, or {@code null}/{@code ""} for Default
+     * @param extraCliArgs    extra CLI arguments (may be blank)
+     * @param mode            session start mode
+     * @param resumeSessionId session ID to resume (only used for RESUME_SPECIFIC)
+     * @param identity        launch-time identity, captured before the process starts
+     * @param widget          terminal widget
+     * @throws IOException if the PTY process cannot be started
+     */
+    public void startProcess(java.io.File dir, String profileName, String extraCliArgs,
+                             SessionMode mode, String resumeSessionId,
+                             LaunchIdentity identity, JediTermWidget widget) throws IOException {
         String tag = "[" + dir.getName() + "] ";
         workingDir = dir;
-        claudeProcess = new ClaudeProcess();
+        long generation;
+        synchronized (processOwnershipLock) {
+            claudeProcess = new ClaudeProcess();
+            generation = ++processGeneration;
+        }
         ClaudeProfile profile = ClaudeProfileStore.findByName(profileName);
         customModelIds = profile != null ? new ArrayList<>(profile.getComboModelIds()) : List.of();
+
+        // The session identity was captured before launch so that stopping/renaming
+        // later targets the session this process will actually use (see stopAndRename).
+        // The profile is re-read above for the spawn, so a profile whose storage
+        // moved in Options while the background preparation scanned needs the
+        // snapshot recaptured in the store the process is about to write.
+        SessionMode effectiveMode = mode != null ? mode : SessionMode.NEW;
+        LaunchIdentity launch = reconcileLaunchIdentity(dir, effectiveMode, resumeSessionId,
+                identity,
+                ClaudeProcess.resolveConfigDir(profile, ClaudeCodePreferences.getProfilesDir()));
+        preStartSessionIds = launch.preStartSessionIds();
+        activeSessionId = launch.sessionId();
+        launchIdentityKnown = activeSessionId != null;
+        launchSessionId = activeSessionId;
+        ownSessionId = null;
+        postSwitchResolvedAt = 0L;
+        pickerSwitchPending = false;
+        switchBeforePicker = 0L;
+        promptBeforePicker = 0L;
+        externalBeforePicker = 0L;
+        textBeforePicker = null;
+
         PtyProcess process = claudeProcess.start(dir.getAbsolutePath(), profile,
                 extraCliArgs != null ? extraCliArgs : "",
-                mode != null ? mode : SessionMode.NEW,
-                resumeSessionId);
+                effectiveMode, resumeSessionId);
 
+        activeConfigDir = claudeProcess.getConfigDir();
+        if (activeConfigDir == null) {
+            activeConfigDir = launch.configDir();
+        }
         processStartedAt = System.currentTimeMillis();
         firstOutputReceived = false;
 
+        LIVE_SESSIONS.add(this);
+        claimSession(dir, activeConfigDir, activeSessionId);
+
         connector = new PtyTtyConnector(process);
         connector.setSessionTag(tag);
+        // Terminal input is forwarded and recorded under the same lock the
+        // plugin holds while it writes the GUI prompt's Enter, so a write
+        // cannot reach the child before that Enter while being recorded after
+        // the recorder was reset for it.
+        connector.setInputLock(terminalInputLine);
+        connector.setInputListener((bytes, sentAt) -> {
+            if (Boolean.TRUE.equals(pluginPtyWrite.get())) return;
+            onTerminalInput(bytes, sentAt);
+        });
         screenContentDetector.setSessionTag(tag);
 
         connector.setLineListener(line -> {
@@ -297,12 +1125,16 @@ public class ClaudeSessionController {
         model.setWorkingDirectory(dir);
         model.loadPersistedHistory();
 
-        // Waiter thread: notifies when the process exits
+        // Waiter thread: releases the session claims as soon as the process exits,
+        // even when it exits from inside the terminal without an explicit stop.
+        long exitedGeneration = generation;
         Thread waiter = new Thread(() -> {
             try {
                 process.waitFor();
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
+            } finally {
+                onProcessExited(exitedGeneration);
             }
         }, "claude-waiter");
         waiter.setDaemon(true);
@@ -319,17 +1151,58 @@ public class ClaudeSessionController {
      *
      * <p>Does <em>not</em> close the terminal widget — the View handles that.
      */
-    /** Returns the last command attempted to start the process. */
-    public String getLastAttemptedCommand() { return claudeProcess.getLastCommand(); }
+    /** Returns the last command attempted to start the process, or {@code null} if none was attempted. */
+    public String getLastAttemptedCommand() {
+        ClaudeProcess p = claudeProcess;
+        return p != null ? p.getLastCommand() : null;
+    }
 
     /**
      * Returns the UUID of the active OpenAI-compatible proxy session, or
      * {@code null} if the current session isn't using the OpenAI-compatible or
      * ChatGPT Subscription connection type. See {@link io.github.nbplugins.claudecodegui.process.ClaudeProcess#getOpenAIProxyUuid()}.
+     *
+     * <p>Returns {@code null} when no process exists (before a launch completes
+     * or after a stop), so UI callbacks such as the context menu can query it
+     * at any time.
      */
-    public String getOpenAIProxyUuid() { return claudeProcess.getOpenAIProxyUuid(); }
+    public String getOpenAIProxyUuid() {
+        ClaudeProcess p = claudeProcess;
+        return p != null ? p.getOpenAIProxyUuid() : null;
+    }
 
-    public void stopProcess() {
+    /**
+     * Returns whether a prompt can be written to the session right now.
+     *
+     * <p>{@link #sendPrompt(String)} silently drops the text when no PTY
+     * connector exists yet (the launch is prepared in the background), so the
+     * input panel asks this before clearing the field.
+     */
+    public boolean canSendPrompt() { return connector != null; }
+
+    /**
+     * Kills the PTY child process, if one is running.
+     *
+     * <p>Closes the child's end of the PTY, which is the only thing that can
+     * release a writer blocked in the native layer: a hung or non-reading
+     * process never drains the pipe, and interrupting the writing thread does
+     * not interrupt a native {@code OutputStream.write()}.
+     */
+    private void killPtyProcess() {
+        ClaudeProcess processToStop = claudeProcess;
+        if (processToStop != null) {
+            processToStop.killOnly();
+        }
+        Runnable hook = ptyKillHook;
+        if (hook != null) hook.run();
+    }
+
+    /**
+     * Kills the PTY process and detaches the terminal, but keeps the identity
+     * inputs so the conversation that was on screen can still be resolved
+     * after the writer is gone.
+     */
+    void stopWriter() {
         if (statusTimer != null) {
             statusTimer.stop();
             statusTimer = null;
@@ -338,11 +1211,52 @@ public class ClaudeSessionController {
         if (connector != null) {
             connector.setLineListener(null);
         }
-        if (claudeProcess != null) {
-            claudeProcess.stop();
-        }
+        killPtyProcess();
         connector = null;
-        claudeProcess = null;
+    }
+
+    public void stopProcess() {
+        shutdownGuiSendQueue();
+        stopWriter();
+        ClaudeProcess processToStop = claudeProcess;
+        if (processToStop != null) {
+            processToStop.stop();
+        }
+        // The generation bump, the identity inputs and the ownership bookkeeping
+        // are reset under one lock: a scan queued between the bump and the reset
+        // would otherwise capture the new generation together with the old run's
+        // inputs and could republish (and re-claim) the stopped identity.
+        synchronized (processOwnershipLock) {
+            claudeProcess = null;
+            processGeneration++;
+            processStartedAt = 0;
+            firstOutputReceived = false;
+            activeConfigDir = null;
+            activeSessionId = null;
+            preStartSessionIds = Set.of();
+            launchIdentityKnown = false;
+            launchSessionId = null;
+            ownSessionId = null;
+            guessSessionId = null;
+            guessPromptText = null;
+            guessPromptAt = 0L;
+            guessSince = 0L;
+            promptSubmittedAt = 0;
+            lastPromptText = null;
+            externalInputAt = 0;
+            conversationSwitchAt = 0;
+            postSwitchResolvedAt = 0L;
+            pickerSwitchPending = false;
+            switchBeforePicker = 0L;
+            promptBeforePicker = 0L;
+            externalBeforePicker = 0L;
+            textBeforePicker = null;
+            resetTerminalInputRecording();
+            identityPollTicks = 0;
+            LIVE_SESSIONS.remove(this);
+            releaseAllClaims();
+            preservedClaims = Set.of();
+        }
         terminalWidget = null;
         modelComboPopulated = false;
         modelDiscoveryInProgress = false;
@@ -350,8 +1264,6 @@ public class ClaudeSessionController {
         customModelIds = List.of();
         standardModelCount = 0;
         synchronized (recentPtyLines) { recentPtyLines.clear(); }
-        processStartedAt = 0;
-        firstOutputReceived = false;
 
         model.setModelList(List.of(), -1);
         clearActiveChoiceMenu();
@@ -360,27 +1272,1752 @@ public class ClaudeSessionController {
     }
 
     /**
-     * Stops the PTY process and, if {@code sessionName} is non-blank, writes a
-     * {@code custom-title} entry to the most recent session JSONL file.
+     * Stops the PTY process and, if {@code sessionName} is non-blank, appends a
+     * {@code custom-title} entry to the JSONL file of the session that was running.
+     *
+     * <p>The target session and config dir are tracked from launch, so the rename
+     * works for named profiles (isolated config dir), profiles that map to
+     * {@code ~/.claude}, several sessions sharing the same project, and
+     * conversations switched with {@code /resume} inside the running process.
      *
      * @param sessionName name to persist, or {@code null}/blank to skip renaming
      */
     public void stopAndRename(String sessionName) {
-        java.io.File workingDir = model.getWorkingDirectory();
-        stopProcess();
-        if (sessionName != null && !sessionName.isBlank() && workingDir != null) {
-            try {
-                SavedSession recent = ClaudeSessionStore.findMostRecent(
-                        workingDir.toPath(), null);
-                if (recent != null) {
-                    ClaudeSessionStore.renameSession(
-                            workingDir.toPath(), null, recent.sessionId(), sessionName);
-                    LOG.fine("Renamed session " + recent.sessionId() + " to '" + sessionName + "'");
+        boolean rename = sessionName != null && !sessionName.isBlank();
+        java.io.File dir = model.getWorkingDirectory();
+        java.nio.file.Path configDir = activeConfigDir;
+        // Resolving the identity enumerates the session store, which can take
+        // long on projects with thousands of conversations. The prompt panel's
+        // "New session" action stops with a blank name; no rename will be
+        // attempted, so that work is skipped before the PTY is stopped.
+        String sessionId = null;
+        if (rename) {
+            // A panel send still queued, or paused between its text and its
+            // Enter, would complete after the writer is stopped: its Enter is
+            // dropped, yet it could replace the prompt evidence the lookup
+            // below matches. Cancel the queue first and wait for a send that is
+            // already completing, so the snapshot is taken after it — or after
+            // its cancellation — instead of racing with it.
+            // A sender may be blocked in a native write to a hung or
+            // non-reading process, and interrupting its thread does not
+            // release that write. Kill the child first, which closes its end
+            // of the PTY and unblocks the write, or the wait below (on the
+            // EDT) could last forever.
+            killPtyProcess();
+            shutdownGuiSendQueue();
+            // An Esc that cancelled the /resume picker and was never followed by
+            // another keystroke is still pending: no later write consumed it, yet
+            // the picker is gone and the conversation never switched. Consume it
+            // before the lookup, or the evidence it should restore stays replaced
+            // and the switch reads as unresolved.
+            synchronized (terminalInputLine) {
+                if (terminalInputEscape == 1 && terminalEscapeOnMenu
+                        && terminalEscapeOnPicker) {
+                    restorePickerSwitch();
+                    discardPickerSearchText();
+                    terminalInputEscape = 0;
                 }
-            } catch (Exception e) {
-                LOG.warning("Could not rename session: " + e.getMessage());
+            }
+            synchronized (guiSendLock) {
+                sessionId = resolveActiveSessionId();
+                // The writer may still be finishing a turn, and the user may have
+                // switched the conversation in the TUI with the new file not yet
+                // written. Stop it first, then resolve once more with the same
+                // evidence rules: whatever it wrote last is on disk now. The exit
+                // callback releases this tab's claims, so the conversations it
+                // established or guessed as its own are carried over explicitly.
+                // A borrowed conversation is another live tab's file and stays
+                // eligible to that tab instead. A process that quit on its own
+                // before this call already released the claims and left the
+                // conversations it held in preservedClaims: they count the same.
+                // The exit waiter moves the claims between those two sets under
+                // the ownership lock, so both are read under it: reading them
+                // apart could take the old preserved set and the already
+                // cleared live set, hiding the conversation this tab held.
+                Runnable hook = claimSnapshotHook;
+                if (hook != null) hook.run();
+                Set<String> held;
+                synchronized (processOwnershipLock) {
+                    held = new HashSet<>(preservedClaims);
+                    held.addAll(claimedSessionIds(dir, configDir));
+                }
+                stopWriter();
+                sessionId = resolveIdentityWithPreservedClaims(held);
             }
         }
+        // Two NEW tabs that submitted identical text leave the identity
+        // unresolved: each tracks the file whose prompt matched first, and the
+        // other tab writes a file holding the same text. The name entered in the
+        // dialog must not be written into the sibling's conversation.
+        boolean ambiguous = rename
+                && identityRemainsAmbiguous(dir, configDir, sessionId);
+        stopProcess();
+
+        if (!rename) return;
+        if (ambiguous) {
+            LOG.warning("Skipped renaming session " + sessionId + " in " + configDir
+                    + ": another file holds this prompt and the identity cannot be"
+                    + " told apart");
+            return;
+        }
+        if (dir == null || configDir == null || sessionId == null) {
+            LOG.warning("Could not rename session: no active session file found in "
+                    + ClaudeSessionStore.sessionDirForLog(
+                            dir != null ? dir.toPath() : null, configDir)
+                    + " (dir=" + dir + ", configDir=" + configDir + ")");
+            return;
+        }
+        String name = sessionName.trim();
+        try {
+            SavedSession current = ClaudeSessionStore.findSession(dir.toPath(), configDir, sessionId);
+            if (current != null && name.equals(current.customTitle())) {
+                LOG.fine("Session " + sessionId + " already titled '" + name + "'; nothing to do");
+                return;
+            }
+            ClaudeSessionStore.renameSession(dir.toPath(), configDir, sessionId, name);
+            LOG.fine("Renamed session " + sessionId + " to '" + name + "' in " + configDir);
+        } catch (Exception e) {
+            LOG.warning("Could not rename session " + sessionId + " in " + configDir + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Returns whether {@code sessionId} is a conversation this tab cannot prove
+     * it is the writer of: this tab has not established it at launch, and the
+     * store also holds a file with this run's prompt that no other live tab
+     * claims.
+     *
+     * <p>Two NEW tabs that submitted identical text leave exactly this state:
+     * the prompt matched in the sibling's file first, so this tab tracks it
+     * provisionally, and this tab's own file — the same text, another ID —
+     * appears later without displacing it. A matching prompt does not establish
+     * ownership here, so neither file may be renamed as this tab's.
+     *
+     * <p>The sibling need not still be running: its exit releases its claim but
+     * does not turn this tab's earlier guess into ownership, so the ambiguity is
+     * judged from the store rather than from the live claim registry.
+     *
+     * <p>Called before {@link #stopProcess()}, while this run's prompt evidence
+     * still describes the running session.
+     */
+    private boolean identityRemainsAmbiguous(java.io.File dir, java.nio.file.Path configDir,
+                                             String sessionId) {
+        if (sessionId == null) return false;
+        if (conversationSwitchAt > 0 && postSwitchResolvedAt < conversationSwitchAt) {
+            // No scan has identified a conversation written since the switch.
+            // The identity tracked here is then the conversation the switch
+            // left behind — whether it was established at launch or resolved
+            // by evidence before the switch: a picker entry may be a
+            // conversation another live tab writes, which no evidence pass can
+            // adopt, so the entered name cannot be attributed to that file.
+            // A prompt submitted after the switch does not change that: it was
+            // also written into this tab's launch conversation when the switch
+            // never took effect, and a submission timestamp alone cannot tell
+            // the two apart.
+            return true;
+        }
+        if (isLaunchIdentity(sessionId)) return false;
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
+        if (claims != null && claims.owners.contains(this)) return false;
+        String promptText = lastPromptText;
+        long promptAt = promptSubmittedAt;
+        // A file holding the same prompt that no other live tab established
+        // could equally be the one this run wrote: the evidence cannot tell
+        // them apart. A merely tentative claim is another guess, not ownership:
+        // two NEW tabs can each adopt a different file of the same prompt pair,
+        // and excluding the other tab's guess would hide the very file that
+        // matches this tab's, letting the stop rename the wrong conversation.
+        // Only a file touched during this run can compete; one that merely
+        // quotes the same text from an earlier session cannot. Once the user has
+        // typed in the terminal after the submission, the conversation the tab
+        // was on before that input is the one it left behind, not a competitor:
+        // only files written after the input are candidates.
+        long since = Math.max(processStartedAt, promptAt);
+        if (externalInputAt > since) since = externalInputAt;
+        synchronized (processOwnershipLock) {
+            if (sessionId.equals(guessSessionId) && guessPromptAt > 0) {
+                // This identity is the provisional guess that evidence adopted.
+                // A later command from the terminal can lift the prompt
+                // evidence without resolving another conversation — a /resume
+                // whose picker was cancelled with Esc — which would move the
+                // cutoff past every file and read as proof of ownership. The
+                // competition is judged on the evidence the guess came from.
+                promptText = guessPromptText;
+                promptAt = guessPromptAt;
+                since = guessSince;
+            }
+        }
+        if (promptAt <= 0) return false;
+        // A file another live tab launched on is that tab's conversation, but
+        // the launch does not prove it recorded this submission: the tab may
+        // have resumed the very file this run wrote, and only files written
+        // since the submission are considered. A later resume of a competing
+        // file therefore leaves the earlier guess just as unresolved as
+        // before, so it must still compete; excluding it would authorize a
+        // rename the evidence cannot support. The tracked file is the
+        // candidate itself and stays out of the search.
+        Set<String> shared = new HashSet<>();
+        shared.add(sessionId);
+        if (launchIdentityKnown && launchSessionId != null) {
+            // The launch conversation is this tab's own by construction, not
+            // another tab's guess: after a switch it may receive a record of
+            // its own without being the file this submission went to.
+            shared.add(launchSessionId);
+        }
+        return hasCompetingSession(dir, configDir, since, promptAt, promptText, shared);
+    }
+
+    /**
+     * Returns whether the store holds a conversation other than those in
+     * {@code exclude} that carries this submission: the same text when it is
+     * known, or a user record of its own when it is not.
+     *
+     * <p>The lookup repeats the resolver's coarse-mtime relaxation: a file
+     * written right after the submission can round below it and still be the
+     * one this run wrote, so the second pass starts
+     * {@link #SESSION_MTIME_GRANULARITY_MS} earlier. The user record's own
+     * timestamp stays strict either way.
+     */
+    private boolean hasCompetingSession(java.io.File dir,
+                                        java.nio.file.Path configDir,
+                                        long since, long promptAt,
+                                        String promptText, Set<String> exclude) {
+        boolean unknownText = promptText == null || promptText.isBlank();
+        boolean relaxed = since > SESSION_MTIME_GRANULARITY_MS;
+        long relaxedSince = since - SESSION_MTIME_GRANULARITY_MS;
+        if (unknownText) {
+            // The submitted text is unknown (recalled from the TUI history or
+            // completed by Tab), so no file can be matched by its content: a
+            // file holding a user record of its own since the submission could
+            // equally be the one this run wrote.
+            if (newestSessionWithUserMessageSince(dir, configDir, since, promptAt, exclude)
+                    != null) {
+                return true;
+            }
+            return relaxed && newestSessionWithUserMessageSince(dir, configDir,
+                    relaxedSince, promptAt, exclude) != null;
+        }
+        if (findPromptBearingSession(dir, configDir, since, exclude, null,
+                promptAt, promptText) != null) {
+            return true;
+        }
+        return relaxed && findPromptBearingSession(dir, configDir, relaxedSince, exclude,
+                null, promptAt, promptText) != null;
+    }
+
+    /**
+     * Returns the ID of the session currently being displayed, resolving the
+     * file created by this run for {@link SessionMode#NEW} sessions.
+     *
+     * <p>The identity is not fixed at launch: Claude can switch conversations
+     * inside the running process (its own {@code /resume} picker), in which case
+     * the file written most recently belongs to the new session. Sessions
+     * claimed by other live tabs are never taken over (see
+     * {@link #refreshSessionIdentity()}).
+     *
+     * @return session ID, or {@code null} if it cannot be determined
+     */
+    public String resolveActiveSessionId() {
+        refreshSessionIdentity();
+        return activeSessionId;
+    }
+
+    /**
+     * Resolves the identity of a tab whose writer has just been stopped, while
+     * keeping the conversations it held before the stop eligible.
+     *
+     * <p>The post-stop lookup must use the pre-stop ownership evidence: once
+     * the exit callback has released this tab's claims, a conversation the tab
+     * established would otherwise look like another live tab's file, and the
+     * lookup could fall back to an unrelated conversation that merely received
+     * a user record after the submission.
+     *
+     * @param heldIds session IDs this tab held before the writer was stopped
+     * @return the resolved session ID, or {@code null}
+     */
+    String resolveIdentityWithPreservedClaims(Set<String> heldIds) {
+        Set<String> previous = preservedClaims;
+        preservedClaims = heldIds != null ? Set.copyOf(heldIds) : Set.of();
+        try {
+            return resolveActiveSessionId();
+        } finally {
+            preservedClaims = previous;
+        }
+    }
+
+    /**
+     * Re-resolves the session the running process is writing and keeps the
+     * cross-tab claim registry in sync: when Claude switches conversations
+     * (in-process {@code /resume}), the claim on the previous session is
+     * released so a sibling tab can take it, and the new one is claimed.
+     *
+     * <p>The identity is the newest session file written since the launch (or
+     * since the last prompt submitted from the plugin) that is not owned by
+     * another live tab. When no such file exists yet — e.g. a continue/resume
+     * launch that has not written anything — the identity captured at launch is
+     * kept.
+     *
+     * <p>Safe to call from any thread: the parameters are captured and the
+     * result is published under {@link #processOwnershipLock}, and a scan that
+     * started before a process restart is discarded instead of overwriting the
+     * new run's identity. The filesystem lookup itself runs outside the lock.
+     *
+     * @return {@code true} if an identity is known
+     */
+    boolean refreshSessionIdentity() {
+        long generation;
+        long scanId;
+        java.io.File dir;
+        java.nio.file.Path configDir;
+        long since;
+        long promptAt;
+        long externalAt;
+        long switchAt;
+        String promptText;
+        String activeId;
+        Set<String> exclude = new HashSet<>();
+        Set<String> claimed = new HashSet<>();
+        Set<String> otherLiveClaims = new HashSet<>();
+        Set<String> otherOwned = new HashSet<>();
+        synchronized (processOwnershipLock) {
+            generation = processGeneration;
+            scanId = ++scanSequence;
+            dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+            configDir = activeConfigDir;
+            since = Math.max(processStartedAt, promptSubmittedAt);
+            promptAt = promptSubmittedAt;
+            externalAt = externalInputAt;
+            switchAt = conversationSwitchAt;
+            promptText = lastPromptText;
+            activeId = activeSessionId;
+            if (dir != null && configDir != null && since > 0) {
+                claimed.addAll(claimedByOthers(dir, configDir));
+                otherLiveClaims.addAll(claimedByOtherLiveTabs(dir, configDir));
+                otherOwned.addAll(sessionsOwnedByOtherLiveTabs(dir, configDir));
+                exclude.addAll(claimed);
+                if (activeSessionId == null && promptSubmittedAt <= 0) {
+                    // Without a prompt of our own there is nothing that proves a
+                    // write belongs to this tab, so a file that existed before
+                    // the launch stays ineligible: it may have been touched by
+                    // another Claude process. After a prompt, anything written
+                    // since it is ours — including a saved conversation resumed
+                    // from the TUI before this session created a file of its own.
+                    exclude.addAll(preStartSessionIds);
+                }
+            }
+        }
+        String newest = null;
+        boolean ownEvidence = false;
+        // Whether the published identity was picked by submission evidence
+        // (a matching prompt or user record) rather than by file times alone.
+        // An mtime-only refresh of the same identity carries no new evidence
+        // about who wrote it, so it must not replace the evidence the guess
+        // was adopted on (see publishIdentityScanResult).
+        boolean evidenceBased = false;
+        if (dir != null && configDir != null && since > 0) {
+            // A conversation owned by a live tab (or by this tab) that already
+            // contains the prompt submitted from here is the strongest evidence
+            // of an in-process /resume: the process is writing that file. It
+            // must win over a merely newer unclaimed file — e.g. a third tab
+            // that wrote its own conversation after the prompt and then exited.
+            //
+            // Text typed in the terminal after that prompt may have switched the
+            // conversation through the TUI, in which case the old prompt is no
+            // longer evidence of what is on screen: fall back to file times.
+            // A line submitted from the terminal itself counts as the latest
+            // prompt (same millisecond), so a resume driven entirely from the
+            // keyboard is still followed.
+            // The tab's own evidence excludes every conversation another live
+            // tab established: such a file is not this tab's own, even when it
+            // is the identity currently tracked (a false adoption). A merely
+            // borrowed or provisionally claimed file does not count: a sibling
+            // following this tab's conversation must not cost this tab the
+            // session it established.
+            Set<String> ownExclude = new HashSet<>(exclude);
+            ownExclude.addAll(otherOwned);
+            // The file this run established for its own submission stays this
+            // tab's own when another live tab later resumes it explicitly: that
+            // tab only borrows the conversation, and excluding it would hide
+            // the very file this process writes and let an unrelated transcript
+            // win. A merely provisional guess is not remembered here, so this
+            // cannot resurrect another tab's file.
+            if (ownSessionId != null) {
+                ownExclude.remove(ownSessionId);
+            }
+            // The launch conversation is this tab's own even when another live
+            // tab established it (both resumed the same saved file): a
+            // temporary adoption of a sibling's conversation must not make the
+            // launch file ineligible, or the sibling keeps winning the search.
+            if (launchIdentityKnown && launchSessionId != null) {
+                ownExclude.remove(launchSessionId);
+            }
+            if (promptAt > 0 && promptAt >= externalAt) {
+                // First look for the tab's own conversation: a file nobody else
+                // claims that already holds this prompt. It must win over a
+                // sibling's file with the same text, because a NEW tab's own
+                // file appears a moment after the sibling that submitted the
+                // same prompt — adopting the sibling then would pin this tab to
+                // another tab's conversation.
+                // A session another live tab established is not this tab's own,
+                // even when it is the identity currently tracked (a false
+                // adoption). A merely borrowed or provisionally claimed file
+                // does not count: a sibling following this tab's conversation
+                // must not cost this tab the session it established.
+                //
+                // When the tracked file bears this tab's own prompt and no
+                // other tab established it, the tab keeps it: with two
+                // unresolved NEW tabs submitting identical text, the evidence
+                // is indistinguishable, and displacing the current claim would
+                // merely swap the two conversations.
+                //
+                // A launch-known identity (--continue/--resume) is this tab's
+                // own conversation even when another live tab shares the same
+                // saved file (both resumed it, so one of them only borrows it):
+                // it must stay preferred, or an unrelated file carrying the
+                // same prompt text would be adopted in its place.
+                //
+                // That exception belongs to the launch ID only. An identity
+                // adopted later (a sibling's conversation followed while both
+                // tabs submitted identical text) is the sibling's, and keeping
+                // it preferred would pin this tab to it even after its own
+                // launch conversation holds the prompt and is strictly newer.
+                //
+                // The file this run resolved for its own submission is
+                // preferred over whichever identity is currently tracked: a
+                // borrowed sibling file that matched the identical prompt
+                // before this tab's record was flushed must not keep winning
+                // once this tab's own file holds the prompt. Only a file no
+                // other live tab established and this tab does not merely
+                // follow counts: an explicit resume of the same file by
+                // another tab owns it.
+                //
+                // The tracked identity is subject to the same rule only when
+                // this tab knows the conversation it launched on: two
+                // unresolved tabs that submitted identical text legitimately
+                // keep the file one of them owns provisionally, but a
+                // launch-known tab has its own conversation to prefer over a
+                // provisional file it merely borrows.
+                //
+                // A launch-known tab's tracked non-launch identity is a guess
+                // made from matching prompt text: the sibling that actually
+                // writes that file may not have claimed it yet. When the
+                // launch conversation itself holds the submission and is
+                // strictly newer, it is the stronger evidence — the
+                // submission went there, not to the file this tab merely
+                // followed — so the guess yields.
+                boolean launchOutranksOwn = launchIdentityKnown && launchSessionId != null
+                        && ownSessionId != null && !ownSessionId.equals(launchSessionId)
+                        && promptText != null && !promptText.isBlank()
+                        && ClaudeSessionStore.sessionFileModified(dir.toPath(), configDir,
+                                launchSessionId)
+                           > ClaudeSessionStore.sessionFileModified(dir.toPath(), configDir,
+                                ownSessionId)
+                        && containsPrompt(dir, configDir, launchSessionId, promptAt, promptText);
+                boolean isActiveYielding = isSharedGuess(activeId, otherLiveClaims)
+                        || (launchIdentityKnown && launchSessionId != null
+                                && activeId != null && !activeId.equals(launchSessionId)
+                                && (!activeId.equals(ownSessionId) || launchOutranksOwn));
+                String ownPreferred = null;
+                if (ownSessionId != null && !launchOutranksOwn
+                        && !otherOwned.contains(ownSessionId)
+                        && !isSharedGuess(ownSessionId, otherLiveClaims)
+                        && !isBorrowedByThisTab(dir, configDir, ownSessionId)) {
+                    ownPreferred = ownSessionId;
+                } else if (activeId != null && !isActiveYielding
+                        && (activeId.equals(launchSessionId)
+                                || !otherOwned.contains(activeId))) {
+                    ownPreferred = activeId;
+                } else if (launchIdentityKnown && launchSessionId != null) {
+                    ownPreferred = launchSessionId;
+                }
+                newest = findPromptBearingSession(dir, configDir, since, ownExclude,
+                        ownPreferred, promptAt, promptText);
+                evidenceBased = newest != null;
+                if (ownPreferred != null && !ownPreferred.equals(newest)
+                        && since > SESSION_MTIME_GRANULARITY_MS) {
+                    // Coarse file times can round this tab's own file below the
+                    // cutoff even though it already holds the prompt, while an
+                    // unrelated conversation records the same common text in
+                    // the next timestamp bucket. The own file is stronger
+                    // evidence, so the slack is applied to it before the
+                    // lookalike match is accepted: otherwise the lookalike is
+                    // published as this run's own file and later scans keep
+                    // preferring it.
+                    String relaxedOwn = promptBearingPreferred(dir, configDir,
+                            since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
+                            ownPreferred, promptAt, promptText);
+                    if (relaxedOwn != null) {
+                        newest = relaxedOwn;
+                        evidenceBased = true;
+                    }
+                }
+                if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                    // Coarse file times can round this tab's own file below the
+                    // cutoff even though it already holds the prompt. Its record
+                    // still proves the conversation, so retry with the slack
+                    // before yielding to a sibling's file that merely carries
+                    // the same text.
+                    newest = findPromptBearingSession(dir, configDir,
+                            since - SESSION_MTIME_GRANULARITY_MS, ownExclude,
+                            ownPreferred, promptAt, promptText);
+                    evidenceBased = newest != null;
+                }
+                // A match in a file this tab only follows is not proof that
+                // this run created it: it is another live tab's conversation,
+                // matched because both tabs submitted the same text.
+                boolean ownFileMatch = newest != null
+                        && !isSharedGuess(newest, otherLiveClaims)
+                        && !isBorrowedByThisTab(dir, configDir, newest);
+                if (newest != null && (externalAt > 0 || switchAt > 0)
+                        && otherLiveClaims.contains(newest)) {
+                    // A conversation another live tab also writes is not proof
+                    // that this tab's submission went there: that tab's own turn
+                    // can submit the same text. When the user has typed in the
+                    // terminal, the TUI may have switched the conversation, and
+                    // a file holding the same text and written strictly later
+                    // — including one no live tab holds yet, e.g. a saved
+                    // conversation resumed with the picker — is then the one on
+                    // screen. Every file written since the submission competes
+                    // by recency instead of the shared match ending the search.
+                    // A switch made with a resume command — sent from the
+                    // prompt panel, typed in the terminal, or answered in the
+                    // picker — is such a switch as well.
+                    // Without either, the launch conversation stays conclusive.
+                    String newer = findPromptBearingSession(dir, configDir, since,
+                            Set.of(), null, promptAt, promptText);
+                    if (newer == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        newer = findPromptBearingSession(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, Set.of(), null,
+                                promptAt, promptText);
+                    }
+                    if (newer != null && !newer.equals(newest)) {
+                        newest = newer;
+                        evidenceBased = true;
+                        // A conversation written later by someone else is not
+                        // the file this run created for its own submission.
+                        ownFileMatch = false;
+                    }
+                }
+                if (ownFileMatch) {
+                    // The own-prompt evidence found this run's conversation:
+                    // a NEW run has created the file it writes to.
+                    ownEvidence = true;
+                }
+                if (newest == null) {
+                    // Only then may a conversation another live tab writes be
+                    // adopted: that is an in-process /resume from this terminal.
+                    // Order the candidates newest first: several live files can
+                    // hold the same text, and the one written last is the
+                    // conversation the process is on — an older sibling that
+                    // submitted the same prompt must not win.
+                    Set<String> borrowed = new HashSet<>(claimed);
+                    borrowed.addAll(otherLiveClaims);
+                    if (activeId != null) borrowed.add(activeId);
+                    Set<String> ordered = new LinkedHashSet<>(
+                            ClaudeSessionStore.listSessionIdsWrittenSince(
+                                    dir.toPath(), configDir, 0L, null, borrowed,
+                                    borrowed.size()));
+                    // The tracked conversation is preferred here only when it is
+                    // the launch identity. A borrowed identity was itself
+                    // guessed from the same prompt text, so keeping it
+                    // preferred would pin this tab to a sibling's file even
+                    // after the conversation it actually joined holds the
+                    // submission and is strictly newer.
+                    String borrowedPreferred = activeId != null
+                            && activeId.equals(launchSessionId) ? activeId : null;
+                    newest = findPromptBearingSession(dir, configDir, ordered,
+                            borrowedPreferred, promptAt, promptText);
+                    evidenceBased = newest != null;
+                }
+            }
+            if (promptAt > 0 && promptAt >= externalAt
+                    && (promptText == null || promptText.isBlank())) {
+                // A prompt recalled from the TUI history or completed by Tab:
+                // its text is unknown, so no file can match it as evidence. The
+                // user record is what proves a file was written for this
+                // submission.
+                //
+                // The unclaimed-record priority belongs to a run that has not
+                // created a file of its own yet: it may write its first file
+                // without any other tab claiming it, while a sibling's record
+                // submitted around the same time may just be that tab's own
+                // turn. A tab whose conversation was known at launch had
+                // nothing new to create, so an unrelated unclaimed human record
+                // (e.g. an exited third tab's own prompt) must not displace the
+                // shared conversation it switched into. Once a run has resolved
+                // its own file, the priority is limited to the conversations
+                // this tab holds: a later submission cannot be the one creating
+                // the first file, so an unrelated unclaimed record must yield
+                // to the shared conversation the run joined.
+                //
+                // A launch-known run is treated the same way once it has
+                // switched to another conversation and resolved it: a later
+                // recalled submission must keep that conversation eligible, or
+                // the sibling file it temporarily follows is renamed in its
+                // place.
+                //
+                // Its launch conversation is different: a user record appended
+                // to that file after the submission suggests the submission
+                // went there, so the shared search below keeps it eligible. It
+                // must not be conclusive on its own, though: when another live
+                // tab launched the same saved file, its own turn also appends a
+                // human record there, and a TUI resume into a newer conversation
+                // must still win.
+                boolean ownRecordMatch = false;
+                if (newest == null && (!launchIdentityKnown || ownSessionId != null)) {
+                    // A record is not proof of ownership: a sibling's file the
+                    // tab borrowed earlier is now held by this tab too, so the
+                    // claim-based exclusion no longer hides it. Only a file no
+                    // other live tab established may count as this tab's own.
+                    Set<String> ownCandidates = null;
+                    if (ownSessionId != null) {
+                        // The run has already created its own file, so a later
+                        // unknown-text submission cannot be the one that
+                        // creates it. Only this tab's own conversations keep
+                        // the priority: an unrelated unclaimed file (e.g. an
+                        // exited tab's record) must yield to the shared
+                        // conversation the run joined. The resolved own ID is
+                        // listed explicitly: adopting a borrowed conversation
+                        // releases its claim, and the file must still be
+                        // eligible for the submission that went there.
+                        ownCandidates = claimedSessionIds(dir, configDir);
+                        ownCandidates.add(ownSessionId);
+                        // A file another live tab also writes is not proof of
+                        // this tab's submission: that tab's concurrent turn
+                        // appends a human record of its own. It competes with
+                        // the other shared candidates below by recency.
+                        ownCandidates.removeAll(otherLiveClaims);
+                    }
+                    if (ownCandidates == null) {
+                        newest = newestSessionWithUserMessageSince(dir, configDir, since,
+                                promptAt, ownExclude);
+                        evidenceBased = newest != null;
+                        if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                            newest = newestSessionWithUserMessageSince(dir, configDir,
+                                    since - SESSION_MTIME_GRANULARITY_MS, promptAt,
+                                    ownExclude);
+                            evidenceBased = newest != null;
+                        }
+                        ownEvidence = newest != null;
+                        ownRecordMatch = newest != null;
+                        if (newest != null && switchAt > 0) {
+                            // The conversation was switched with a resume
+                            // command before this run created a file of its
+                            // own, so the unclaimed record above may be an
+                            // exited tab's own submission rather than this
+                            // run's first file. The switch's destination is
+                            // among the shared conversations; when it holds
+                            // this submission and was written later, it is the
+                            // conversation on screen, and the unclaimed record
+                            // must not be taken as this run's own.
+                            Set<String> shared = new HashSet<>(claimed);
+                            shared.addAll(otherLiveClaims);
+                            if (activeId != null) shared.add(activeId);
+                            if (launchIdentityKnown && launchSessionId != null) {
+                                shared.add(launchSessionId);
+                            }
+                            String switchedTo = newestSharedSessionWrittenSince(dir,
+                                    configDir, since, promptAt, shared, exclude);
+                            if (switchedTo == null
+                                    && since > SESSION_MTIME_GRANULARITY_MS) {
+                                switchedTo = newestSharedSessionWrittenSince(dir,
+                                        configDir, since - SESSION_MTIME_GRANULARITY_MS,
+                                        promptAt, shared, exclude);
+                            }
+                            if (switchedTo != null && !switchedTo.equals(newest)
+                                    && ClaudeSessionStore.sessionFileModified(
+                                            dir.toPath(), configDir, switchedTo)
+                                       > ClaudeSessionStore.sessionFileModified(
+                                            dir.toPath(), configDir, newest)) {
+                                newest = switchedTo;
+                                evidenceBased = true;
+                                // A conversation another live tab holds is not
+                                // this run's own file: it was resumed into, so
+                                // adopting it must not establish ownership.
+                                ownEvidence = false;
+                                ownRecordMatch = false;
+                            }
+                        }
+                    } else if (!ownCandidates.isEmpty()) {
+                        newest = newestSharedSessionWrittenSince(dir, configDir, since,
+                                promptAt, ownCandidates, exclude);
+                        evidenceBased = newest != null;
+                        if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                            newest = newestSharedSessionWrittenSince(dir, configDir,
+                                    since - SESSION_MTIME_GRANULARITY_MS, promptAt,
+                                    ownCandidates, exclude);
+                            evidenceBased = newest != null;
+                        }
+                        ownRecordMatch = newest != null;
+                    }
+                }
+                if (newest == null) {
+                    // Only then may a conversation another live tab holds be
+                    // adopted: that is an in-process /resume from this terminal.
+                    // This must run before the file-time fallback: a third tab
+                    // that wrote its own conversation after the submission and
+                    // then exited is unclaimed, and its newer mtime would
+                    // otherwise hide the resumed conversation.
+                    //
+                    // The launch conversation is a candidate too, even when
+                    // another live tab holds it: this tab's submission may have
+                    // gone there. The store's newest-first order then decides
+                    // between it and a conversation the tab resumed into, so a
+                    // shared launch file whose record came from the other live
+                    // tab does not win merely by being the launch file.
+                    Set<String> shared = new HashSet<>(claimed);
+                    shared.addAll(otherLiveClaims);
+                    if (activeId != null) shared.add(activeId);
+                    if (launchIdentityKnown && launchSessionId != null) {
+                        shared.add(launchSessionId);
+                    }
+                    newest = newestSharedSessionWrittenSince(dir, configDir, since,
+                            promptAt, shared, exclude);
+                    evidenceBased = newest != null;
+                    if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        // Coarse file times can round the write below the submission;
+                        // the record's own timestamp still has to match.
+                        newest = newestSharedSessionWrittenSince(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, shared, exclude);
+                        evidenceBased = newest != null;
+                    }
+                }
+                if (switchAt > 0 && !ownRecordMatch) {
+                    // The conversation was switched with a resume command —
+                    // sent from the prompt panel, typed in the terminal or
+                    // answered in the picker — and the destination may be a
+                    // saved conversation no live tab holds, which the shared
+                    // pass above cannot see. A matching record in a shared
+                    // file is not conclusive either: a sibling that submitted
+                    // the same recalled text writes one too. A record in a
+                    // conversation nobody holds can only have come from this
+                    // process, so the files another live tab holds are left
+                    // out.
+                    //
+                    // A conversation this pass already established as this
+                    // run's own keeps the submission: the switch was followed,
+                    // and a sibling that merely appends a later record must
+                    // not take the tab over again.
+                    Set<String> unheld = new HashSet<>(exclude);
+                    unheld.addAll(otherLiveClaims);
+                    String switched = newestSessionWithUserMessageSince(dir, configDir,
+                            since, promptAt, unheld);
+                    if (switched == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                        switched = newestSessionWithUserMessageSince(dir, configDir,
+                                since - SESSION_MTIME_GRANULARITY_MS, promptAt, unheld);
+                    }
+                    // Unheld status alone does not prove this process wrote the
+                    // file: a tab that submitted its own prompt and then
+                    // exited leaves one behind. Only a file written strictly
+                    // later than the shared match is the conversation on
+                    // screen; otherwise the shared match stands.
+                    if (switched != null && (newest == null
+                            || ClaudeSessionStore.sessionFileModified(dir.toPath(),
+                                    configDir, switched)
+                               > ClaudeSessionStore.sessionFileModified(dir.toPath(),
+                                    configDir, newest))) {
+                        newest = switched;
+                        evidenceBased = true;
+                        // No other live tab holds the switched-to conversation,
+                        // so the record in it can only have come from this
+                        // process: it is the file this run resumed into. It
+                        // must be remembered as the run's own, or the next
+                        // unknown-text submission skips the own-candidate pass
+                        // (which requires a resolved own ID) and a sibling's
+                        // newer record displaces it.
+                        ownEvidence = true;
+                    }
+                }
+            }
+            if (newest == null) {
+                newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                        dir.toPath(), configDir, since, exclude);
+                evidenceBased = false;
+            }
+            if (newest == null && since > SESSION_MTIME_GRANULARITY_MS) {
+                // Coarse filesystem timestamps can round a file written right
+                // after the prompt below its cutoff. Retry with a slack so a
+                // saved conversation resumed in-process (which existed before
+                // the launch) is still recognised. Without a prompt of our own
+                // the pre-launch snapshot stays excluded: the extra second must
+                // not make a file touched by another process eligible.
+                Set<String> relaxedExclude = exclude;
+                if (promptAt <= 0) {
+                    relaxedExclude = new HashSet<>(exclude);
+                    relaxedExclude.addAll(preStartSessionIds);
+                }
+                newest = ClaudeSessionStore.findLatestSessionIdWrittenSince(
+                        dir.toPath(), configDir,
+                        since - SESSION_MTIME_GRANULARITY_MS, relaxedExclude);
+                evidenceBased = false;
+            }
+        }
+        return publishIdentityScanResult(generation, scanId, dir, configDir, newest,
+                ownEvidence, promptText, promptAt, Math.max(since, externalAt),
+                evidenceBased);
+    }
+
+    /**
+     * Returns the session among {@code candidates} whose JSONL already contains
+     * the prompt this tab submitted after {@code promptAt}, or {@code null}.
+     *
+     * <p>The message proves that the running process has joined that
+     * conversation, so it is preferred over an mtime-only guess: a sibling tab
+     * finishing its own turn also writes a file after the prompt, but that file
+     * holds that tab's messages, not this tab's prompt.
+     *
+     * <p>The session this tab already tracks is checked first: two tabs can
+     * submit the same prompt ({@code continue}), and then the sibling's file
+     * matches as well — picking whichever comes first in the set would replace
+     * a correct identity with a borrowed one.
+     *
+     * @param preferred session ID to check first; may be {@code null}
+     */
+    /**
+     * Returns the session among the files written at or after
+     * {@code mtimeCutoff}, skipping {@code exclude}, whose JSONL already
+     * contains {@code promptText} since {@code promptAt}, or {@code null}.
+     *
+     * <p>The candidates keep the store's newest-first order: when several
+     * unclaimed files hold the same text, the first match must be the one
+     * written most recently (this tab's own file), not an older conversation
+     * another tab submitted the same prompt to and then left.
+     *
+     * @param preferred session ID to check first; may be {@code null}
+     */
+    /**
+     * Returns {@code preferred} when it is eligible and already holds the
+     * submitted prompt, or {@code null}.
+     *
+     * <p>The known own conversation is checked with the same eligibility as
+     * the discovery candidates — not excluded and written at or after the
+     * cutoff — but independently of their limited list and of any lookalike
+     * match found there, so a file merely carrying the same common text
+     * cannot take over its identity.
+     */
+    private String promptBearingPreferred(java.io.File dir, java.nio.file.Path configDir,
+                                          long mtimeCutoff, Set<String> exclude,
+                                          String preferred, long promptAt, String promptText) {
+        if (preferred == null || promptText == null || promptText.isBlank()) return null;
+        if (exclude != null && exclude.contains(preferred)) return null;
+        if (ClaudeSessionStore.sessionFileModified(dir.toPath(), configDir, preferred)
+                < mtimeCutoff) {
+            return null;
+        }
+        return containsPrompt(dir, configDir, preferred, promptAt, promptText)
+                ? preferred : null;
+    }
+
+    private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
+                                            long mtimeCutoff, Set<String> exclude,
+                                            String preferred, long promptAt, String promptText) {
+        Set<String> candidates = new LinkedHashSet<>(
+                ClaudeSessionStore.listSessionIdsWrittenSince(
+                        dir.toPath(), configDir, mtimeCutoff, exclude,
+                        PROMPT_EVIDENCE_CANDIDATES));
+        // The known own conversation is checked even when newer unrelated
+        // files fill the limited discovery list: it is still eligible, and
+        // dropping it would let a file carrying the same common prompt text
+        // take over the tab's own identity. Eligibility — not excluded and
+        // written since the cutoff — is the same as for the listed files.
+        if (preferred != null && (exclude == null || !exclude.contains(preferred))
+                && ClaudeSessionStore.sessionFileModified(
+                        dir.toPath(), configDir, preferred) >= mtimeCutoff) {
+            candidates.add(preferred);
+        }
+        return findPromptBearingSession(dir, configDir, candidates, preferred, promptAt,
+                promptText);
+    }
+
+    private String findPromptBearingSession(java.io.File dir, java.nio.file.Path configDir,
+                                            Set<String> candidates, String preferred,
+                                            long promptAt, String promptText) {
+        if (candidates.isEmpty() || promptText == null || promptText.isBlank()) return null;
+        // The preferred session may have been excluded from the candidates
+        // (e.g. it is claimed by another live tab): it is checked first only
+        // while it is still eligible. Returning it otherwise would rename that
+        // tab's conversation instead of the one this run actually holds.
+        if (preferred != null && candidates.contains(preferred)
+                && containsPrompt(dir, configDir, preferred, promptAt, promptText)) {
+            return preferred;
+        }
+        for (String sessionId : candidates) {
+            if (!sessionId.equals(preferred)
+                    && containsPrompt(dir, configDir, sessionId, promptAt, promptText)) {
+                return sessionId;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns the newest session file written at or after {@code mtimeCutoff},
+     * skipping {@code exclude}, that holds a user message at or after
+     * {@code promptCutoff}, or {@code null}.
+     *
+     * <p>Used when the submitted prompt's text is unknown: a user record is
+     * then the only evidence that a file was written for this submission, and
+     * unlike {@link #newestSharedSessionWrittenSince} the file does not have to
+     * belong to another live tab.
+     */
+    private static String newestSessionWithUserMessageSince(java.io.File dir,
+                                                            java.nio.file.Path configDir,
+                                                            long mtimeCutoff,
+                                                            long promptCutoff,
+                                                            Set<String> exclude) {
+        for (String id : ClaudeSessionStore.listSessionIdsWrittenSince(
+                dir.toPath(), configDir, mtimeCutoff, exclude, PROMPT_EVIDENCE_CANDIDATES)) {
+            if (ClaudeSessionStore.containsUserMessageSince(
+                    dir.toPath(), configDir, id, promptCutoff)) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns the newest session ID in {@code shared} whose file was written at
+     * or after {@code mtimeCutoff} and holds a user message at or after
+     * {@code promptCutoff}, or {@code null}.
+     *
+     * <p>Used when the submitted prompt's text is unknown (a history recall):
+     * only a conversation another live tab holds can be the one this process
+     * switched into, so unrelated newer files must not be adopted. The user
+     * record is required because the other tab may simply be finishing its own
+     * turn, which appends assistant output but no user message.
+     */
+    private static String newestSharedSessionWrittenSince(java.io.File dir,
+                                                          java.nio.file.Path configDir,
+                                                          long mtimeCutoff,
+                                                          long promptCutoff,
+                                                          Set<String> shared,
+                                                          Set<String> exclude) {
+        if (shared.isEmpty()) return null;
+        Set<String> sharedExclude = new HashSet<>(exclude);
+        sharedExclude.removeAll(shared);
+        // Only the shared conversations may be considered: newer unrelated
+        // files must not fill the limited candidate list and hide the
+        // destination that holds this tab's submission.
+        for (String id : ClaudeSessionStore.listSessionIdsWrittenSince(
+                dir.toPath(), configDir, mtimeCutoff, sharedExclude, shared,
+                PROMPT_EVIDENCE_CANDIDATES)) {
+            if (ClaudeSessionStore.containsUserMessageSince(
+                    dir.toPath(), configDir, id, promptCutoff)) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    /** Returns whether {@code sessionId} holds {@code promptText} since {@code promptAt}. */
+    private static boolean containsPrompt(java.io.File dir, java.nio.file.Path configDir,
+                                          String sessionId, long promptAt, String promptText) {
+        return ClaudeSessionStore.containsUserPromptSince(
+                dir.toPath(), configDir, sessionId, promptAt, promptText);
+    }
+
+    /**
+     * Publishes a scan result, unless it was superseded: a scan started before a
+     * process restart describes a store the current run does not use, and a scan
+     * started before another one that already published must not undo the newer
+     * result (the synchronous dialog path and the background worker can scan
+     * concurrently within the same process run).
+     */
+    private boolean publishIdentityScanResult(long generation, long scanId,
+                                              java.io.File dir,
+                                              java.nio.file.Path configDir,
+                                              String newest, boolean ownEvidence,
+                                              String promptText, long promptAt, long since,
+                                              boolean evidenceBased) {
+        synchronized (processOwnershipLock) {
+            if (generation != processGeneration) {
+                return activeSessionId != null;
+            }
+            if (scanId < lastPublishedScanId) {
+                return activeSessionId != null;
+            }
+            lastPublishedScanId = scanId;
+            if (newest != null && evidenceBased && conversationSwitchAt > 0
+                    && since >= conversationSwitchAt) {
+                // The result was adopted from a record written after the switch:
+                // the conversation on screen is known, so a later submission may
+                // authorize the rename. An mtime-only result says nothing about
+                // the destination and must not: a later prompt would otherwise
+                // read as proof that the switch was followed (see
+                // identityRemainsAmbiguous).
+                postSwitchResolvedAt = since;
+            }
+            if (ownEvidence && newest != null) {
+                ownSessionId = newest;
+            }
+            if (newest != null && (evidenceBased || !newest.equals(guessSessionId))) {
+                // Remember the submission the identity was adopted on: terminal
+                // input can later lift the prompt evidence without resolving
+                // another conversation, and the stop-time ambiguity check must
+                // still use the adoption's evidence then. A file-time-only
+                // refresh of the same identity carries no new submission: only
+                // an assistant-only append prompted it, and replacing the
+                // evidence with the newer command cutoff would hide the
+                // competing file.
+                guessSessionId = newest;
+                guessPromptText = promptText;
+                guessPromptAt = promptAt;
+                guessSince = since;
+            }
+            if (newest != null && !newest.equals(activeSessionId)) {
+                String previous = activeSessionId;
+                activeSessionId = newest;
+                claimSession(dir, configDir, newest);
+                releaseClaim(dir, configDir, previous);
+                LOG.fine("Session of " + dir + " is now " + newest
+                        + (previous != null ? " (was " + previous + ")" : ""));
+            }
+            claimSession(dir, configDir, activeSessionId);
+            return activeSessionId != null;
+        }
+    }
+
+    /** Package-private for tests: reserves a scan slot and returns its sequence. */
+    long simulateBeginIdentityScan() {
+        synchronized (processOwnershipLock) {
+            return ++scanSequence;
+        }
+    }
+
+    /** Package-private for tests: publishes a result scanned for an older process run. */
+    boolean simulatePublishStaleScanResult(long generation, String newest) {
+        return publishIdentityScanResult(generation, simulateBeginIdentityScan(),
+                null, activeConfigDir, newest, false, null, 0L, 0L, false);
+    }
+
+    /** Package-private for tests: publishes a scan result with explicit ordering. */
+    boolean simulatePublishScanResult(long generation, long scanId, String newest) {
+        return publishIdentityScanResult(generation, scanId, null, activeConfigDir, newest,
+                false, null, 0L, 0L, false);
+    }
+
+    /** Package-private for tests: the identity inputs {@link #refreshSessionIdentity()} captures. */
+    record IdentityCapture(long generation, boolean hasConfigDir, long since) { }
+
+    /** Package-private for tests: samples the identity inputs under the ownership lock. */
+    IdentityCapture simulateCaptureIdentityInputs() {
+        synchronized (processOwnershipLock) {
+            return new IdentityCapture(processGeneration, activeConfigDir != null,
+                    Math.max(processStartedAt, promptSubmittedAt));
+        }
+    }
+
+    /**
+     * Runs the periodic identity refresh when it is due: on every call while a
+     * {@code NEW} session is still unknown after a prompt, otherwise every
+     * tenth call (~5 s at the 500 ms poll cadence). Call from a worker thread —
+     * it touches the session directory.
+     */
+    void refreshSessionIdentityIfDue() {
+        boolean unresolvedAfterPrompt = activeSessionId == null && promptSubmittedAt > 0;
+        if (unresolvedAfterPrompt || ++identityPollTicks % 10 == 0) {
+            refreshSessionIdentity();
+        }
+    }
+
+    /**
+     * Queues one periodic identity refresh on the shared worker, so that the
+     * screen poll never enumerates the session store on the EDT. At most one
+     * scan per controller is in flight at a time.
+     *
+     * <p>Nothing is queued once the PTY has exited: the tab can stay open after
+     * Claude quits, and a dead process has no conversation to follow. Without
+     * this gate each such tab would keep enumerating the session store twice a
+     * second (unresolved session) or every five seconds on the single shared
+     * worker, delaying live tabs.
+     *
+     * @return {@code false} when no PTY is running and nothing was queued
+     */
+    boolean scheduleIdentityRefresh() {
+        if (!isProcessLive()) return false;
+        if (!identityScanPending.compareAndSet(false, true)) return true;
+        try {
+            IDENTITY_SCANNER.execute(() -> {
+                try {
+                    refreshSessionIdentityIfDue();
+                } catch (RuntimeException e) {
+                    LOG.fine("Session identity scan failed: " + e);
+                } finally {
+                    identityScanPending.set(false);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            identityScanPending.set(false);
+        }
+        return true;
+    }
+
+    /**
+     * Forgets everything recorded about the terminal's input line: the text
+     * typed so far, the cursor, a partial escape sequence and the history-recall
+     * flags. Called when the plugin itself drives the TUI (a picker selection)
+     * or when a run ends, so stale text never becomes prompt evidence.
+     */
+    private void resetTerminalInputRecording() {
+        resetTerminalInputRecording(false);
+    }
+
+    /**
+     * {@link #resetTerminalInputRecording()} that can keep the marker retiring
+     * a choice menu the terminal input already dismissed.
+     *
+     * <p>A GUI send rewrites the recorder, but it does not bring the picker
+     * back: cancelling it with Esc the moment before the send must keep it
+     * retired, or the stale model entry classifies the next prompt typed
+     * before the screen poll as another menu answer and swallows it.
+     *
+     * @param keepCompletedMenu {@code true} to preserve the dismissed-menu
+     *                          marker; process resets clear it
+     */
+    private void resetTerminalInputRecording(boolean keepCompletedMenu) {
+        synchronized (terminalInputLine) {
+            terminalInputLine.setLength(0);
+            terminalInputCursor = 0;
+            terminalInputEscape = 0;
+            terminalEscapeParams.setLength(0);
+            terminalInputPaste = false;
+            terminalPasteAfterCR = false;
+            terminalEscapeOnMenu = false;
+            terminalEscapeOnPicker = false;
+            terminalMenuSelection = false;
+            terminalSelectedMenu = null;
+            terminalLineEntered = false;
+            terminalEnterOnEmptyLine = false;
+            terminalHistoryRecall = false;
+            terminalCompletionEdited = false;
+            terminalRecalledSubmission = false;
+            terminalInputSinceGuiSend = false;
+            terminalEnterSinceGuiSend = false;
+            terminalDraftAfterEnter = false;
+            terminalGuiSubmitAt = 0L;
+            terminalGuiLineEdited = false;
+            guiSendAwaitingEnter = false;
+            terminalMenuConsumedGuiSend = false;
+            terminalGuiTextAnsweredMenu = false;
+            pendingGuiPromptText = null;
+            pendingGuiPromptAt = 0L;
+            pendingGuiPromptExact = false;
+            pendingGuiPromptSet = false;
+            pendingGuiPromptSwitch = false;
+            pendingGuiPromptResume = false;
+            if (!keepCompletedMenu) {
+                terminalCompletedMenu = null;
+            }
+        }
+    }
+
+    /**
+     * Discards the recorded input after a choice menu was dismissed from the
+     * terminal — by a standalone {@code ESC} or by a digit selecting an item
+     * of a numbered menu: the line then holds the menu's search text, not a
+     * prompt draft. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private void discardPickerSearchText() {
+        terminalInputLine.setLength(0);
+        terminalInputCursor = 0;
+        terminalEscapeOnMenu = false;
+        terminalEscapeOnPicker = false;
+        // The cancelled menu stays in the model until the next poll: retire
+        // it, or input typed right after the cancellation is still treated as
+        // a menu answer.
+        completeTerminalMenu(openChoiceMenu());
+    }
+
+    /**
+     * Returns the choice menu still open on the screen, or {@code null} when
+     * the terminal input already completed the menu the model reports.
+     *
+     * <p>The model is refreshed by the screen poll every half second, so a
+     * menu dismissed by a keystroke remains reported for a while. Classifying
+     * the following input against it would swallow a real prompt: its digits
+     * are dropped and its Enter counts as a menu selection instead of a
+     * submission. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private ChoiceMenuModel openChoiceMenu() {
+        ChoiceMenuModel active = model.getActiveChoiceMenu();
+        return active == terminalCompletedMenu ? null : active;
+    }
+
+    /**
+     * Remembers that the terminal input has dismissed {@code menu}, so the
+     * stale model entry no longer classifies the following keystrokes. Call
+     * while holding the {@link #terminalInputLine} lock.
+     */
+    private void completeTerminalMenu(ChoiceMenuModel menu) {
+        if (menu != null) {
+            terminalCompletedMenu = menu;
+            if (terminalMenuFocusOwner == menu) {
+                terminalMenuFocusOwner = null;
+                terminalMenuFocusIndex = -1;
+            }
+        }
+    }
+
+    /**
+     * Returns the option a choice menu's cursor sits on: the position the
+     * terminal input moved it to, if it moved since the last screen poll, or
+     * the poll's report otherwise. Call while holding the
+     * {@link #terminalInputLine} lock.
+     */
+    private int focusedMenuOption(ChoiceMenuModel menu) {
+        if (menu == terminalMenuFocusOwner
+                && terminalMenuFocusIndex >= 0
+                && terminalMenuFocusIndex < menu.options().size()) {
+            return terminalMenuFocusIndex;
+        }
+        return menu.defaultOptionIndex();
+    }
+
+    /**
+     * Records that the terminal input moved {@code menu}'s cursor to
+     * {@code index}, which the next screen poll will confirm. Call while
+     * holding the {@link #terminalInputLine} lock.
+     */
+    private void trackMenuFocus(ChoiceMenuModel menu, int index) {
+        terminalMenuFocusOwner = menu;
+        terminalMenuFocusIndex = index;
+    }
+
+    /**
+     * Moves the tracked menu cursor to the option a plugin write just put the
+     * TUI cursor on. Called from the answer workers, so it takes the recorder's
+     * lock itself; the state it updates is what
+     * {@link #digitSelectionDismissesMenu} reads for a digit typed into the
+     * terminal while the write is still settling. The workers reach the write
+     * and this call inside one lock section, so input classified between them
+     * cannot see the previous option.
+     */
+    private void trackForwardedMenuFocus(ChoiceMenuModel menu, int index) {
+        if (menu == null || menu.options().isEmpty()) return;
+        int clamped = Math.max(0, Math.min(index, menu.options().size() - 1));
+        synchronized (terminalInputLine) {
+            // The recorder classifies terminal input against the instance the
+            // model reports, while detectCurrentMenu() re-parses the screen into
+            // a new instance on every poll: recording the detected instance
+            // would never match (see focusedMenuOption). The forwarded position
+            // is carried over to the active instance by the option it names.
+            ChoiceMenuModel active = openChoiceMenu();
+            if (active == null || active.options().isEmpty()) return;
+            trackMenuFocus(active, optionIndexIn(active, menu.options().get(clamped)));
+        }
+    }
+
+    /**
+     * Returns the index of {@code option} in {@code menu}, matching the label
+     * and the answer it stands for, or the menu's reported cursor when the
+     * option is not part of it (a detection of a different screen state).
+     */
+    private static int optionIndexIn(ChoiceMenuModel menu, ChoiceMenuModel.Option option) {
+        for (int i = 0; i < menu.options().size(); i++) {
+            ChoiceMenuModel.Option candidate = menu.options().get(i);
+            if (java.util.Objects.equals(candidate.display(), option.display())
+                    && java.util.Objects.equals(candidate.response(), option.response())) {
+                return i;
+            }
+        }
+        return menu.defaultOptionIndex();
+    }
+
+    /**
+     * Returns whether {@code menu} is a checkbox menu, which submits on Right
+     * (the answer protocol written by the menu panel) instead of a numbered
+     * picker, where Right only moves the cursor inside the search field.
+     */
+    private static boolean isCheckboxMenu(ChoiceMenuModel menu) {
+        for (ChoiceMenuModel.Option option : menu.options()) {
+            if (option.hasCheckbox()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns whether the digit {@code digit} typed while {@code menu} is open
+     * selects an item and dismisses the menu.
+     *
+     * <p>Only menus whose answers are the item numbers behave that way. An
+     * unnumbered picker (the {@code ARROW:} answers of the {@code /resume}
+     * list) uses digits as search text and stays open, and a checkbox or
+     * text-input option only moves to that option on a digit, waiting for its
+     * submit key — retiring the menu on such a digit would turn the search
+     * text into prompt evidence. A text-input option is recognised by its flag
+     * or by its label ({@code "Type something."}), like everywhere else in the
+     * answer protocol: the digit only activates its editor.
+     *
+     * <p>The digit's own option decides. A menu can mix ordinary items with a
+     * text-input one: selecting an ordinary item still closes the TUI menu, so
+     * the menu must be retired only when the selected option is not text input.
+     * A digit that names no option selects nothing at all — the TUI keeps the
+     * menu open — so it must not retire the menu either.
+     *
+     * <p>The focused option decides as well: while a text-input option already
+     * holds the cursor, a printed digit is text for its editor, not the number
+     * of another item (the answer protocol navigates such a menu with arrows,
+     * see {@code writePtyAnswer}). Retiring the menu then would record the rest
+     * of the answer as a submitted prompt.
+     *
+     * <p>The cursor the terminal input moved ({@link #focusedMenuOption}) is
+     * what counts: the screen poll is what updates the model's index, so every
+     * digit and arrow typed before it must be classified against the position
+     * they left the cursor at.
+     *
+     * <p>Call while holding the {@link #terminalInputLine} lock.
+     */
+    private boolean digitSelectionDismissesMenu(ChoiceMenuModel menu, char digit) {
+        if (menu.options().isEmpty()) return false;
+        int focused = focusedMenuOption(menu);
+        if (focused >= 0 && focused < menu.options().size()
+                && isTextInputOption(menu.options().get(focused))) {
+            // The cursor sits in a text editor: the digit is input for it, so
+            // the menu stays open.
+            return false;
+        }
+        boolean matched = false;
+        for (ChoiceMenuModel.Option option : menu.options()) {
+            String response = option.response();
+            if (response == null || response.isEmpty()) return false;
+            for (int i = 0; i < response.length(); i++) {
+                char c = response.charAt(i);
+                if (c < '0' || c > '9') return false;
+            }
+            if (response.length() != 1 || response.charAt(0) != digit) continue;
+            if (option.hasCheckbox() || isTextInputOption(option)) {
+                // The digit only activates this option's editor or toggles it.
+                return false;
+            }
+            matched = true;
+        }
+        return matched;
+    }
+
+    /**
+     * Returns the index of the text-input option that the digit {@code digit}
+     * activates instead of selecting an item, or {@code -1} when the digit
+     * names none. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private static int activatedTextEditor(ChoiceMenuModel menu, char digit) {
+        for (int i = 0; i < menu.options().size(); i++) {
+            ChoiceMenuModel.Option option = menu.options().get(i);
+            String response = option.response();
+            if (response == null || response.length() != 1 || response.charAt(0) != digit) {
+                continue;
+            }
+            if (isTextInputOption(option)) return i;
+        }
+        return -1;
+    }
+
+    /** Package-private for tests: the PTY is no longer running (Claude exited). */
+    void simulateProcessNotRunning() {
+        claudeProcess = new ClaudeProcess();
+    }
+
+    /**
+     * Returns whether this tab only follows {@code sessionId} written by
+     * another live tab. A borrowed conversation is not this tab's own, even
+     * when its file matched the own-prompt evidence before the tab's own file
+     * was flushed.
+     */
+    private boolean isBorrowedByThisTab(java.io.File dir, java.nio.file.Path configDir,
+                                        String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        SessionClaims claims = key != null ? SESSION_CLAIMS.get(key) : null;
+        return claims != null && claims.borrowed.contains(this);
+    }
+
+    /**
+     * Returns whether {@code sessionId} is a conversation this launch-known tab
+     * can only be following: a file other than the launch identity that another
+     * live tab holds as well. The claim registry marks a tab as a borrower only
+     * if the other tab had already claimed the file when this tab adopted it,
+     * so two tabs submitting the same text at once can both end up as
+     * provisional holders; whichever claimed the file first must not let it
+     * outrank the launch conversation that actually holds the prompt.
+     */
+    private boolean isSharedGuess(String sessionId, Set<String> otherLiveClaims) {
+        return sessionId != null && launchIdentityKnown && launchSessionId != null
+                && !sessionId.equals(launchSessionId)
+                && otherLiveClaims.contains(sessionId);
+    }
+
+    private static SessionKey keyFor(java.io.File dir, java.nio.file.Path configDir,
+                                     String sessionId) {
+        if (dir == null || configDir == null || sessionId == null) return null;
+        return new SessionKey(configDir.toAbsolutePath().normalize(),
+                dir.toPath().toAbsolutePath().normalize(), sessionId);
+    }
+
+    private void claimSession(java.io.File dir, java.nio.file.Path configDir,
+                              String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        if (key == null) return;
+        // Membership and empty-entry cleanup stay inside compute() so a claim
+        // cannot be added to an owner set that a concurrent release just
+        // detached from the map (which would silently lose the claim).
+        SESSION_CLAIMS.compute(key, (k, claims) -> {
+            SessionClaims updated = claims != null ? claims : new SessionClaims();
+            if (!updated.holders.contains(this)) {
+                // Classify only a new hold: re-claiming the identity on every
+                // scan must not turn an owner into a borrower of its own file.
+                if (launchIdentityKnown && sessionId.equals(launchSessionId)
+                        && !heldAsOwnerByAnotherLiveTab(updated)) {
+                    // An explicit --continue/--resume knows the conversation it
+                    // launched on, and only that one: a conversation adopted
+                    // later (a sibling's file this tab started following) is
+                    // not established by it and must stay borrowed, or the
+                    // sibling that created it would lose it. A NEW tab's
+                    // provisional guess does not establish the file either.
+                    updated.owners.add(this);
+                } else if (heldByAnotherLiveTab(updated)) {
+                    // Another tab is already writing this conversation; this
+                    // tab is only following it.
+                    updated.borrowed.add(this);
+                }
+                // Otherwise the claim stays provisional: this NEW tab guessed
+                // that the file is its own.
+                updated.holders.add(this);
+            }
+            return updated;
+        });
+    }
+
+    /** {@code true} if another live tab has established (owns) {@code claims}. */
+    private boolean heldAsOwnerByAnotherLiveTab(SessionClaims claims) {
+        for (ClaudeSessionController owner : claims.owners) {
+            if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** {@code true} if another live tab already holds {@code claims}. */
+    private boolean heldByAnotherLiveTab(SessionClaims claims) {
+        for (ClaudeSessionController holder : claims.holders) {
+            if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void releaseClaim(java.io.File dir, java.nio.file.Path configDir,
+                              String sessionId) {
+        SessionKey key = keyFor(dir, configDir, sessionId);
+        if (key == null) return;
+        SESSION_CLAIMS.computeIfPresent(key, (k, claims) -> {
+            releaseFromClaims(claims);
+            return claims.holders.isEmpty() ? null : claims;
+        });
+    }
+
+    /** Removes all claims held by this controller (called when the process stops). */
+    private void releaseAllClaims() {
+        for (SessionKey key : SESSION_CLAIMS.keySet()) {
+            SESSION_CLAIMS.computeIfPresent(key, (k, claims) -> {
+                releaseFromClaims(claims);
+                return claims.holders.isEmpty() ? null : claims;
+            });
+        }
+    }
+
+    private void releaseFromClaims(SessionClaims claims) {
+        claims.holders.remove(this);
+        claims.owners.remove(this);
+        claims.borrowed.remove(this);
+    }
+
+    /**
+     * Session IDs claimed by another live controller in the same store, even
+     * when this controller claims them too. A conversation shared with another
+     * tab is not this tab's own, so its own-prompt evidence must not be taken
+     * from it; {@link #claimedByOthers} answers the different question of which
+     * files a scan must not consider at all.
+     */
+    private Set<String> claimedByOtherLiveTabs(java.io.File dir, java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, claims) -> {
+            if (!key.configDir().equals(wantedConfig)
+                    || !key.projectDir().equals(wantedProject)) {
+                return;
+            }
+            for (ClaudeSessionController holder : claims.holders) {
+                if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()) {
+                    ids.add(key.sessionId());
+                    return;
+                }
+            }
+        });
+        return ids;
+    }
+
+    /**
+     * Session IDs another live controller has <em>established</em> in the same
+     * store. A claim that merely follows the conversation (see
+     * {@link SessionClaims#borrowed}) is not ownership and is skipped: when a
+     * NEW tab borrows a live tab's conversation until its own file appears,
+     * that file must still count as the live tab's own, or the live tab would
+     * discard its correctly tracked session and adopt the borrower's file.
+     */
+    private Set<String> sessionsOwnedByOtherLiveTabs(java.io.File dir,
+                                                     java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, claims) -> {
+            if (!key.configDir().equals(wantedConfig)
+                    || !key.projectDir().equals(wantedProject)) {
+                return;
+            }
+            // A file this tab held until it stopped its writer is its own, so
+            // the post-stop lookup must not treat it as another tab's.
+            if (preservedClaims.contains(key.sessionId())) return;
+            for (ClaudeSessionController owner : claims.owners) {
+                if (owner != this && LIVE_SESSIONS.contains(owner) && owner.isProcessLive()) {
+                    ids.add(key.sessionId());
+                    return;
+                }
+            }
+        });
+        return ids;
+    }
+
+    /**
+     * Package-private for tests and the stop path: session IDs this controller
+     * established or guessed as its own in the given store.
+     *
+     * <p>A held conversation that this controller only borrowed (another live
+     * tab established it or was writing it first) is another tab's file and is
+     * not included: preserving it as this tab's own would let it win the final
+     * post-stop lookup over the file this tab actually created. The launch
+     * conversation is the exception: a tab that resumed a saved file another
+     * live tab had already claimed only borrows it, yet that file is still the
+     * conversation this tab was opened on, and its rename must target it — a
+     * merely guessed borrowed file stays excluded.
+     */
+    Set<String> claimedSessionIds(java.io.File dir, java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, claims) -> {
+            if (key.configDir().equals(wantedConfig)
+                    && key.projectDir().equals(wantedProject)
+                    && claims.holders.contains(this)
+                    && (!claims.borrowed.contains(this)
+                        || isLaunchIdentity(key.sessionId()))) {
+                ids.add(key.sessionId());
+            }
+        });
+        return ids;
+    }
+
+    /**
+     * Returns whether {@code sessionId} is the conversation this tab launched
+     * on with {@code --continue}/{@code --resume}. Such a conversation is this
+     * tab's own even when another live tab claimed it first and this tab is
+     * therefore only a borrower: the file is not a guess made from matching
+     * prompt text.
+     */
+    private boolean isLaunchIdentity(String sessionId) {
+        return launchIdentityKnown && launchSessionId != null
+                && launchSessionId.equals(sessionId);
+    }
+
+    /**
+     * Session IDs claimed by other live controllers <em>in the same store</em>.
+     * A session ID is not unique across config dirs (a JSONL can be copied
+     * between the default and an isolated profile), so a claim from another
+     * store must not hide this store's file.
+     */
+    private Set<String> claimedByOthers(java.io.File dir, java.nio.file.Path configDir) {
+        Set<String> ids = new HashSet<>();
+        if (dir == null || configDir == null) return ids;
+        java.nio.file.Path wantedConfig = configDir.toAbsolutePath().normalize();
+        java.nio.file.Path wantedProject = dir.toPath().toAbsolutePath().normalize();
+        SESSION_CLAIMS.forEach((key, claims) -> {
+            if (!key.configDir().equals(wantedConfig)
+                    || !key.projectDir().equals(wantedProject)) {
+                return;
+            }
+            // A session shared with another tab (both resumed the same saved
+            // conversation) is still this tab's own conversation: excluding it
+            // would make the scan pick an unrelated file. The same holds for a
+            // file this tab held before it stopped its writer: the exit
+            // callback has already released the claim, but that must not turn
+            // the tab's own conversation into another tab's file.
+            if (claims.holders.contains(this)
+                    || preservedClaims.contains(key.sessionId())) {
+                return;
+            }
+            for (ClaudeSessionController holder : claims.holders) {
+                if (holder != this && LIVE_SESSIONS.contains(holder) && holder.isProcessLive()
+                        && !followsOnly(holder, key.sessionId(), claims)) {
+                    ids.add(key.sessionId());
+                    return;
+                }
+            }
+        });
+        return ids;
+    }
+
+    /**
+     * Returns whether {@code holder} only follows {@code sessionId}: it is not
+     * one of the conversation's owners and the conversation is not the one it
+     * launched on. Such a claim is a guess made from matching prompt text —
+     * e.g. a launch-known tab that follows a sibling's file while its own
+     * conversation has not been flushed yet — and must not hide that file from
+     * the scan of the tab whose process actually writes it, or the creator
+     * adopts another conversation and loses its own.
+     */
+    private static boolean followsOnly(ClaudeSessionController holder, String sessionId,
+                                       SessionClaims claims) {
+        return !claims.owners.contains(holder)
+                && holder.launchIdentityKnown
+                && !sessionId.equals(holder.launchSessionId);
+    }
+
+    /**
+     * Package-private for tests: session IDs this controller treats as claimed
+     * by other live tabs in the same store.
+     */
+    Set<String> simulateClaimedByOthers(java.io.File dir, java.nio.file.Path configDir) {
+        return claimedByOthers(dir, configDir);
+    }
+
+    /**
+     * Returns {@code true} while this controller's PTY is running. Controllers
+     * without a process (test seams) count as live.
+     */
+    private boolean isProcessLive() {
+        ClaudeProcess cp = claudeProcess;
+        return cp == null || cp.isRunning();
+    }
+
+    /**
+     * Releases live-session bookkeeping when the PTY of {@code generation} exits
+     * on its own (Claude quit or crashed while the tab stayed open). The check
+     * and the cleanup are atomic with process replacement, so a late callback
+     * from a process that has already been stopped and replaced by a restart
+     * cannot wipe the new run's ownership.
+     */
+    private void onProcessExited(long generation) {
+        synchronized (processOwnershipLock) {
+            if (generation != processGeneration) return;
+            // The tab stays open after Claude quits on its own, and Save &
+            // Switch can still rename the conversation that was on screen. The
+            // claims are about to be released, so the conversations they held
+            // are carried into that later lookup; a borrowed conversation that
+            // is not the launch identity stays eligible to its owner.
+            java.io.File dir = workingDir != null ? workingDir : model.getWorkingDirectory();
+            Set<String> held = claimedSessionIds(dir, activeConfigDir);
+            LIVE_SESSIONS.remove(this);
+            releaseAllClaims();
+            if (!held.isEmpty()) {
+                Set<String> merged = new HashSet<>(preservedClaims);
+                merged.addAll(held);
+                preservedClaims = Set.copyOf(merged);
+            }
+        }
+    }
+
+    /** Package-private for tests: simulates the PTY exiting without stopProcess(). */
+    void simulateProcessExit() {
+        simulateProcessExitAt(simulateProcessGeneration());
+    }
+
+    /** Package-private for tests: the ownership generation of the current run. */
+    long simulateProcessGeneration() {
+        return currentProcessGeneration();
+    }
+
+    /**
+     * Package-private for tests: the cleanup a sender of {@code generation}
+     * runs when its send is cancelled or fails, without its thread timing.
+     */
+    void simulateDiscardGuiSend(long generation) {
+        discardGuiSend(generation);
+    }
+
+    /** The ownership generation of the run that is live now. */
+    private long currentProcessGeneration() {
+        synchronized (processOwnershipLock) {
+            return processGeneration;
+        }
+    }
+
+    /**
+     * Whether {@code generation} is still the live run. A panel send carries
+     * the generation it was accepted for, so a restart in the meantime cancels
+     * its remaining writes instead of delivering them to the new process.
+     */
+    private boolean isProcessGenerationCurrent(long generation) {
+        synchronized (processOwnershipLock) {
+            return generation == processGeneration;
+        }
+    }
+
+    /**
+     * Returns the PTY connector of {@code generation}, or {@code null} when
+     * that run is gone or its PTY is not open anymore.
+     *
+     * <p>Binding the connector to the generation the send was accepted for
+     * makes a write "atomic" with the process it targets: once a restart has
+     * replaced the connector, a send that was already past its generation
+     * check keeps writing to the process it was accepted for (whose connector
+     * then rejects or drops the bytes) and never to the replacement's TUI.
+     *
+     * @param generation process generation the writer was accepted for
+     */
+    private PtyTtyConnector ptyConnectorFor(long generation) {
+        synchronized (processOwnershipLock) {
+            return generation == processGeneration ? connector : null;
+        }
+    }
+
+    /**
+     * Whether the terminal recorder still belongs to {@code generation}, for a
+     * sender that already holds {@link #terminalInputLine}.
+     *
+     * <p>The ownership lock cannot be taken there: the stop path resets the
+     * recorder while holding it, so ownership → recorder is the fixed order
+     * and this check would reverse it. The generation is volatile instead. A
+     * bump that lands after this read is still followed by the stop's own
+     * recorder reset, and the sender's connector is bound to its process, so
+     * neither its text nor its Enter reaches the replacement.
+     *
+     * <p>A sender that finds its generation stale must leave the recorder
+     * untouched: reconciling would clear the replacement's draft and install
+     * pending evidence describing a line the replacement never received, and
+     * the next panel send would compose only its own text.
+     *
+     * @param generation process generation the sender was accepted for
+     */
+    private boolean recorderBelongsTo(long generation) {
+        return generation == processGeneration;
+    }
+
+    /** Package-private for tests: replays the exit callback of an older run. */
+    void simulateProcessExitAt(long generation) {
+        onProcessExited(generation);
+    }
+
+    /**
+     * Returns the effective config dir of the running session.
+     *
+     * @return config dir, or {@code null} when no session was started
+     */
+    public java.nio.file.Path getActiveConfigDir() {
+        return activeConfigDir;
     }
 
     // -------------------------------------------------------------------------
@@ -404,19 +3041,811 @@ public class ClaudeSessionController {
             model.addPromptToHistory(text);
         }
 
-        Thread t = new Thread(() -> {
+        // The prompt is accepted for the run that is live now: a restart while
+        // this send waits for its turn (or during its pause) must not deliver
+        // it to the replacement process, where it would execute in a
+        // conversation the user never typed it for.
+        queueGuiSend(text, currentProcessGeneration());
+    }
+
+    /**
+     * Submits a panel send to the ordered send queue (see {@link #guiSendQueue}).
+     *
+     * @param text           prompt text
+     * @param sendGeneration process generation the send was accepted for
+     * @return the queued task
+     */
+    private java.util.concurrent.Future<?> queueGuiSend(String text, long sendGeneration) {
+        return queueGuiSend(text, sendGeneration,
+                System::currentTimeMillis, System::currentTimeMillis);
+    }
+
+    /**
+     * {@link #queueGuiSend(String, long)} with controllable clocks, so a test
+     * can pin the text-write and submission times of a queued send.
+     */
+    private java.util.concurrent.Future<?> queueGuiSend(String text, long sendGeneration,
+                            java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock) {
+        java.util.concurrent.ExecutorService queue;
+        synchronized (guiSendQueueLock) {
+            if (guiSendQueue == null || guiSendQueue.isShutdown()) {
+                guiSendQueue = java.util.concurrent.Executors.newSingleThreadExecutor(
+                        runnable -> {
+                            Thread t = new Thread(runnable, "pty-send-prompt");
+                            t.setDaemon(true);
+                            return t;
+                        });
+            }
+            queue = guiSendQueue;
+        }
+        try {
+            return queue.submit(() -> runGuiSend(text, sendGeneration,
+                    writeClock, enterClock));
+        } catch (java.util.concurrent.RejectedExecutionException ex) {
+            // The session was stopped between the lookup and the submission:
+            // the queue is gone, so the send is dropped with it.
+            LOG.fine("sendPrompt dropped: the send queue was shut down");
+            return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+    }
+
+    /**
+     * Drops the queued panel sends and interrupts the one in progress. The
+     * next send starts a new queue; a send interrupted while it pauses cannot
+     * deliver its Enter because the generation it was accepted for is gone.
+     */
+    private void shutdownGuiSendQueue() {
+        java.util.concurrent.ExecutorService queue;
+        synchronized (guiSendQueueLock) {
+            queue = guiSendQueue;
+            guiSendQueue = null;
+        }
+        if (queue != null) queue.shutdownNow();
+    }
+
+    /**
+     * Body of a queued panel send: writes the text, pauses and writes the
+     * Enter that submits it.
+     *
+     * <p>The worker is the only production caller, so its sends run in
+     * acceptance order; the monitor also keeps them from interleaving with a
+     * send driven by {@link #simulateSendPrompt}.
+     *
+     * @param text           prompt text
+     * @param sendGeneration process generation the send was accepted for
+     * @param writeClock     time source for the text write
+     * @param enterClock     time source for the submission
+     */
+    private void runGuiSend(String text, long sendGeneration,
+                            java.util.function.LongSupplier writeClock,
+                            java.util.function.LongSupplier enterClock) {
+        synchronized (guiSendLock) {
+            if (Thread.currentThread().isInterrupted()) {
+                // Another thread cancelled the queue (a stop that must take its
+                // identity snapshot): a task that already started and waited
+                // here for the monitor is cancelled the same way as one still
+                // queued, so it writes nothing.
+                LOG.fine("sendPrompt dropped: the send queue was cancelled");
+                return;
+            }
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                LOG.fine("sendPrompt dropped: the session was restarted");
+                return;
+            }
             try {
-                connector.write(text);
-                Thread.sleep(200);
-                connector.write("\r");
+                // Reconciliation and the text write run as one step under the
+                // recorder's lock: an Enter arriving in between would
+                // submit the terminal draft alone, while the evidence
+                // recorded for the send would claim the composed line was
+                // submitted.
+                writeGuiPrompt(text, writeClock, sendGeneration);
+                pauseGuiSend();
             } catch (IOException ex) {
                 LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                // The partial line is dropped, but only if the recorder still
+                // holds this run's state (see discardGuiSend).
+                discardGuiSend(sendGeneration);
+                return;
             } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
+                // shutdownGuiSendQueue() interrupts the worker. The flag is
+                // not restored: the worker is about to stop, and a stale flag
+                // would make the next queued pause fail immediately.
+                // A terminal Enter may have submitted the panel line
+                // during the pause. That submission is real and the
+                // completion below will not run for it, so it must become
+                // evidence before the recorder is cleared.
+                discardGuiSend(sendGeneration);
+                return;
             }
-        }, "pty-send-prompt");
-        t.setDaemon(true);
-        t.start();
+            if (!isProcessGenerationCurrent(sendGeneration)) {
+                // The tab was restarted after the text had already been
+                // written: this Enter would submit it to the replacement
+                // process's line instead of closing the old one. The
+                // recorder now belongs to the new run, so it is not reset
+                // here either.
+                LOG.fine("sendPrompt Enter dropped: the session was restarted");
+                return;
+            }
+            completeGuiSend(enterClock, sendGeneration);
+        }
+    }
+
+    /**
+     * Pauses between a panel send's text and its Enter. Overridable in tests
+     * to hold a send open.
+     */
+    void pauseGuiSend() throws InterruptedException {
+        Thread.sleep(200);
+    }
+
+    /**
+     * Records a prompt sent from the prompt panel and writes its text to the
+     * PTY as one step, atomic with respect to terminal input (see
+     * {@link #reconcileGuiSend(String, long)}).
+     *
+     * <p>The submission time is sampled inside the lock: a terminal submission
+     * that completed just before must not be timed after the GUI prompt, or
+     * the evidence lookup would skip the GUI prompt for being older than the
+     * terminal input.
+     *
+     * <p>Only the panel text is written: the terminal's own draft is still in
+     * the TUI's input line, so it is already part of the line the Enter
+     * submits. Writing the composed line would duplicate it.
+     *
+     * <p>The connector is bound to {@code sendGeneration} before the recorder
+     * lock is taken: a restart that replaces the PTY while this write waits
+     * for the lock must not deliver the text to the replacement process's
+     * line. The bound connector may be the old one or {@code null}; either way
+     * the accepted process — not the current one — is the target.
+     *
+     * @param text       prompt sent from the prompt panel
+     * @param clock      submission-time source
+     * @param sendGeneration process generation the send was accepted for
+     */
+    private void writeGuiPrompt(String text, java.util.function.LongSupplier clock,
+                                long sendGeneration) throws IOException {
+        PtyTtyConnector target = ptyConnectorFor(sendGeneration);
+        synchronized (terminalInputLine) {
+            if (!recorderBelongsTo(sendGeneration)) {
+                // The restart happened while this sender waited for the lock:
+                // the recorder now describes the replacement's line, and
+                // reconciling here would clear its draft for a prompt it never
+                // received. The bound connector keeps the text out of it too.
+                LOG.fine("sendPrompt write dropped: the recorder was replaced");
+                return;
+            }
+            reconcileGuiSend(text, clock.getAsLong());
+            retireMenuAnsweredByGuiText(text);
+            writePty(text, target);
+        }
+    }
+
+    /**
+     * Retires a numbered menu the panel text answers on its own: a single
+     * digit written into an ordinary numbered menu selects that item at once —
+     * the answer protocol sends such digits without Enter (see
+     * {@link #writePtyAnswer(String)}) — so the menu is gone before the delayed
+     * Enter. Leaving the stale model entry in place would make it swallow a
+     * prompt typed during the pause as one more menu answer, and the search
+     * text of a menu that is no longer open is not prompt evidence. Call while
+     * holding the {@link #terminalInputLine} lock.
+     *
+     * @param text panel text just written to the PTY
+     */
+    private void retireMenuAnsweredByGuiText(String text) {
+        if (text == null || text.length() != 1) return;
+        char digit = text.charAt(0);
+        if (digit < '0' || digit > '9') return;
+        ChoiceMenuModel menu = openChoiceMenu();
+        if (menu == null || !digitSelectionDismissesMenu(menu, digit)) {
+            int activated = menu != null ? activatedTextEditor(menu, digit) : -1;
+            if (activated >= 0) {
+                // The sent digit activated the menu's text editor: the digits
+                // that follow are its text until the poll confirms the focus.
+                trackMenuFocus(menu, activated);
+            }
+            return;
+        }
+        completeTerminalMenu(menu);
+        terminalGuiTextAnsweredMenu = true;
+        if (isConversationPicker(menu)) {
+            // Picking an entry changes the conversation, and the digit says
+            // nothing about which one was picked.
+            confirmPickerSwitch();
+            conversationSwitchAt = System.currentTimeMillis();
+        }
+    }
+
+    /**
+     * Records a prompt sent from the prompt panel as the evidence the identity
+     * scan matches, composing it with a draft still open in the terminal.
+     *
+     * <p>The plugin writes the prompt at the TUI's cursor, so a draft typed
+     * there is part of the line the conversation receives. The composed line is
+     * kept as pending evidence — published only by {@link #completeGuiSend()},
+     * once its Enter is written — and the terminal line is forgotten: the
+     * panel's submission consumed it, so it must not prefix the next line typed
+     * in the terminal either.
+     *
+     * @param text   prompt sent from the prompt panel
+     * @param sentAt submission time
+     * @return the line the conversation receives
+     */
+    private String reconcileGuiSend(String text, long sentAt) {
+        String submitted;
+        boolean isTextExact;
+        synchronized (terminalInputLine) {
+            if (terminalInputEscape == 1 && terminalEscapeOnMenu) {
+                // A standalone Esc cancelled the picker and nothing has been
+                // typed since to consume it: the GUI send is the next input,
+                // and the picker's search text must not become part of the
+                // submitted line.
+                if (terminalEscapeOnPicker) {
+                    // The cancelled menu was the /resume picker, so the
+                    // conversation never switched: the evidence the command
+                    // replaced has to come back, or the stop skips the rename.
+                    restorePickerSwitch();
+                }
+                discardPickerSearchText();
+                terminalInputEscape = 0;
+            }
+            String draft = terminalInputLine.toString();
+            int cursor = Math.min(terminalInputCursor, draft.length());
+            submitted = draft.substring(0, cursor) + text + draft.substring(cursor);
+            // A history recall or a Tab completion leaves only a part of the
+            // line in the recorder: composing it would publish text the
+            // conversation never received, and the exact-match search would
+            // miss the real prompt.
+            isTextExact = !terminalHistoryRecall && !terminalCompletionEdited;
+            // Reset under the same lock: a raw terminal write interleaved
+            // between the snapshot and the reset would reach the TUI after
+            // `submitted` was computed, yet its recording would be deleted,
+            // leaving evidence that omits characters the conversation got.
+            // The dismissed-menu marker survives: a picker cancelled right
+            // before the send must not come back through the stale model entry.
+            resetTerminalInputRecording(true);
+            // The panel text stays on the TUI's input line until
+            // completeGuiSend() sends its Enter. Until then a terminal Enter
+            // submits that text together with the keys typed here, so the
+            // terminal parser's line is only a part of the prompt.
+            guiSendAwaitingEnter = true;
+            // Nothing becomes own-session evidence before the Enter is written,
+            // whatever the accuracy of the text: the process has submitted
+            // nothing yet, and an identity scan running during the pause could
+            // adopt an unrelated conversation's file — by matching the same
+            // prompt, or, for a partial line, by time alone. The whole line is
+            // kept here and published by completeGuiSend().
+            pendingGuiPromptText = submitted;
+            pendingGuiPromptAt = sentAt;
+            pendingGuiPromptExact = isTextExact;
+            pendingGuiPromptSet = true;
+            // A TUI command is not a prompt written to the current
+            // conversation: /resume and /clear can switch it, and these
+            // writes are made by the plugin, so no terminal input marks
+            // the switch. The line the process submits is the composed one,
+            // so a command split across a terminal draft and the panel text
+            // counts; a recalled draft makes the composition inexact, and
+            // then only the panel text is trusted. The switch itself stays
+            // pending until the Enter is written: the line can still be
+            // edited away during the pause.
+            pendingGuiPromptSwitch = isConversationCommand(isTextExact ? submitted : text);
+            // /clear switches at once, but a submitted /resume only opens the
+            // picker: its switch waits for a selection, which can be cancelled.
+            pendingGuiPromptResume = isResumeCommand(isTextExact ? submitted : text);
+        }
+        return submitted;
+    }
+
+    /**
+     * Publishes the pending prompt evidence of a send whose line a terminal
+     * Enter already submitted, then clears the recorder of the cancelled send.
+     *
+     * <p>{@link #completeGuiSend()} normally publishes that evidence, but a stop
+     * cancels the sender during its pause and that completion never runs. The
+     * conversation did receive the prompt, and the stop's identity lookup needs
+     * its text to follow it: without this evidence the submission is known only
+     * as unknown text, and a newer user record in another conversation wins the
+     * time match.
+     *
+     * <p>Only a submission recorded by the terminal Enter counts
+     * ({@link #terminalGuiSubmitAt}): an Enter that selected a choice menu never
+     * submits the panel line, and its text is the menu's answer, not a prompt.
+     * Whether keys typed after that Enter are a new, unsubmitted draft does not
+     * matter: they start a new line, so the text submitted remains exact
+     * ({@link #terminalGuiLineEdited} only captures edits made before it).
+     *
+     * <p>Publication and the reset share one critical section: input arriving
+     * in between would be cleared as if it belonged to the cancelled send. The
+     * accepted generation is rechecked inside it for the same reason: a stop
+     * may replace the process while this sender waits for the interrupt to be
+     * delivered, and the recorder then belongs to the replacement, whose draft
+     * must survive.
+     *
+     * @param generation the process generation the cancelled send was accepted for
+     */
+    private void discardGuiSend(long generation) {
+        synchronized (terminalInputLine) {
+            if (!recorderBelongsTo(generation)) {
+                LOG.fine("sendPrompt cleanup dropped: the recorder was replaced");
+                return;
+            }
+            long submittedAt = terminalGuiSubmitAt;
+            // Sampled before the submission publishes its own evidence: a
+            // /resume only opens the picker, and the evidence it replaced is
+            // what a cancelled picker has to put back.
+            long switchBeforeSend = conversationSwitchAt;
+            long promptBeforeSend = promptSubmittedAt;
+            long externalBeforeSend = externalInputAt;
+            String textBeforeSend = lastPromptText;
+            if (submittedAt != 0L && !terminalGuiLineEdited && pendingGuiPromptSet
+                    && promptSubmittedAt <= submittedAt) {
+                // The line the panel text was written to was submitted by that
+                // Enter and nothing edited it: the text is exact evidence. Keys
+                // typed before it made the line unknown, and a later terminal
+                // submission already recorded its own evidence; both are left
+                // in place.
+                rememberSentPrompt(pendingGuiPromptText, submittedAt, pendingGuiPromptExact);
+                if (pendingGuiPromptSwitch) {
+                    // The command's line was submitted untouched, so it switched.
+                    if (pendingGuiPromptResume) {
+                        // A submitted /resume only opens the picker: keep the
+                        // evidence of the conversation it may fail to leave.
+                        armPickerSwitch(switchBeforeSend, promptBeforeSend,
+                                externalBeforeSend, textBeforeSend);
+                    }
+                    conversationSwitchAt = submittedAt;
+                }
+            }
+            resetTerminalInputRecording(true);
+        }
+    }
+
+    /**
+     * Writes the Enter that submits a prompt sent from the panel and closes the
+     * terminal recording for it. The second half of {@link #sendPrompt(String)}.
+     *
+     * <p>The Enter and the reset of the recorder run under the recorder's lock,
+     * so keys typed between the prompt write and this Enter — which are part of
+     * the line the TUI submits — cannot stay behind as the draft of the next
+     * line. Any such input, even an edit that leaves the recorded line empty
+     * (Backspace, cursor keys, Tab), makes the submitted text unknown: the
+     * composed text prepared by {@link #reconcileGuiSend} no longer describes
+     * that line.
+     *
+     * <p>When the line was not edited, this is where the composed text becomes
+     * own-session evidence: publishing it while the prompt was still waiting
+     * for its Enter would let an identity scan adopt another conversation that
+     * receives the same text before this process has submitted anything. The
+     * same holds for a line whose text is only partially known (a history
+     * recall or a Tab completion): its submission time is evidence too, and
+     * before the Enter it would let the scan adopt an unrelated conversation
+     * by time alone.
+     *
+     * <p>The evidence is published in the same critical section as the Enter
+     * and the reset, so a terminal submission that arrives afterwards always
+     * sees the GUI evidence already written. Publishing after releasing the
+     * lock could overwrite a newer terminal prompt with the older panel one
+     * while leaving the later external-input time in place, which would make
+     * the scan skip both prompt-evidence branches.
+     *
+     * <p>A terminal Enter pressed during that pause submits the line first, and
+     * this Enter then submits an empty one. The evidence of the first
+     * submission is kept as it is — its time is never later than the record
+     * the child wrote for it, and the panel text is still exact when the line
+     * was not edited. A draft typed after that Enter starts a new line, and
+     * this Enter submits it: the draft is recorded — with this Enter's time —
+     * instead of being dropped as a no-op.
+     *
+     * <p>The cutoff is the time of the Enter that actually submits the line —
+     * this one, or the terminal Enter that submitted it during the pause — not
+     * the text-write time: a record written during the pause by an unrelated
+     * conversation could otherwise qualify as this submission before the real
+     * one has been flushed.
+     */
+    void completeGuiSend() {
+        completeGuiSend(System::currentTimeMillis, currentProcessGeneration());
+    }
+
+    /**
+     * {@link #completeGuiSend()} with a controllable clock, used by tests to
+     * pin the submission cutoff.
+     */
+    void completeGuiSend(java.util.function.LongSupplier clock) {
+        completeGuiSend(clock, currentProcessGeneration());
+    }
+
+    /**
+     * {@link #completeGuiSend(java.util.function.LongSupplier)} bound to the
+     * process the send was accepted for.
+     *
+     * <p>The connector is captured before the recorder's lock is taken: a
+     * restart can replace the process while this sender waits for that lock,
+     * and the Enter must then go to the accepted process or nowhere — writing
+     * through whatever connector is current would submit the replacement
+     * TUI's line. The captured connector either accepts the bytes or fails
+     * once closed, and the interrupted pause of the cancelled queue keeps a
+     * stale sender from getting here at all.
+     *
+     * @param clock      submission-time clock
+     * @param generation the process generation the send was accepted for
+     */
+    void completeGuiSend(java.util.function.LongSupplier clock, long generation) {
+        PtyTtyConnector target = ptyConnectorFor(generation);
+        if (!isProcessGenerationCurrent(generation)) {
+            // The accepted process is stopped or replaced: its TUI is gone and
+            // the recorder already belongs to its successor, so neither an
+            // Enter nor an evidence reset made here would describe anything.
+            LOG.fine("completeGuiSend dropped: the process was replaced");
+            return;
+        }
+        boolean schedule;
+        synchronized (terminalInputLine) {
+            if (!recorderBelongsTo(generation)) {
+                // The restart happened while this sender waited for the lock:
+                // the recorder belongs to the replacement run, so this Enter
+                // and the recorder reset would describe a line it never
+                // submitted. The bound connector keeps the Enter away as well.
+                LOG.fine("completeGuiSend dropped: the recorder was replaced");
+                return;
+            }
+            // Sampled before the Enter is forwarded: the child may append the
+            // submitted prompt to its session file as soon as it reads the
+            // bytes, and a record written then must still pass the submission
+            // cutoff used by the evidence lookup.
+            long submittedAt = clock.getAsLong();
+            // A standalone Esc typed during the pause cancelled the choice menu
+            // the panel text was written into, and nothing has followed it to
+            // consume the cancellation: the model still reports the menu until
+            // the next poll. Consume it here, or this Enter is classified as a
+            // selection of that menu — and for the /resume picker that marks a
+            // conversation switch the Enter never made.
+            boolean cancelledPicker = terminalInputEscape == 1 && terminalEscapeOnMenu;
+            if (cancelledPicker) {
+                if (terminalEscapeOnPicker) {
+                    // The cancelled menu was the /resume picker: the conversation
+                    // never switched, so the evidence the command replaced comes
+                    // back before this Enter continues on the fresh line.
+                    restorePickerSwitch();
+                }
+                discardPickerSearchText();
+                terminalInputEscape = 0;
+            }
+            ChoiceMenuModel openMenu = openChoiceMenu();
+            if (openMenu != null) {
+                // A choice menu is open on the screen (with the menu hidden,
+                // the prompt panel stays usable): the panel text went into
+                // its search field or answered it, and this Enter selects an
+                // item instead of submitting a prompt. The search filter is
+                // not something the conversation receives, so it must not
+                // become prompt evidence — and the stale model entry must
+                // not classify the input that follows as another menu
+                // answer, or the next real prompt is swallowed.
+                try {
+                    writePty("\r", target);
+                } catch (IOException ex) {
+                    LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                    resetTerminalInputRecording(true);
+                    return;
+                }
+                if (!isCheckboxMenu(openMenu)) {
+                    // A numbered picker closes on its selection Enter (a
+                    // checkbox menu only toggles and stays open until Right).
+                    completeTerminalMenu(openMenu);
+                }
+                if (isConversationPicker(openMenu)) {
+                    // Picking an entry changes the conversation, and the
+                    // search filter says nothing about which one was picked:
+                    // the next submission has to follow the switch.
+                    confirmPickerSwitch();
+                    conversationSwitchAt = submittedAt;
+                }
+                resetTerminalInputRecording(true);
+                return;
+            }
+            if (terminalMenuConsumedGuiSend || terminalGuiTextAnsweredMenu
+                    || cancelledPicker) {
+                // A terminal Enter already answered the choice menu this
+                // panel text was typed into, the panel text answered it on its
+                // own, or a terminal Esc cancelled it, so the menu is gone and
+                // this Enter submits whatever the user typed on the fresh line
+                // afterwards. The panel text itself was the menu's search
+                // filter or answer and must not become evidence; the switch of
+                // a picker was recorded by that Enter or by the write.
+                String draftLine = terminalInputLine.toString().trim();
+                boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
+                try {
+                    writePty("\r", target);
+                } catch (IOException ex) {
+                    LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                    resetTerminalInputRecording(true);
+                    return;
+                }
+                resetTerminalInputRecording(true);
+                if (!draftLine.isEmpty() || !draftExact) {
+                    // The menu is gone, so this Enter submits the draft on the
+                    // fresh line — whether it was typed after a terminal Enter
+                    // that answered the menu or after a digit the panel sent.
+                    rememberSentPrompt(draftLine, submittedAt, draftExact);
+                }
+                return;
+            }
+            // Sampled before the submission below publishes the command's own
+            // evidence: a submitted /resume only opens the picker, and the
+            // evidence it replaced is what a cancelled picker has to put back.
+            long switchBeforeSend = conversationSwitchAt;
+            long promptBeforeSend = promptSubmittedAt;
+            long externalBeforeSend = externalInputAt;
+            String textBeforeSend = lastPromptText;
+            try {
+                writePty("\r", target);
+            } catch (IOException ex) {
+                LOG.warning("sendPrompt write failed: " + ex.getMessage());
+                resetTerminalInputRecording(true);
+                return;
+            }
+            boolean edited = terminalInputSinceGuiSend;
+            boolean alreadySubmitted = terminalEnterSinceGuiSend;
+            boolean draftAfterEnter = terminalDraftAfterEnter;
+            long guiSubmitAt = terminalGuiSubmitAt;
+            boolean guiLineEdited = terminalGuiLineEdited;
+            String draftLine = terminalInputLine.toString().trim();
+            boolean draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
+            String pendingText = pendingGuiPromptText;
+            long pendingAt = pendingGuiPromptAt;
+            boolean pendingExact = pendingGuiPromptExact;
+            boolean pendingSet = pendingGuiPromptSet;
+            boolean pendingSwitch = pendingGuiPromptSwitch;
+            boolean pendingResume = pendingGuiPromptResume;
+            boolean switched = false;
+            resetTerminalInputRecording(true);
+            if (alreadySubmitted && draftAfterEnter
+                    && (!draftLine.isEmpty() || !draftExact)) {
+                // A new line was started after the terminal Enter that
+                // submitted the panel text, and this Enter submits it. The
+                // recorded text is the whole line when anything was typed
+                // after that Enter (it cleared the recorder); a line recalled
+                // from the history or completed by Tab leaves no recorded
+                // text, yet it is submitted all the same, as unknown text.
+                rememberSentPrompt(draftLine, submittedAt, draftExact);
+                schedule = false;
+            } else if (alreadySubmitted && draftAfterEnter && pendingSet
+                    && promptSubmittedAt <= pendingAt) {
+                // The draft typed after the terminal Enter was deleted again,
+                // so this Enter submits nothing: the line submitted by that
+                // Enter is the pending one — the panel text, or the composed
+                // line when the text was only partially known. A newer
+                // submission recorded meanwhile (a draft submitted from the
+                // terminal) is left in place. The panel line itself was not
+                // edited before that Enter, so a switch command it carried
+                // did switch.
+                rememberSentPrompt(pendingText,
+                        guiSubmitAt != 0L ? guiSubmitAt : pendingAt, pendingExact);
+                switched = pendingSwitch && !guiLineEdited;
+                schedule = false;
+            } else if (alreadySubmitted) {
+                // The terminal's own Enter submitted the line before the
+                // panel's Enter reached the TUI, and no new line was started
+                // since. That submission keeps its own time — re-timing it at
+                // the no-op Enter would put the cutoff after the user record
+                // the child already wrote. Text typed before that Enter is
+                // only a part of the submitted line (the panel text is not
+                // recorded), so the terminal path recorded the submission as
+                // unknown-text and this Enter must not replace it with a
+                // wider one. When the terminal path recorded nothing — the
+                // reconciliation reset the recall/completion flags, so the
+                // line it saw was empty — the pending submission is published
+                // here instead, unknown-text or not.
+                boolean laterSubmission = guiSubmitAt != 0L
+                        && promptSubmittedAt > guiSubmitAt;
+                if (laterSubmission) {
+                    // A line typed after that Enter was submitted from the
+                    // terminal itself before this Enter arrived: its text is
+                    // fully recorded (the terminal Enter cleared the recorder)
+                    // and it describes the newest submission. This Enter now
+                    // submits an empty line, so that evidence must be kept
+                    // instead of being cleared as an edit of the panel line.
+                    // The scan was scheduled when that submission was seen.
+                } else if (edited) {
+                    lastPromptText = null;
+                } else if (pendingSet) {
+                    rememberSentPrompt(pendingText,
+                            guiSubmitAt != 0L ? guiSubmitAt : pendingAt, pendingExact);
+                }
+                // The switch command was submitted only if nothing edited the
+                // line before that Enter and no later submission replaced it.
+                switched = pendingSwitch && !guiLineEdited && !edited && !laterSubmission;
+                schedule = true;
+            } else if (edited) {
+                // Keys arrived while the panel text was being submitted: their
+                // position relative to the panel text is not known, so only
+                // the file times and user records can identify the
+                // conversation the line went to.
+                lastPromptText = null;
+                promptSubmittedAt = submittedAt;
+                schedule = true;
+            } else if (pendingSet) {
+                // The Enter has now submitted the line the reconciliation
+                // composed, so this Enter's time is its cutoff. The send time
+                // would reach back into the pause, where an unrelated
+                // conversation may have received a human record — the text
+                // match for exact evidence is not enough to tell them apart.
+                rememberSentPrompt(pendingText, submittedAt, pendingExact);
+                switched = pendingSwitch;
+                schedule = false;
+            } else {
+                schedule = false;
+            }
+            if (switched) {
+                // The command was submitted, so the conversation did switch:
+                // the next submission has to follow it rather than the launch
+                // conversation. The switch time is the submitting Enter's, not
+                // the text-write time, which would reach back into the pause.
+                if (pendingResume) {
+                    // A submitted /resume only opened the picker: the evidence
+                    // of the conversation it may fail to leave is kept until an
+                    // entry is picked or the admission is cancelled.
+                    armPickerSwitch(switchBeforeSend, promptBeforeSend,
+                            externalBeforeSend, textBeforeSend);
+                }
+                conversationSwitchAt = guiSubmitAt != 0L ? guiSubmitAt : submittedAt;
+            }
+        }
+        if (schedule) {
+            scheduleIdentityRefresh();
+        }
+    }
+
+    /**
+     * Records a prompt sent from the plugin as the evidence the identity scan
+     * matches: its text and the submission time.
+     *
+     * <p>Blank text is not a prompt of this tab. The GUI still permits sending
+     * it (a lone Enter), but recording it would turn the submission into an
+     * unknown-text one: with no text of ours in this tab's file, a sibling's
+     * newer prompt would then win the shared search. The previous evidence is
+     * kept instead.
+     */
+    private void rememberSentPrompt(String text, long sentAt) {
+        rememberSentPrompt(text, sentAt, true);
+    }
+
+    /**
+     * Records a prompt sent from the plugin as the evidence the identity scan
+     * matches, or, when only a part of its line is known, as a submission of
+     * unknown text.
+     *
+     * @param text        the prompt text, or the part of it that is known
+     * @param sentAt      submission time
+     * @param isTextExact {@code false} when {@code text} is only a part of the
+     *                    submitted line (a history recall or a Tab completion)
+     */
+    private void rememberSentPrompt(String text, long sentAt, boolean isTextExact) {
+        if (!isTextExact) {
+            // The recorder saw only a part of the line: publishing it as the
+            // prompt would make the exact-match search look for text the
+            // conversation never received. The submission is unknown-text
+            // instead, so the file times and the user records decide.
+            lastPromptText = null;
+            promptSubmittedAt = sentAt;
+            scheduleIdentityRefresh();
+        } else if (!text.isBlank()) {
+            lastPromptText = text;
+            promptSubmittedAt = sentAt;
+            scheduleIdentityRefresh();
+        }
+    }
+
+    /**
+     * Returns {@code true} when the prompt-panel text is a TUI command that
+     * changes the conversation the process writes rather than a message in it.
+     *
+     * @param text text submitted from the prompt panel
+     */
+    private static boolean isConversationCommand(String text) {
+        String command = text.stripLeading();
+        return command.startsWith("/resume") || command.startsWith("/clear");
+    }
+
+    /**
+     * Returns {@code true} when {@code text} is the {@code /resume} command,
+     * the only conversation command whose switch only happens once an entry is
+     * picked: its picker can still be cancelled, leaving the conversation where
+     * it was.
+     *
+     * @param text text submitted from the prompt panel or from the terminal
+     */
+    private static boolean isResumeCommand(String text) {
+        return text != null && text.stripLeading().startsWith("/resume");
+    }
+
+    /**
+     * Arms the switch a submitted {@code /resume} is about to record: the
+     * evidence it replaces is kept until the picker confirms a conversation
+     * ({@link #confirmPickerSwitch()}) or the admission is cancelled
+     * ({@link #restorePickerSwitch()}). The first arm wins — a command
+     * submitted while an earlier admission is still pending did not switch
+     * anything either, so the snapshot must keep reaching back to before both.
+     * Call while holding the {@link #terminalInputLine} lock, before setting
+     * {@link #conversationSwitchAt}.
+     */
+    private void armPickerSwitch() {
+        armPickerSwitch(conversationSwitchAt, promptSubmittedAt, externalInputAt,
+                lastPromptText);
+    }
+
+    /**
+     * {@link #armPickerSwitch()} with a snapshot taken before the submission
+     * that recorded the switch replaced it.
+     */
+    private void armPickerSwitch(long switchAt, long promptAt, long externalAt, String text) {
+        if (pickerSwitchPending) return;
+        pickerSwitchPending = true;
+        switchBeforePicker = switchAt;
+        promptBeforePicker = promptAt;
+        externalBeforePicker = externalAt;
+        textBeforePicker = text;
+    }
+
+    /**
+     * Disarms the pending switch: an entry was picked, so the conversation did
+     * change. Call while holding the {@link #terminalInputLine} lock.
+     */
+    private void confirmPickerSwitch() {
+        pickerSwitchPending = false;
+    }
+
+    /**
+     * Puts back the evidence a cancelled {@code /resume} replaced: the picker
+     * was dismissed without a selection, so the process still writes the
+     * conversation it wrote before the command. Idempotent. Call while holding
+     * the {@link #terminalInputLine} lock.
+     */
+    private void restorePickerSwitch() {
+        if (!pickerSwitchPending) return;
+        pickerSwitchPending = false;
+        conversationSwitchAt = switchBeforePicker;
+        promptSubmittedAt = promptBeforePicker;
+        externalInputAt = externalBeforePicker;
+        lastPromptText = textBeforePicker;
+    }
+
+    /**
+     * Returns {@code true} when {@code menu} is the session picker opened by
+     * {@code /resume}. Selecting an item there changes the conversation the
+     * process writes; other menus (permission prompts, the trust-folder
+     * confirmation, model pickers) only answer a question in the current
+     * conversation and must not lift its prompt evidence.
+     *
+     * @param menu menu the input is answering, or {@code null}
+     */
+    static boolean isConversationPicker(ChoiceMenuModel menu) {
+        if (menu == null) return false;
+        String text = menu.text();
+        if (text == null) return false;
+        return text.stripLeading().toLowerCase(java.util.Locale.ROOT)
+                .startsWith("resume session");
+    }
+
+    /**
+     * Records that the GUI answered a choice menu. An {@code ARROW:n} answer
+     * selects an entry in an unnumbered picker; only the {@code /resume}
+     * session picker changes the conversation the process writes, so the
+     * switch is recorded only for that menu — the answer to the trust-folder
+     * confirmation or to the history picker is not a resume. The write is made
+     * by the plugin, so it leaves the terminal-input time alone.
+     *
+     * @param answer answer passed to {@link #writePtyAnswer(String)}
+     */
+    void rememberChoiceMenuAnswer(String answer) {
+        if (answer != null && answer.startsWith("ARROW:")
+                && isConversationPicker(model.getActiveChoiceMenu())) {
+            synchronized (terminalInputLine) {
+                // The picked entry is the switch the /resume was waiting for.
+                confirmPickerSwitch();
+                conversationSwitchAt = System.currentTimeMillis();
+            }
+        }
     }
 
     /**
@@ -425,6 +3854,26 @@ public class ClaudeSessionController {
      */
     public void cancelPrompt() {
         if (connector == null) return;
+        synchronized (terminalInputLine) {
+            ChoiceMenuModel menu = openChoiceMenu();
+            boolean pendingPicker = menu == null && pickerSwitchPending;
+            // Esc dismisses the choice menu on the screen: cancelling the
+            // /resume picker leaves the conversation where it was. The screen
+            // poll may not have published the picker yet, so a pending /resume
+            // admission counts as the picker just the same.
+            if (isConversationPicker(menu) || pendingPicker) {
+                restorePickerSwitch();
+            }
+            if (menu != null || pendingPicker) {
+                // The Esc sent below dismisses the menu on the screen, but this
+                // write bypasses the recorder, so the model would keep reporting
+                // it until the next poll: the next panel send's Enter would then
+                // read as an answer to it and drop the prompt evidence. The text
+                // typed into the menu's box is not a prompt draft either, so
+                // both are retired here, atomically with the cancelling write.
+                discardPickerSearchText();
+            }
+        }
         try {
             sendCancelToPty(new byte[]{0x1b});
         } catch (IOException ex) {
@@ -451,6 +3900,37 @@ public class ClaudeSessionController {
     }
 
     /**
+     * Returns whether the menu an answer was accepted from stays open in the
+     * TUI until the answer worker forwards its submitting key. Such an answer
+     * is written asynchronously — the worker pauses between its writes — and
+     * terminal input arriving meanwhile belongs to the menu, so the model entry
+     * must keep classifying it until the worker retires the menu.
+     *
+     * <p>Besides the explicit protocols ({@code TYPE:}, {@code MULTI_TYPE:},
+     * {@code MULTI:}, {@code ARROW:}), a numeric answer navigates with arrow
+     * keys before submitting when the number names an item that cannot be
+     * typed (10 and above) or when the cursor sits in a text-input option: the
+     * picker or checkbox menu only closes on the Enter those workers send.
+     */
+    private boolean answerKeepsMenuOpen(String answer) {
+        if (answer == null) return false;
+        if (answer.startsWith("TYPE:") || answer.startsWith("MULTI_TYPE:")
+                || answer.startsWith("MULTI:") || answer.startsWith("ARROW:")) {
+            return true;
+        }
+        if (!answer.matches("[0-9]+")) return false;
+        ChoiceMenuModel current = detectCurrentMenu();
+        int currentIdx = current != null ? current.defaultOptionIndex() : 0;
+        if (answer.length() == 1) {
+            boolean currentHasTextInput = current != null
+                    && currentIdx < current.options().size()
+                    && isTextInputOption(current.options().get(currentIdx));
+            return currentHasTextInput && answer.charAt(0) - '1' != currentIdx;
+        }
+        return menuCursorNumber(current) > 0;
+    }
+
+    /**
      * Writes the user's answer to the PTY.
      *
      * <p>Handles five cases:
@@ -466,6 +3946,29 @@ public class ClaudeSessionController {
      * @param answer the answer string from the choice-menu callback
      */
     public void writePtyAnswer(String answer) {
+        rememberChoiceMenuAnswer(answer);
+        // Choosing an option is the GUI consuming the picker: text typed into
+        // its search box belongs to the picker, not to the next prompt. The
+        // answered menu stays in the model until the next poll, so it is
+        // retired here with the same marker the terminal path uses — a panel
+        // send in that window must not be mistaken for another menu answer.
+        // An answer typed into the menu's editor, toggled in a checkbox menu,
+        // or picked with arrow keys — all of whose submitting keys the worker
+        // sends after a pause — is the exception: the TUI keeps the menu open
+        // until that key, and terminal input arriving in between answers the
+        // menu, so the worker retires it.
+        if (!answerKeepsMenuOpen(answer)) {
+            synchronized (terminalInputLine) {
+                ChoiceMenuModel answeredMenu = openChoiceMenu();
+                if (answer == null && isConversationPicker(answeredMenu)) {
+                    // Cancelling the /resume picker leaves the conversation
+                    // where it was: put back the evidence the command replaced.
+                    restorePickerSwitch();
+                }
+                completeTerminalMenu(answeredMenu);
+            }
+        }
+        resetTerminalInputRecording(true);
         try {
             if (answer == null) {
                 LOG.fine("[PTY write] \\x1b (Cancel/ESC)");
@@ -489,20 +3992,27 @@ public class ClaudeSessionController {
                 Thread t = new Thread(() -> {
                     try {
                         for (String digit : toggles) {
-                            connector.write(digit.strip());
+                            writePty(digit.strip());
                             Thread.sleep(100);
                         }
                         // Right arrow to submit the selection
-                        connector.write(new byte[]{0x1b, '[', 'C'});
+                        writePtyAnsweringMenu(new byte[]{0x1b, '[', 'C'});
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer MULTI write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        // The checkbox menu stays open in the TUI until the
+                        // submitting arrow above, so terminal input arriving
+                        // meanwhile is still the menu's (see the TYPE branch).
+                        synchronized (terminalInputLine) {
+                            completeTerminalMenu(openChoiceMenu());
+                        }
+                        clearActiveChoiceMenu();
                     }
                 }, "pty-multiselect");
                 t.setDaemon(true);
                 t.start();
-                clearActiveChoiceMenu();
             } else if (answer.startsWith("MULTI_TYPE:")) {
                 // Format: MULTI_TYPE:checks:typeN:text
                 // e.g. MULTI_TYPE:1,3:5:my text  or  MULTI_TYPE::5:my text
@@ -526,7 +4036,7 @@ public class ClaudeSessionController {
                                     return m != null ? m.options() : List.of();
                                 });
                         for (String digit : computeCheckboxToggles(wanted, currentOptions)) {
-                            connector.write(digit.strip());
+                            writePty(digit.strip());
                             Thread.sleep(100);
                         }
                         // 2. Re-read screen to find current ❯ position
@@ -538,27 +4048,34 @@ public class ClaudeSessionController {
                                 ? new byte[]{0x1b, '[', 'A'}
                                 : new byte[]{0x1b, '[', 'B'};
                         for (int i = 0; i < Math.abs(delta); i++) {
-                            connector.write(arrow);
+                            writePty(arrow);
                             Thread.sleep(80);
                         }
                         // 4. Type text
                         Thread.sleep(100);
-                        connector.write(typeText);
+                        writePty(typeText);
                         // 5. Move cursor off type-input field (up arrow)
                         Thread.sleep(100);
-                        connector.write(new byte[]{0x1b, '[', 'A'});
+                        writePty(new byte[]{0x1b, '[', 'A'});
                         // 6. Submit with right arrow
                         Thread.sleep(100);
-                        connector.write(new byte[]{0x1b, '[', 'C'});
+                        writePtyAnsweringMenu(new byte[]{0x1b, '[', 'C'});
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer MULTI_TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        // The menu stays open in the TUI until the submitting
+                        // arrow above, so terminal input arriving meanwhile is
+                        // still the menu's (see the TYPE branch).
+                        synchronized (terminalInputLine) {
+                            completeTerminalMenu(openChoiceMenu());
+                        }
+                        clearActiveChoiceMenu();
                     }
                 }, "pty-multitype");
                 t.setDaemon(true);
                 t.start();
-                clearActiveChoiceMenu();
             } else if (answer.startsWith("TYPE:")) {
                 int sep = answer.indexOf(':', 5);
                 String digit = answer.substring(5, sep);
@@ -578,53 +4095,98 @@ public class ClaudeSessionController {
                             int delta = targetIdx - currentIdx;
                             if (delta != 0) {
                                 byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                                int step = Integer.signum(delta);
                                 for (int i = 0; i < Math.abs(delta); i++) {
-                                    connector.write(arrow);
+                                    // The write and the focus update share the
+                                    // recorder's lock: input classified between
+                                    // them would still see the old option.
+                                    synchronized (terminalInputLine) {
+                                        writePty(arrow);
+                                        // The TUI cursor is on the next option now:
+                                        // terminal input arriving during the pause
+                                        // belongs to that option, not to the one the
+                                        // last poll reported.
+                                        trackForwardedMenuFocus(current, currentIdx + (i + 1) * step);
+                                    }
                                     Thread.sleep(80);
                                 }
                                 Thread.sleep(100);
                             }
-                            connector.write(text);
+                            writePty(text);
                             Thread.sleep(200);
-                            connector.write("\r");
+                            writePtyAnsweringMenu("\r");
                         } else {
-                            connector.write(digit);
+                            synchronized (terminalInputLine) {
+                                writePty(digit);
+                                // The digit activates the type-input option: its
+                                // editor holds the cursor, so a digit typed during
+                                // the pause is text for it, not a selection of
+                                // another item (see digitSelectionDismissesMenu).
+                                trackForwardedMenuFocus(current, targetIdx);
+                            }
                             Thread.sleep(200);
-                            connector.write(text);
+                            writePty(text);
                             Thread.sleep(200);
-                            connector.write("\r");
+                            writePtyAnsweringMenu("\r");
                         }
                     } catch (IOException ex) {
                         LOG.warning("writePtyAnswer TYPE write failed: " + ex.getMessage());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        // The menu is still open in the TUI until the Enter above
+                        // reaches it, and terminal input arriving meanwhile (a
+                        // typed answer submitted with Enter) is the menu's, not a
+                        // prompt: the context must stay until the answer is
+                        // actually forwarded.
+                        synchronized (terminalInputLine) {
+                            completeTerminalMenu(openChoiceMenu());
+                        }
+                        clearActiveChoiceMenu();
                     }
                 }, "pty-typeinput");
                 t.setDaemon(true);
                 t.start();
-                clearActiveChoiceMenu();
             } else if (answer.startsWith("ARROW:")) {
                 int targetIdx = Integer.parseInt(answer.substring(6));
                 ChoiceMenuModel current = model.getActiveChoiceMenu();
                 int currentIdx = current != null ? current.defaultOptionIndex() : 0;
                 int delta = targetIdx - currentIdx;
                 LOG.fine("[PTY write] ARROW targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
-                clearActiveChoiceMenu();
                 if (delta == 0) {
-                    connector.write("\r");
+                    // The picker closes on that Enter: until then its entry
+                    // stays the context for terminal input (see the TYPE
+                    // branch), and it is retired together with the Enter.
+                    writePtyAnsweringMenu("\r");
+                    clearActiveChoiceMenu();
                 } else {
                     byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                    int step = Integer.signum(delta);
                     Thread t = new Thread(() -> {
                         try {
                             for (int idx = 0; idx < Math.abs(delta); idx++) {
-                                connector.write(arrow);
+                                // The write and the focus update share the
+                                // recorder's lock: input classified between them
+                                // would still see the old option.
+                                synchronized (terminalInputLine) {
+                                    writePty(arrow);
+                                    trackForwardedMenuFocus(current, currentIdx + (idx + 1) * step);
+                                }
                                 Thread.sleep(80);
                             }
-                            connector.write("\r");
+                            writePtyAnsweringMenu("\r");
                         } catch (IOException ex) {
                             LOG.warning("writePtyAnswer ARROW write failed: " + ex.getMessage());
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
+                        } finally {
+                            // The picker stays open in the TUI until the
+                            // submitting Enter above, so terminal input
+                            // arriving meanwhile is still the menu's.
+                            synchronized (terminalInputLine) {
+                                completeTerminalMenu(openChoiceMenu());
+                            }
+                            clearActiveChoiceMenu();
                         }
                     }, "pty-arrow-select");
                     t.setDaemon(true);
@@ -643,22 +4205,41 @@ public class ClaudeSessionController {
                     int currentIdx = currentIdx2;
                     int delta = targetIdx - currentIdx;
                     LOG.fine("[PTY write] ARROW-digit targetIdx=" + targetIdx + " currentIdx=" + currentIdx + " delta=" + delta);
-                    clearActiveChoiceMenu();
                     if (delta == 0) {
-                        connector.write("\r");
+                        writePtyAnsweringMenu("\r");
+                        clearActiveChoiceMenu();
                     } else {
                         byte[] arrow = delta < 0 ? new byte[]{0x1b, '[', 'A'} : new byte[]{0x1b, '[', 'B'};
+                        int step = Integer.signum(delta);
                         Thread t = new Thread(() -> {
                             try {
                                 for (int i = 0; i < Math.abs(delta); i++) {
-                                    connector.write(arrow);
+                                    // The write and the focus update share the
+                                    // recorder's lock. The arrows leave the
+                                    // text-input option, where a digit was text
+                                    // for its editor: without the update the
+                                    // recorder would swallow the digit that
+                                    // selects an ordinary option as more editor
+                                    // text, and the prompt after it with it.
+                                    synchronized (terminalInputLine) {
+                                        writePty(arrow);
+                                        trackForwardedMenuFocus(current, currentIdx + (i + 1) * step);
+                                    }
                                     Thread.sleep(80);
                                 }
-                                connector.write("\r");
+                                writePtyAnsweringMenu("\r");
                             } catch (IOException ex) {
                                 LOG.warning("writePtyAnswer ARROW-digit write failed: " + ex.getMessage());
                             } catch (InterruptedException ie) {
                                 Thread.currentThread().interrupt();
+                            } finally {
+                                // The type-input option keeps the menu open
+                                // until the submitting Enter above, so terminal
+                                // input arriving meanwhile is still the menu's.
+                                synchronized (terminalInputLine) {
+                                    completeTerminalMenu(openChoiceMenu());
+                                }
+                                clearActiveChoiceMenu();
                             }
                         }, "pty-arrow-digit");
                         t.setDaemon(true);
@@ -669,13 +4250,12 @@ public class ClaudeSessionController {
                     // cursor onto the item with arrow keys, then Enter.
                     int delta = Integer.parseInt(answer) - menuCursorNumber(current);
                     LOG.fine("[PTY write] ARROW-number answer=" + answer + " delta=" + delta);
-                    clearActiveChoiceMenu();
                     sendArrowsThenEnter(delta, "pty-arrow-number");
                 } else {
                     boolean isMenuDigit = answer.matches("[0-9]");
                     String toWrite = isMenuDigit ? answer : answer + "\r";
                     LOG.fine("[PTY write] " + toWrite.replace("\r", "\\r").replace("\n", "\\n"));
-                    connector.write(toWrite);
+                    writePty(toWrite);
                     clearActiveChoiceMenu();
                 }
             }
@@ -697,14 +4277,22 @@ public class ClaudeSessionController {
             try {
                 byte[] arrow = delta < 0 ? PTY_ARROW_UP : PTY_ARROW_DOWN;
                 for (int i = 0; i < Math.abs(delta); i++) {
-                    connector.write(arrow);
+                    writePty(arrow);
                     Thread.sleep(80);
                 }
-                connector.write("\r");
+                writePtyAnsweringMenu("\r");
             } catch (IOException ex) {
                 LOG.warning(threadName + " write failed: " + ex.getMessage());
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
+            } finally {
+                // The menu stays open in the TUI until the submitting Enter
+                // above, so terminal input arriving meanwhile is still the
+                // menu's (see the other answer workers).
+                synchronized (terminalInputLine) {
+                    completeTerminalMenu(openChoiceMenu());
+                }
+                clearActiveChoiceMenu();
             }
         }, threadName);
         t.setDaemon(true);
@@ -764,7 +4352,7 @@ public class ClaudeSessionController {
         modeSwitchInProgress = true;
         Thread t = new Thread(() -> {
             try {
-                connector.write(new byte[]{0x1b, '[', 'Z'});
+                writePty(new byte[]{0x1b, '[', 'Z'});
                 Thread.sleep(300);
                 screenContentDetector.detectEditMode(screenLines.get())
                         .ifPresent(model::setEditMode);
@@ -971,7 +4559,7 @@ public class ClaudeSessionController {
 
     /** Package-private for testing: sends one Shift+Tab (ESC [ Z) to the PTY. */
     void sendOneShiftTab() throws IOException {
-        connector.write(new byte[]{0x1b, '[', 'Z'});
+        writePty(new byte[]{0x1b, '[', 'Z'});
     }
 
     // -------------------------------------------------------------------------
@@ -996,7 +4584,7 @@ public class ClaudeSessionController {
             String customId = customModelIds.get(index - standardModelCount);
             Thread t = new Thread(() -> {
                 try {
-                    connector.write("/model " + customId + "\r");
+                    writePtySubmittingLine("/model " + customId + "\r");
                     Thread.sleep(500);
                 } catch (IOException | InterruptedException ex) {
                     LOG.warning("model switch failed: " + ex.getMessage());
@@ -1013,7 +4601,7 @@ public class ClaudeSessionController {
                 try {
                     openModelMenu();
                     if (index < 9) {
-                        connector.write(String.valueOf(index + 1));
+                        writePty(String.valueOf(index + 1));
                     } else {
                         // Items 10+ cannot be typed: move the cursor onto the item, then Enter.
                         int cursor = waitForModelMenuCursor();
@@ -1021,13 +4609,13 @@ public class ClaudeSessionController {
                             int delta = index + 1 - cursor;
                             byte[] arrow = delta < 0 ? PTY_ARROW_UP : PTY_ARROW_DOWN;
                             for (int i = 0; i < Math.abs(delta); i++) {
-                                connector.write(arrow);
+                                writePty(arrow);
                                 Thread.sleep(80);
                             }
-                            connector.write("\r");
+                            writePty("\r");
                         } else {
                             LOG.warning("model switch: /model menu not visible, cannot select item " + (index + 1));
-                            connector.write(PTY_ESC);
+                            writePty(PTY_ESC);
                         }
                     }
                     Thread.sleep(500);
@@ -1110,9 +4698,9 @@ public class ClaudeSessionController {
                     // absorbed as a newline — retry: BackSpace to remove the blank line, then CR.
                     if (poll < 12 && isModelCommandPendingWithBlankLine(lines)) {
                         LOG.fine("[discoverModels] /model pending with blank line on poll " + (poll + 1) + ", retrying CR");
-                        connector.write(PTY_BACKSPACE);
+                        writePty(PTY_BACKSPACE);
                         Thread.sleep(200);
-                        connector.write("\r");
+                        writePty("\r");
                     }
                 }
 
@@ -1170,7 +4758,7 @@ public class ClaudeSessionController {
                     selIdx = -1;
                 }
 
-                connector.write(new byte[]{0x1b});  // Esc — dismiss model menu
+                writePty(new byte[]{0x1b});  // Esc — dismiss model menu
 
                 // If a menu entry contains "(currently" but is incomplete (truncated at terminal
                 // width), replace it with the model name extracted from the hint line above.
@@ -1236,6 +4824,11 @@ public class ClaudeSessionController {
      * </ul>
      */
     void pollScreenState() {
+        // Keep the session identity — and the cross-tab claims that follow from
+        // it — in sync with the file Claude is writing, so a conversation switch
+        // made inside the TUI is noticed by every tab. The scan enumerates the
+        // session store, so it runs on a worker instead of this (EDT) tick.
+        scheduleIdentityRefresh();
         List<String> lines = screenLines.get();
 
         // Plan name
@@ -1601,8 +5194,8 @@ public class ClaudeSessionController {
 
     private MenuEnumerator newMenuEnumerator() {
         return new MenuEnumerator(screenContentDetector, screenLines, new MenuEnumerator.Keys() {
-            @Override public void down() throws IOException { connector.write(PTY_ARROW_DOWN); }
-            @Override public void up() throws IOException { connector.write(PTY_ARROW_UP); }
+            @Override public void down() throws IOException { writePty(PTY_ARROW_DOWN); }
+            @Override public void up() throws IOException { writePty(PTY_ARROW_UP); }
         }, Thread::sleep, MENU_ENUMERATION_SETTLE_MS);
     }
 
@@ -1782,12 +5375,126 @@ public class ClaudeSessionController {
      * command in the input), wait, then \r to execute.
      */
     private void openModelMenu() throws IOException, InterruptedException {
-        connector.write("/model");
+        writePty("/model");
         Thread.sleep(200);
-        connector.write(PTY_ESC);
+        writePty(PTY_ESC);
         Thread.sleep(200);
-        connector.write("\r");
+        // The Enter submits whatever draft the TUI holds together with the
+        // command (the write lands at its cursor), so the recorded draft is
+        // consumed and must not prefix the next prompt as evidence.
+        writePtySubmittingLine("\r");
         Thread.sleep(200);
+    }
+
+    /**
+     * Writes text that the TUI submits as a line on behalf of the plugin: any
+     * draft typed in the terminal is part of that line, so the recorder forgets
+     * it with the write. The reset and the write share the recorder's lock, so
+     * input arriving at the same moment is neither lost nor mistaken for a
+     * prefix of the next prompt.
+     *
+     * @param text the command line to submit
+     * @throws IOException if the write fails
+     */
+    private void writePtySubmittingLine(String text) throws IOException {
+        synchronized (terminalInputLine) {
+            resetTerminalInputRecording(true);
+            writePty(text);
+        }
+    }
+
+    /**
+     * Writes the key that answers a choice menu, retires that menu and drops
+     * the line recorded while it was open, all inside the recorder's lock. The
+     * write alone is not enough: between it and the retirement a terminal
+     * writer waiting for the lock could classify the prompt typed right after
+     * the key against the menu the TUI already dismissed, and swallow it as
+     * another menu answer. The line typed into the menu — its search filter or
+     * a text option's answer — is the menu's, not a draft of the next prompt:
+     * keeping it would prefix that prompt's evidence with it.
+     *
+     * <p>The Enter is the exception when terminal input already answered the
+     * menu during the worker's pause: the TUI's input line is a fresh prompt
+     * draft by then, and this Enter submits it, so the line becomes the prompt
+     * evidence instead of being dropped.
+     */
+    private void writePtyAnsweringMenu(byte[] bytes) throws IOException {
+        boolean publishes = false;
+        synchronized (terminalInputLine) {
+            ChoiceMenuModel menu = openChoiceMenu();
+            // The answer workers pause between the arrows and this key: terminal
+            // input can answer or dismiss the menu in the meantime, and the model
+            // keeps reporting it until the next poll. This Enter then submits the
+            // ordinary line — whatever the user typed after that input — instead
+            // of answering a menu that is already gone, so its text becomes the
+            // prompt evidence the stop-time lookup follows.
+            boolean enterOnAnsweredMenu = menu == null
+                    && terminalCompletedMenu != null
+                    && bytes.length == 1 && bytes[0] == '\r';
+            String draft = null;
+            boolean draftExact = true;
+            long submittedAt = 0L;
+            if (enterOnAnsweredMenu) {
+                draft = terminalInputLine.toString().trim();
+                draftExact = !terminalHistoryRecall && !terminalCompletionEdited;
+                submittedAt = System.currentTimeMillis();
+            }
+            writePty(bytes);
+            if (!enterOnAnsweredMenu) {
+                discardPickerSearchText();
+            } else {
+                // The line is submitted: it must not prefix the next one, and a
+                // delayed panel Enter is no longer its submission.
+                resetTerminalInputRecording(true);
+                // The evidence is published inside this critical section: a
+                // terminal writer that takes the lock next would otherwise
+                // submit a newer prompt first and be overwritten here with this
+                // older draft, while its later input cutoff stayed — leaving
+                // both prompt-evidence branches stale. The scan itself is
+                // queued below, outside the lock.
+                if (draftExact && isConversationCommand(draft)) {
+                    // /resume and /clear switch the conversation instead of
+                    // writing into it, so their text is no file's prompt; only
+                    // the /resume picker can still be cancelled.
+                    if (isResumeCommand(draft)) {
+                        armPickerSwitch();
+                    }
+                    conversationSwitchAt = submittedAt;
+                    lastPromptText = null;
+                    promptSubmittedAt = submittedAt;
+                    publishes = true;
+                } else if (!draftExact) {
+                    publishes = publishPromptEvidence(null, submittedAt);
+                } else if (!draft.isBlank()) {
+                    publishes = publishPromptEvidence(draft, submittedAt);
+                }
+            }
+        }
+        if (publishes) {
+            scheduleIdentityRefresh();
+        }
+    }
+
+    /**
+     * Publishes the evidence of a submission the recorder observed, unless
+     * newer evidence is already recorded: a writer that submitted after this
+     * one must keep its text and time. Call while holding the
+     * {@link #terminalInputLine} lock.
+     *
+     * @param text  the submitted text, or {@code null} when it is unknown
+     * @param sentAt submission time
+     * @return {@code true} when the evidence was written
+     */
+    private boolean publishPromptEvidence(String text, long sentAt) {
+        if (sentAt < promptSubmittedAt) return false;
+        lastPromptText = text;
+        promptSubmittedAt = sentAt;
+        return true;
+    }
+
+    /** @see #writePtyAnsweringMenu(byte[]) */
+    private void writePtyAnsweringMenu(String text) throws IOException {
+        writePtyAnsweringMenu(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /**
@@ -1795,8 +5502,697 @@ public class ClaudeSessionController {
      * {@link SessionLifecycle#READY}.
      */
     private void sendCancelToPty(byte[] bytes) throws IOException {
-        connector.write(bytes);
+        writePty(bytes);
         onClaudeIdle();
+    }
+
+    /**
+     * Writes bytes to the PTY on behalf of the plugin.
+     *
+     * <p>Plugin writes are marked on the calling thread so that
+     * {@link PtyTtyConnector#setInputListener} can tell them apart from text
+     * typed directly into the terminal, which can change the conversation
+     * (e.g. an in-process {@code /resume}) and invalidates the prompt evidence
+     * captured by {@link #sendPrompt(String)}.
+     */
+    private void writePty(byte[] bytes) throws IOException {
+        writePty(bytes, connector);
+    }
+
+    /**
+     * Writes bytes to {@code target} — the PTY connector bound to the process
+     * a send was accepted for, or {@code null} — on behalf of the plugin.
+     *
+     * <p>Writing through the bound connector instead of the current field
+     * keeps a delayed write out of a replacement process's input line: the old
+     * connector either accepts the bytes (its process is the one the send was
+     * meant for) or fails with an {@link IOException} once it is closed.
+     *
+     * @param bytes  bytes to write
+     * @param target connector to write to, or {@code null} to drop the write
+     */
+    private void writePty(byte[] bytes, PtyTtyConnector target) throws IOException {
+        java.util.function.Consumer<PtyTtyConnector> targetHook = ptyTargetHook;
+        if (targetHook != null) {
+            targetHook.accept(target);
+        }
+        java.util.function.Consumer<byte[]> hook = ptyWriteHook;
+        if (hook != null) {
+            hook.accept(bytes);
+            return;
+        }
+        if (target == null) {
+            // No PTY for this send (it is still being prepared, or it was
+            // stopped or replaced): drop the write, as sendPrompt() does.
+            LOG.fine("[PTY write] dropped, no connector");
+            return;
+        }
+        boolean previous = pluginPtyWrite.get();
+        pluginPtyWrite.set(true);
+        try {
+            target.write(bytes);
+        } finally {
+            pluginPtyWrite.set(previous);
+        }
+    }
+
+    /**
+     * Package-private for tests: replaces the PTY write, so a test can make the
+     * write take time or observe when it happens. A {@code null} hook restores
+     * the real connector.
+     */
+    void simulatePtyWrite(java.util.function.Consumer<byte[]> hook) {
+        ptyWriteHook = hook;
+    }
+
+    /**
+     * Package-private for tests: runs when the PTY child is killed, so a test
+     * can release a write it made block as a hung process would.
+     */
+    void simulatePtyKill(Runnable hook) {
+        ptyKillHook = hook;
+    }
+
+    /**
+     * Package-private for tests: runs just before the stop path reads the live
+     * and preserved session claims, so a process exit can be interleaved with
+     * that snapshot.
+     */
+    void simulateClaimSnapshotHook(Runnable hook) {
+        claimSnapshotHook = hook;
+    }
+
+    /**
+     * Package-private for tests: waits until the background identity scan
+     * queued by the last prompt send has finished, so a test can decide
+     * exactly which session files that scan observes.
+     */
+    void simulateAwaitIdentityScan() {
+        long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        while (identityScanPending.get()) {
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("identity scan did not finish");
+            }
+            Thread.onSpinWait();
+        }
+    }
+
+    /**
+     * Package-private for tests: receives the PTY connector each plugin write
+     * was bound to, or {@code null} when the write was dropped. Written to
+     * before the bytes, so a test can tell the accepted process from the
+     * connector installed by a restart.
+     */
+    void simulatePtyWriteTargets(java.util.function.Consumer<PtyTtyConnector> hook) {
+        ptyTargetHook = hook;
+    }
+
+    /**
+     * Package-private for tests: attaches {@code replacement} as the current
+     * PTY connector, as a restart does once the new process is launched. The
+     * process generation is not changed: it is up to the test to simulate the
+     * restart itself.
+     */
+    void simulateConnector(PtyTtyConnector replacement) {
+        connector = replacement;
+    }
+
+    /** Writes text to the PTY on behalf of the plugin. See {@link #writePty(byte[])}. */
+    private void writePty(String text) throws IOException {
+        writePty(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Writes text to the given connector. See
+     * {@link #writePty(byte[], PtyTtyConnector)}.
+     */
+    private void writePty(String text, PtyTtyConnector target) throws IOException {
+        writePty(text.getBytes(java.nio.charset.StandardCharsets.UTF_8), target);
+    }
+
+    /**
+     * Records input typed in the terminal (called from the PTY connector, on
+     * the thread that wrote to the PTY).
+     *
+     * <p>Any such input invalidates the prompt evidence captured before it: the
+     * text may drive Claude's own {@code /resume} picker and switch the
+     * conversation. A complete line submitted with Enter is the exception — it
+     * is a prompt written to the conversation on screen, so it becomes the new
+     * evidence, which is what lets a resume driven entirely from the keyboard
+     * be followed. A resume command typed there is the other exception: it
+     * switches the conversation instead of writing to it, and so does an Enter
+     * that answers the {@code /resume} picker.
+     *
+     * @param bytes raw input bytes
+     * @param now   time of the input (epoch millis)
+     * @return the line submitted with this input, or {@code null}
+     */
+    private String onTerminalInput(byte[] bytes, long now) {
+        String submitted;
+        boolean entered;
+        boolean emptyEnter;
+        boolean recalled;
+        boolean menuSelection;
+        ChoiceMenuModel selectedMenu;
+        long externalBeforeInput;
+        synchronized (terminalInputLine) {
+            externalBeforeInput = externalInputAt;
+            terminalLineEntered = false;
+            terminalEnterOnEmptyLine = false;
+            submitted = appendTerminalInput(bytes);
+            entered = terminalLineEntered;
+            terminalLineEntered = false;
+            emptyEnter = terminalEnterOnEmptyLine;
+            terminalEnterOnEmptyLine = false;
+            recalled = terminalRecalledSubmission;
+            terminalRecalledSubmission = false;
+            menuSelection = terminalMenuSelection;
+            terminalMenuSelection = false;
+            selectedMenu = terminalSelectedMenu;
+            terminalSelectedMenu = null;
+            if (menuSelection && isConversationPicker(selectedMenu)) {
+                // Selecting an entry in the /resume picker is the switch the
+                // command was waiting for.
+                confirmPickerSwitch();
+            }
+            if (entered && menuSelection && guiSendAwaitingEnter) {
+                // The terminal answered a choice menu while the panel's text
+                // was on the line: that text was the menu's search filter or
+                // its answer, so the delayed GUI Enter must not publish it as
+                // prompt evidence.
+                terminalMenuConsumedGuiSend = true;
+            }
+            if (entered && !menuSelection && guiSendAwaitingEnter
+                    && terminalGuiSubmitAt == 0L) {
+                // An Enter during the GUI send's pause submits the line the
+                // panel text is on, whatever the recorder holds: the
+                // reconciliation reset it, so a line that came from a history
+                // recall or a Tab completion no longer shows there. That
+                // Enter is the actual submission, and its time is the evidence
+                // cutoff — the panel's delayed Enter only submits an empty
+                // line afterwards. Whether keys edited the panel line before
+                // this Enter is captured now: input after it starts a new
+                // line and also sets terminalInputSinceGuiSend.
+                terminalGuiSubmitAt = now;
+                terminalGuiLineEdited = terminalInputSinceGuiSend;
+                if (pendingGuiPromptSet && pendingGuiPromptSwitch && !terminalGuiLineEdited) {
+                    // The untouched panel line was submitted by this Enter, so a
+                    // switch command on it did switch. The fact is recorded now,
+                    // not by the panel's delayed completion: a later terminal
+                    // submission replaces the text evidence without undoing the
+                    // switch the conversation already made.
+                    if (pendingGuiPromptResume) {
+                        // A submitted /resume only opened the picker: the
+                        // evidence of the conversation it may fail to leave is
+                        // kept for a cancellation.
+                        armPickerSwitch();
+                    }
+                    conversationSwitchAt = now;
+                }
+            }
+        }
+        boolean pickedConversation = menuSelection && isConversationPicker(selectedMenu);
+        if (entered && !emptyEnter && (!menuSelection || pickedConversation)) {
+            // An ordinary menu answer only answers a question in the current
+            // conversation: it submits nothing and does not make the prompt
+            // evidence stale, so it must not move the external-input cutoff
+            // past the submission (that would drop the exact-text evidence of
+            // a prompt that did go to the conversation on screen). Selecting a
+            // conversation in the picker is different: it changes what the
+            // process writes.
+            externalInputAt = now;
+        }
+        if (pickedConversation) {
+            // Enter with the /resume picker open selected a session. That
+            // changes the conversation that way, and nothing else in the input
+            // tells which conversation was picked. An ordinary menu answer (a
+            // permission prompt, the trust-folder confirmation) only answers a
+            // question in the current conversation, so it must not lift the
+            // prompt evidence and let the scan adopt an unrelated file.
+            conversationSwitchAt = now;
+        }
+        if (submitted != null) {
+            if (isConversationCommand(submitted)) {
+                // A resume command typed in the terminal is not a prompt the
+                // conversation receives: it switches the conversation, and the
+                // destination may be a saved one no live tab holds. Its text
+                // must not become the prompt evidence either — no file holds
+                // it — so the submission is recorded as unknown-text.
+                if (isResumeCommand(submitted)) {
+                    // /clear switches at once; a /resume only opens the picker,
+                    // so the evidence of the conversation it may fail to leave
+                    // is kept until an entry is picked or it is cancelled. The
+                    // snapshot predates this input: the external-input cutoff
+                    // is moved below for the submission itself, and restoring
+                    // it to this Enter's time would make the earlier prompt
+                    // look stale and let the scan ignore its text evidence.
+                    armPickerSwitch(conversationSwitchAt, promptSubmittedAt,
+                            externalBeforeInput, lastPromptText);
+                }
+                conversationSwitchAt = now;
+                lastPromptText = null;
+            } else {
+                lastPromptText = submitted;
+            }
+            promptSubmittedAt = now;
+            scheduleIdentityRefresh();
+        } else if (recalled) {
+            // The prompt came from the TUI's history (Up/Down): its text is
+            // unknown to the plugin, but the submission is real. Previous text
+            // evidence no longer describes what was submitted, and the time
+            // lets the scan follow the file the process writes next.
+            lastPromptText = null;
+            promptSubmittedAt = now;
+            scheduleIdentityRefresh();
+        }
+        return submitted;
+    }
+
+    /**
+     * Consumes {@code bytes} into {@link #terminalInputLine} and returns the
+     * line when Enter was pressed, or {@code null}.
+     *
+     * <p>Escape sequences (cursor keys, the {@code /resume} picker) and control
+     * characters are dropped so that only typed text is kept; the cursor keys
+     * that edit the line (Left/Right/Home/End/Delete) are applied to it.
+     * Inside a bracketed paste the text is recorded as typed — including its
+     * newlines, which are part of the prompt rather than submissions.
+     */
+    private String appendTerminalInput(byte[] bytes) {
+        String submitted = null;
+        String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        // An Esc that was the last byte of the previous write is standalone
+        // unless this write continues a CSI/SS3 sequence: a terminal sends
+        // Alt+char as ESC+char in one write, while Esc alone (dismissing the
+        // autocomplete) arrives on its own and the next keystroke follows in a
+        // separate write.
+        boolean carriedEscape = terminalInputEscape == 1;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (terminalEnterSinceGuiSend) {
+                // The terminal Enter already submitted the panel text during
+                // the GUI send's pause; everything after it starts a new line,
+                // so it is not a part of the line that Enter submitted.
+                terminalDraftAfterEnter = true;
+            }
+            // Any input changes the line the TUI holds — including edits that
+            // leave the recorded buffer unchanged or empty (Backspace, cursor
+            // keys, Ctrl+U, Tab) — so a GUI submission still waiting for its
+            // Enter can no longer rely on the text it composed. Enter is
+            // tracked separately: it submits the line instead of editing it.
+            if (c == '\r' || c == '\n') {
+                if (terminalInputPaste) {
+                    // A line break inside a paste is prompt text, not a
+                    // submission, but it still changes the line.
+                    terminalInputSinceGuiSend = true;
+                }
+            } else {
+                terminalInputSinceGuiSend = true;
+            }
+            if (c == 0x1b) {
+                if (carriedEscape && terminalEscapeOnMenu) {
+                    // The Esc carried from the previous write was a standalone
+                    // cancellation of a choice menu, and this Esc begins a new
+                    // sequence: the cancellation is complete, so the picker's
+                    // search text must not become prompt draft.
+                    if (terminalEscapeOnPicker) {
+                        restorePickerSwitch();
+                    }
+                    discardPickerSearchText();
+                }
+                terminalInputEscape = 1;
+                terminalEscapeParams.setLength(0);
+                terminalPasteAfterCR = false;
+                // A standalone Esc cancels a choice menu (the /resume picker):
+                // the recorded line then holds the picker's search text, not a
+                // prompt draft. Cancelling the picker leaves the conversation
+                // where it was, so the switch it was opened to make is undone.
+                ChoiceMenuModel escapedMenu = openChoiceMenu();
+                // The screen poll publishes the picker a few hundred ms after
+                // the command: an Esc that reaches it first cancels the very
+                // menu the pending switch is waiting on, so it counts as one.
+                boolean unpublishedPicker = escapedMenu == null && pickerSwitchPending;
+                terminalEscapeOnMenu = escapedMenu != null || unpublishedPicker;
+                terminalEscapeOnPicker = isConversationPicker(escapedMenu)
+                        || unpublishedPicker;
+                // A new Esc belongs to this write, so it is not the carried
+                // standalone one and may start a sequence even right after it.
+                carriedEscape = false;
+            } else if (terminalInputEscape == 1) {
+                // ESC [ starts a CSI sequence, ESC O an SS3 one. Any other
+                // character ends a two-character escape (ESC x, e.g. Alt+x).
+                // When the Esc was carried over from the previous write it was
+                // standalone instead — the TUI uses it to dismiss autocomplete
+                // — and this write starts the actual input: a real CSI/SS3
+                // sequence is written in one piece, so '[' or 'O' typed later
+                // are ordinary characters too. The character is then processed
+                // again as input.
+                if (carriedEscape) {
+                    terminalInputEscape = 0;
+                    i--;
+                    if (terminalEscapeOnMenu) {
+                        // The carried Esc was a standalone cancellation of a
+                        // choice menu: discard the picker's search text so it
+                        // cannot prefix the next prompt.
+                        if (terminalEscapeOnPicker) {
+                            // The cancelled menu was the /resume picker, so the
+                            // conversation never switched and the evidence the
+                            // command replaced comes back.
+                            restorePickerSwitch();
+                        }
+                        discardPickerSearchText();
+                    }
+                } else if (c == '[') {
+                    terminalInputEscape = 2;
+                } else if (c == 'O') {
+                    terminalInputEscape = 3;
+                } else {
+                    terminalInputEscape = 0;
+                }
+                carriedEscape = false;
+            } else if (terminalInputEscape == 2) {
+                // CSI: parameter and intermediate bytes (0x20–0x3f) precede
+                // the final byte (0x40–0x7e), which ends the sequence.
+                if (c >= 0x40 && c <= 0x7e) {
+                    terminalInputEscape = 0;
+                    onCsiFinal(c, terminalEscapeParams.toString());
+                } else {
+                    terminalEscapeParams.append(c);
+                }
+            } else if (terminalInputEscape == 3) {
+                terminalInputEscape = 0; // SS3: exactly one character after ESC O
+                if (!terminalInputPaste) applyCursorKey(c);
+            } else if (terminalInputPaste) {
+                // Inside a paste every newline is part of the prompt, not a
+                // submission of the line typed so far. Collect the whole
+                // textual run — printable characters, tabs (literal text in a
+                // paste, while the same key typed live completes the input)
+                // and line breaks, with CRLF normalized to one newline — and
+                // insert it in a single operation. Inserting one character or
+                // one line break at a time copies the still-unchanged suffix
+                // of the draft for every insertion, which makes a large paste
+                // before long existing text quadratic. The run stops before an
+                // escape sequence (the end-of-paste marker) or any other
+                // control character, which are still parsed on their own.
+                StringBuilder pasted = new StringBuilder();
+                boolean afterCR = terminalPasteAfterCR;
+                int end = i;
+                while (end < text.length()) {
+                    char next = text.charAt(end);
+                    if (next == '\r') {
+                        pasted.append('\n');
+                        afterCR = true;
+                        end++;
+                    } else if (next == '\n') {
+                        // The LF of a CRLF pair split across writes is part of
+                        // the same line break.
+                        if (!afterCR) pasted.append('\n');
+                        afterCR = false;
+                        end++;
+                    } else if (next == '\t' || next >= 0x20) {
+                        pasted.append(next);
+                        afterCR = false;
+                        end++;
+                    } else {
+                        break;
+                    }
+                }
+                if (end > i) {
+                    insertTerminalText(pasted);
+                    terminalPasteAfterCR = afterCR;
+                    i = end - 1;
+                }
+            } else if (c == '\r' || c == '\n') {
+                String line = terminalInputLine.toString().trim();
+                boolean unknownText = terminalHistoryRecall || terminalCompletionEdited;
+                ChoiceMenuModel openMenu = openChoiceMenu();
+                boolean onMenu = openMenu != null;
+                // Enter on a choice menu selects an item instead of
+                // submitting the line, so only the first other Enter is the
+                // one that submits the line the panel text was written to.
+                // Later ones submit fresh lines of their own and are recorded
+                // in full.
+                boolean firstSubmissionAfterGuiSend = guiSendAwaitingEnter
+                        && !onMenu && terminalGuiSubmitAt == 0L;
+                // Keys typed during the GUI send's pause edited the line the
+                // panel text was written to, but the recorder holds none of
+                // that text: what this Enter submits is unknown even when the
+                // recorded line is empty (a Backspace on it deletes a
+                // character of the panel text).
+                boolean gapEdited = firstSubmissionAfterGuiSend && terminalInputSinceGuiSend;
+                terminalEnterSinceGuiSend = true;
+                terminalHistoryRecall = false;
+                terminalCompletionEdited = false;
+                terminalInputLine.setLength(0);
+                terminalInputCursor = 0;
+                terminalLineEntered = true;
+                // An Enter on the still-empty line does nothing on the TUI
+                // unless a choice menu is open: it is neither a prompt nor a
+                // history recall nor a picker selection, so it must not
+                // invalidate the evidence of the prompt already submitted.
+                terminalEnterOnEmptyLine = line.isEmpty() && !unknownText
+                        && !onMenu && !gapEdited;
+                terminalMenuSelection = onMenu;
+                terminalSelectedMenu = openMenu;
+                if (onMenu && !isCheckboxMenu(openMenu)) {
+                    // A numbered menu closes on the selection Enter (a
+                    // checkbox menu only toggles and stays open until Right),
+                    // so the model's stale entry must stop classifying the
+                    // input that follows.
+                    completeTerminalMenu(openMenu);
+                }
+                if (unknownText && !onMenu) {
+                    // The line was filled from the TUI history (Up/Down) or
+                    // completed by Tab and may have been edited since: the
+                    // characters recorded here are only a part of the prompt,
+                    // so its text is unknown and an in-process resume must be
+                    // followed by file times. With a menu open the Enter
+                    // answers it instead: the recalled text is the picker's
+                    // search filter, which submits no prompt and must not
+                    // replace the evidence of the prompt already submitted.
+                    terminalRecalledSubmission = true;
+                } else if (!onMenu && (gapEdited || !line.isEmpty())) {
+                    // With a choice menu open Enter selects an item instead of
+                    // submitting the line: what was typed there is the picker's
+                    // search filter, not a prompt.
+                    if (firstSubmissionAfterGuiSend && !terminalGuiTextAnsweredMenu) {
+                        // A prompt sent from the panel is already written on
+                        // the TUI's line: this Enter submits it together with
+                        // the recorded text, which is only a part of the
+                        // prompt. Publishing it as the evidence would let an
+                        // identity scan match another conversation's file for
+                        // the partial text before the panel's Enter is sent.
+                        // When that text answered the menu on arrival, the
+                        // line was cleared and the recorder holds it in full.
+                        terminalRecalledSubmission = true;
+                    } else {
+                        // Anything typed after that submission starts a new
+                        // line the recorder has in full, so it is known text.
+                        submitted = line;
+                    }
+                }
+            } else if (c == 0x7f || c == 0x08) {
+                deleteTerminalCharBeforeCursor();
+            } else if (c == 0x03 || c == 0x15) { // Ctrl+C, Ctrl+U
+                terminalInputLine.setLength(0);
+                terminalInputCursor = 0;
+                // Clearing the input also discards a recalled or completed
+                // prompt, so what is typed next is known in full again.
+                terminalHistoryRecall = false;
+                terminalCompletionEdited = false;
+            } else if (c == '\t') {
+                // A live Tab makes the TUI complete the input from its file or
+                // command suggestions; the inserted text never reaches this
+                // parser, so the line recorded so far is only a prefix. While a
+                // choice menu is open Tab belongs to the menu ("Tab to amend")
+                // and Enter selects an item instead of submitting a prompt, so
+                // the menu context is not completion evidence.
+                if (openChoiceMenu() == null) {
+                    terminalCompletionEdited = true;
+                }
+            } else if (c >= 0x20) {
+                // While a choice menu is open, a printed digit selects an item
+                // immediately (see writePtyAnswer) and never becomes part of a
+                // prompt: recording it would prefix the next prompt's evidence
+                // with the selection and make the actual text unmatchable.
+                ChoiceMenuModel openMenu = openChoiceMenu();
+                if (openMenu != null && c >= '0' && c <= '9') {
+                    if (digitSelectionDismissesMenu(openMenu, c)) {
+                        // The digit answers the menu and closes it, so nothing
+                        // typed into it is part of the next prompt: the search
+                        // text accumulated while it was open must not prefix
+                        // that prompt's evidence (see the Right-submit path).
+                        discardPickerSearchText();
+                    } else {
+                        int activated = activatedTextEditor(openMenu, c);
+                        if (activated >= 0) {
+                            // The digit moved the cursor into the menu's text
+                            // editor; the poll reports it only later, so the
+                            // digits typed meanwhile are text for that editor,
+                            // not selections.
+                            trackMenuFocus(openMenu, activated);
+                        }
+                    }
+                } else {
+                    insertTerminalChar(c);
+                }
+            }
+        }
+        return submitted;
+    }
+
+    /** Set when {@link #appendTerminalInput(byte[])} saw Enter, cleared by the caller. */
+    private boolean terminalLineEntered;
+
+    /**
+     * Set when that Enter closed a line that was still empty and no choice menu
+     * was open, i.e. it acted on nothing: cleared by the caller like
+     * {@link #terminalLineEntered}.
+     */
+    private boolean terminalEnterOnEmptyLine;
+
+    /** Inserts {@code c} at the cursor and advances it. */
+    private void insertTerminalChar(char c) {
+        int at = Math.min(terminalInputCursor, terminalInputLine.length());
+        terminalInputLine.insert(at, c);
+        terminalInputCursor = at + 1;
+    }
+
+    /** Inserts {@code text} at the cursor in one operation and advances it. */
+    private void insertTerminalText(CharSequence text) {
+        int at = Math.min(terminalInputCursor, terminalInputLine.length());
+        terminalInputLine.insert(at, text);
+        terminalInputCursor = at + text.length();
+    }
+
+    /**
+     * Applies a horizontal cursor key (Left/Right/Home/End) to the line being
+     * recorded, so that text typed after it lands where the user sees it.
+     * Left/Right step over whole Unicode characters: a supplementary character
+     * occupies two UTF-16 code units, and stopping between them would let a
+     * later edit split the pair.
+     *
+     * @param key CSI/SS3 final byte: {@code D}, {@code C}, {@code H} or {@code F}
+     */
+    private void applyCursorKey(char key) {
+        switch (key) {
+            case 'D' -> {
+                int at = Math.min(terminalInputCursor, terminalInputLine.length());
+                terminalInputCursor =
+                        at <= 0 ? 0 : terminalInputLine.offsetByCodePoints(at, -1);
+            }
+            case 'C' -> {
+                ChoiceMenuModel menu = openChoiceMenu();
+                if (menu != null && isCheckboxMenu(menu)) {
+                    // Right submits a checkbox menu (the answer protocol the
+                    // menu panel writes): the menu is dismissed, so the text
+                    // typed into it — an option's free-text answer — must not
+                    // prefix the next prompt.
+                    discardPickerSearchText();
+                    return;
+                }
+                int at = Math.min(terminalInputCursor, terminalInputLine.length());
+                terminalInputCursor = at >= terminalInputLine.length()
+                        ? terminalInputLine.length()
+                        : terminalInputLine.offsetByCodePoints(at, 1);
+            }
+            case 'H' -> terminalInputCursor = 0;
+            case 'F' -> terminalInputCursor = terminalInputLine.length();
+            case 'A', 'B' -> {
+                // Up/Down recall a prompt from the TUI history into its input;
+                // the text never reaches this parser. Remember that whatever is
+                // submitted next was not typed here. While a choice menu is
+                // open the same keys move its cursor instead — the line stays
+                // empty too, but Enter selects a menu item rather than a
+                // recalled prompt, so it must not be recorded as a submission.
+                ChoiceMenuModel menu = openChoiceMenu();
+                if (menu != null) {
+                    // The arrow moves the menu's cursor and the poll reports it
+                    // only later. Track where it lands: leaving a text editor
+                    // lets the next digit select an item again, and entering
+                    // one makes the digits text for it.
+                    int size = menu.options().size();
+                    if (size > 0) {
+                        int focused = focusedMenuOption(menu);
+                        if (focused < 0 || focused >= size) focused = 0;
+                        trackMenuFocus(menu, Math.floorMod(focused + (key == 'A' ? -1 : 1), size));
+                    }
+                } else if (terminalInputLine.isEmpty()) {
+                    terminalHistoryRecall = true;
+                }
+            }
+            default -> { /* other keys do not edit the line */ }
+        }
+    }
+
+    /**
+     * Removes the whole character before the cursor (the Backspace key),
+     * including both halves of a supplementary Unicode character.
+     */
+    private void deleteTerminalCharBeforeCursor() {
+        int end = Math.min(terminalInputCursor, terminalInputLine.length());
+        if (end <= 0) return;
+        int start = terminalInputLine.offsetByCodePoints(end, -1);
+        terminalInputLine.delete(start, end);
+        terminalInputCursor = start;
+    }
+
+    /**
+     * Deletes the whole character under the cursor (the Delete key), including
+     * both halves of a supplementary Unicode character.
+     */
+    private void deleteTerminalCharAtCursor() {
+        int at = Math.min(terminalInputCursor, terminalInputLine.length());
+        if (at >= terminalInputLine.length()) return;
+        int end = terminalInputLine.offsetByCodePoints(at, 1);
+        terminalInputLine.delete(at, end);
+        terminalInputCursor = at;
+    }
+
+    /**
+     * Handles the final byte of a CSI sequence: the bracketed-paste markers
+     * {@code ESC [ 200 ~} / {@code ESC [ 201 ~} switch paste recording on and
+     * off, cursor keys edit the recorded line, everything else is dropped.
+     *
+     * @param finalByte final byte of the sequence
+     * @param params    parameter bytes collected before it
+     */
+    private void onCsiFinal(char finalByte, String params) {
+        if (finalByte == '~') {
+            if ("200".equals(params)) {
+                terminalInputPaste = true;
+                terminalPasteAfterCR = false;
+            } else if ("201".equals(params)) {
+                terminalInputPaste = false;
+                terminalPasteAfterCR = false;
+            } else if (!terminalInputPaste) {
+                if ("3".equals(params)) {
+                    deleteTerminalCharAtCursor();
+                } else if ("1".equals(params) || "7".equals(params)) {
+                    applyCursorKey('H');
+                } else if ("4".equals(params) || "8".equals(params)) {
+                    applyCursorKey('F');
+                }
+            }
+        } else if (!terminalInputPaste) {
+            applyCursorKey(finalByte); // Left/Right/Home/End; others are ignored
+        }
+    }
+
+    /** Package-private for tests: simulates typing in the terminal at {@code millis}. */
+    void simulateExternalInput(long millis) {
+        externalInputAt = millis;
+    }
+
+    /**
+     * Package-private for tests: simulates raw terminal input arriving at
+     * {@code millis}.
+     *
+     * @return the line submitted by this input, or {@code null}
+     */
+    String simulateTerminalInput(byte[] bytes, long millis) {
+        return onTerminalInput(bytes, millis);
     }
 
     /**
